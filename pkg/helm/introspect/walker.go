@@ -199,20 +199,20 @@ func (w *walker) resolveCommandToPath(cmd *parse.CommandNode) string {
 }
 
 func (w *walker) handleRange(n *parse.RangeNode) {
-	w.pushScope(n.Pipe)
+	w.pushScope(n.Pipe, true)
 	w.walk(n.List)
 	w.popScope()
 	w.walk(n.ElseList)
 }
 
 func (w *walker) handleWith(n *parse.WithNode) {
-	w.pushScope(n.Pipe)
+	w.pushScope(n.Pipe, false)
 	w.walk(n.List)
 	w.popScope()
 	w.walk(n.ElseList)
 }
 
-func (w *walker) pushScope(pipe *parse.PipeNode) {
+func (w *walker) pushScope(pipe *parse.PipeNode, allowWildcard bool) {
 	// Determine the new dot
 	// If pipe is empty or creates a var but not dot?
 	// range $k, $v := .List -> dot is unchanged? No, output of pipeline is dot in With, but Range?
@@ -228,8 +228,13 @@ func (w *walker) pushScope(pipe *parse.PipeNode) {
 			// Inside, dot is Values.items[*] (wildcard)
 			// We'll mark it as dynamic
 			if strings.HasPrefix(path, "Values.") {
-				// Use hash/wildcard
-				w.dotPathStack = append(w.dotPathStack, path+".*")
+				if allowWildcard {
+					// Use hash/wildcard
+					w.dotPathStack = append(w.dotPathStack, path+".*")
+				} else {
+					// For with blocks, we just append the path
+					w.dotPathStack = append(w.dotPathStack, path)
+				}
 				return
 			}
 		}

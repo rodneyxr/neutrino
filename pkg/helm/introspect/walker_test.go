@@ -56,3 +56,49 @@ func TestWalker_Branches(t *testing.T) {
 		})
 	}
 }
+
+func TestWalker_ScopeWildcards(t *testing.T) {
+	tests := []struct {
+		name         string
+		template     string
+		wantPath     string
+		dontWantPatn string
+	}{
+		{
+			name:         "With block should NOT add wildcard",
+			template:     `{{ with .Values.probes.readiness }} {{ .timeoutSeconds }} {{ end }}`,
+			wantPath:     "probes.readiness.timeoutSeconds",
+			dontWantPatn: "probes.readiness.*.timeoutSeconds",
+		},
+		{
+			name:         "Range block SHOULD add wildcard",
+			template:     `{{ range .Values.items }} {{ .name }} {{ end }}`,
+			wantPath:     "items.*.name",
+			dontWantPatn: "items.name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpl := template.New("test")
+			parsed, err := tmpl.Parse(tt.template)
+			require.NoError(t, err)
+
+			w := newWalker("testchart", "test.yaml", tt.template)
+			w.walk(parsed.Tree.Root)
+
+			foundWant := false
+			foundDontWant := false
+			for _, res := range w.Results {
+				if res.Path == tt.wantPath {
+					foundWant = true
+				}
+				if res.Path == tt.dontWantPatn {
+					foundDontWant = true
+				}
+			}
+			assert.True(t, foundWant, "Expected to find usage of %s", tt.wantPath)
+			assert.False(t, foundDontWant, "Expected NOT to find usage of %s", tt.dontWantPatn)
+		})
+	}
+}
