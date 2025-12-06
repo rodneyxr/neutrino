@@ -18,10 +18,10 @@ import (
 )
 
 func init() {
-	rootCmd.AddCommand(newIntrospectCmd(os.Stdout))
+	rootCmd.AddCommand(newInspectCmd(os.Stdout))
 }
 
-func newIntrospectCmd(out io.Writer) *cobra.Command {
+func newInspectCmd(out io.Writer) *cobra.Command {
 	var (
 		version          string
 		outputFormat     string
@@ -30,9 +30,9 @@ func newIntrospectCmd(out io.Writer) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "inspect [CHART_SOURCE]",
-		Short: "Inspect a Helm chart to find overridable values",
-		Long:  `Analyzes Helm chart templates to find which values from .Values are actually used.`,
+		Use:   "inspect [PACKAGE_SOURCE]",
+		Short: "Inspect a Zarf package or helm chart to find overridable values",
+		Long:  `Analyzes Zarf package or helm chart templates to find which values from .Values are actually used.`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Initialize logger

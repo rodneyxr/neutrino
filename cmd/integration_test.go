@@ -15,7 +15,7 @@ func TestIntegration_Inspect_OCI_Helm(t *testing.T) {
 
 	// Capture output
 	buf := new(bytes.Buffer)
-	cmd := newIntrospectCmd(buf)
+	cmd := newInspectCmd(buf)
 
 	// Set args
 	// We rely on the public ghcr.io/stefanprodan/charts/podinfo being available
@@ -36,7 +36,7 @@ func TestIntegration_Inspect_OCI_Helm(t *testing.T) {
 
 func TestIntegration_Inspect_Invalid(t *testing.T) {
 	buf := new(bytes.Buffer)
-	cmd := newIntrospectCmd(buf)
+	cmd := newInspectCmd(buf)
 	// Usage of invalid host to ensure connection failure
 	cmd.SetArgs([]string{"oci://localhost:12345/nonexistant"})
 

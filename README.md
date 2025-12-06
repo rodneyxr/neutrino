@@ -50,7 +50,7 @@ git clone https://github.com/rodneyxr/neutrino.git
 cd neutrino
 
 # Build the binary
-go build -o neutrino ./main.go
+go build -o neutrino
 
 # Verify installation
 ./neutrino --help
@@ -68,10 +68,10 @@ discovered overridable values.
 #### Syntax
 
 ```bash
-neutrino inspect [CHART_SOURCE] [flags]
+neutrino inspect [PACKAGE_SOURCE] [flags]
 ```
 
-`[CHART_SOURCE]` can be:
+`[PACKAGE_SOURCE]` can be:
 
 - A local directory path: `./charts/podinfo`
 - A local archive: `./podinfo-6.4.0.tgz`
