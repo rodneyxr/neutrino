@@ -10,8 +10,8 @@ import (
 
 	"github.com/defenseunicorns/pkg/oci"
 	"github.com/goccy/go-yaml"
-	"github.com/spf13/cobra"
 	"github.com/rodneyxr/neutrino/pkg/helm/introspect"
+	"github.com/spf13/cobra"
 	"github.com/zarf-dev/zarf/src/config"
 	"github.com/zarf-dev/zarf/src/pkg/logger"
 	"github.com/zarf-dev/zarf/src/pkg/message"
@@ -125,13 +125,16 @@ func isZarfPackage(source string, arch string) (bool, error) {
 		targetArch := config.GetArch(arch)
 		remote, err := oci.NewOrasRemote(source, oci.PlatformForArch(targetArch))
 		if err != nil {
-			return false, err
+			// If we can't create a remote, it's likely not a Zarf package or accessible as one
+			// We return false to allow the Helm inspector to try
+			return false, nil
 		}
 
 		// Fetch root/manifest
 		root, err := remote.FetchRoot(ctx)
 		if err != nil {
-			return false, err
+			// If we can't fetch the root, it might be a Helm chart OCI
+			return false, nil
 		}
 
 		if root.Config.MediaType == "application/vnd.zarf.config.v1+json" {
