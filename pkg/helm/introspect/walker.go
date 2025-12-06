@@ -75,11 +75,14 @@ func (w *walker) walk(node parse.Node) {
 		// Check if it resolves to a Values path
 		w.handleVariable(n)
 	case *parse.IfNode:
+		w.walk(n.Pipe)
 		w.walk(n.List)
 		w.walk(n.ElseList)
 	case *parse.RangeNode:
+		w.walk(n.Pipe)
 		w.handleRange(n)
 	case *parse.WithNode:
+		w.walk(n.Pipe)
 		w.handleWith(n)
 	case *parse.TemplateNode:
 		// Logic to follow named templates could go here,
