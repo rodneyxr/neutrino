@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/defenseunicorns/pkg/oci"
@@ -26,6 +27,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 		version          string
 		outputFormat     string
 		includeSubcharts bool
+		sortOutput       bool
 		architecture     string
 	)
 
@@ -78,6 +80,11 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 
 				for key, res := range pkgInspection.ChartResults {
 					fmt.Fprintf(out, "\n=== Component/Chart: %s ===\n", key)
+					if sortOutput {
+						sort.Slice(res.Values, func(i, j int) bool {
+							return res.Values[i].Path < res.Values[j].Path
+						})
+					}
 					if err := printIntrospectResult(out, res, outputFormat); err != nil {
 						return err
 					}
@@ -102,6 +109,12 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				return err
 			}
 
+			if sortOutput {
+				sort.Slice(result.Values, func(i, j int) bool {
+					return result.Values[i].Path < result.Values[j].Path
+				})
+			}
+
 			return printIntrospectResult(out, result, outputFormat)
 		},
 	}
@@ -109,6 +122,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&version, "version", "", "Version of the chart to fetch (if using URL)")
 	cmd.Flags().StringVarP(&outputFormat, "output", "o", "table", "Output format (table, json, yaml)")
 	cmd.Flags().BoolVar(&includeSubcharts, "include-subcharts", true, "Include subcharts in the analysis")
+	cmd.Flags().BoolVar(&sortOutput, "sort", false, "Sort the output by path")
 	cmd.Flags().StringVarP(&architecture, "architecture", "a", "", "Architecture for OCI images and Zarf packages")
 
 	return cmd
