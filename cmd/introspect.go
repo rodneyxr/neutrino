@@ -211,21 +211,16 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 
 		for _, v := range result.Values {
 			path := v.Path
-			if v.Wildcard {
-				path += " (dynamic)"
-			}
 
 			for i, loc := range v.Locations {
 				rowPath := path
-				rowType := loc.Kind
 				if i > 0 {
 					rowPath = ""
-					rowType = ""
 				}
 
 				data = append(data, []string{
 					rowPath,
-					rowType,
+					loc.Kind,
 					fmt.Sprintf("%s:%d", loc.File, loc.Line),
 				})
 			}
