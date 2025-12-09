@@ -54,4 +54,6 @@ type IntrospectOptions struct {
 	IncludeSubcharts bool
 	// ExcludeHooks determines whether to skip hook templates.
 	ExcludeHooks bool
+	// NoCache forces a re-download of the chart, bypassing the cache.
+	NoCache bool
 }

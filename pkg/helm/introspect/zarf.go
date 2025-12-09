@@ -123,7 +123,7 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 			}
 
 			// Introspect
-			res, err := IntrospectHelmValues(ChartSource{LocalPath: chartPath}, opts)
+			res, err := IntrospectHelmValues(ctx, ChartSource{LocalPath: chartPath}, opts)
 			if err != nil {
 				return nil, fmt.Errorf("failed to introspect chart %s in component %s: %w", chart.Name, component.Name, err)
 			}

@@ -29,6 +29,8 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 		includeSubcharts bool
 		sortOutput       bool
 		architecture     string
+		logLevel         string
+		noCache          bool
 	)
 
 	cmd := &cobra.Command{
@@ -38,15 +40,22 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Initialize logger
-			l, err := logger.New(logger.ConfigDefault())
+			lvl, err := logger.ParseLevel(logLevel)
 			if err != nil {
 				return err
 			}
-			ctx := logger.WithContext(context.Background(), l)
+			logConfig := logger.ConfigDefault()
+			logConfig.Level = lvl
+			l, err := logger.New(logConfig)
+			if err != nil {
+				return err
+			}
+			ctx := logger.WithContext(cmd.Context(), l)
 
 			source := args[0]
 			opts := introspect.IntrospectOptions{
 				IncludeSubcharts: includeSubcharts,
+				NoCache:          noCache,
 			}
 
 			// Determine if it's a Zarf package
@@ -92,19 +101,39 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				return nil
 			}
 
-			// ... helm logic ...
+			// Handle Helm chart
 
 			src := introspect.ChartSource{
 				Version: version,
 			}
 
 			if isRemote(source) {
+				// Handle OCI tags if present (e.g. oci://...:tag)
+				if strings.HasPrefix(source, "oci://") {
+					lastColon := strings.LastIndex(source, ":")
+					// Check if colon is after the protocol separator (oci:// is index 0-5)
+					if lastColon > 5 {
+						tag := source[lastColon+1:]
+						urlWithoutTag := source[:lastColon]
+
+						if tag != "" {
+							if version != "" && version != tag {
+								return fmt.Errorf("version flag '%s' conflicts with tag '%s' in source URL", version, tag)
+							}
+							if version == "" {
+								src.Version = tag
+							}
+							// Canonicalize source to be without tag for the inspector
+							source = urlWithoutTag
+						}
+					}
+				}
 				src.URL = source
 			} else {
 				src.LocalPath = source
 			}
 
-			result, err := introspect.IntrospectHelmValues(src, opts)
+			result, err := introspect.IntrospectHelmValues(ctx, src, opts)
 			if err != nil {
 				return err
 			}
@@ -124,6 +153,8 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 	cmd.Flags().BoolVar(&includeSubcharts, "include-subcharts", true, "Include subcharts in the analysis")
 	cmd.Flags().BoolVar(&sortOutput, "sort", false, "Sort the output by path")
 	cmd.Flags().StringVarP(&architecture, "architecture", "a", "", "Architecture for OCI images and Zarf packages")
+	cmd.Flags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Force re-download of a package, ignoring cache")
 
 	return cmd
 }

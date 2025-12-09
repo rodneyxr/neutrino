@@ -7,6 +7,8 @@
 *.dll
 *.so
 *.dylib
+/main
+/neutrino
 
 # Test binary, built with `go test -c`
 *.test
@@ -30,6 +32,4 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
-
-/main
-/neutrino
+*.code-workspace

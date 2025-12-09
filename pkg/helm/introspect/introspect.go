@@ -1,12 +1,16 @@
 package introspect
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"text/template"
+	"time"
 
 	"github.com/Masterminds/sprig/v3"
+	"github.com/zarf-dev/zarf/src/pkg/logger"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/cli"
@@ -16,25 +20,80 @@ import (
 )
 
 // IntrospectHelmValues loads a chart and analyzes its templates to find overridable values.
-func IntrospectHelmValues(src ChartSource, opts IntrospectOptions) (*IntrospectResult, error) {
+func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectOptions) (*IntrospectResult, error) {
 	var c *chart.Chart
 	var err error
 
+	l := logger.From(ctx)
+
 	if src.LocalPath != "" {
+		l.Debug(fmt.Sprintf("Loading chart from local path: %s", src.LocalPath))
 		c, err = loader.Load(src.LocalPath)
 	} else if src.URL != "" {
-		tmpDir, downloadErr := os.MkdirTemp("", "neutrino-chart-*")
-		if downloadErr != nil {
-			return nil, fmt.Errorf("failed to create temp dir: %w", downloadErr)
+		start := time.Now()
+		// Determine cache path
+		cacheDir, cacheErr := getCacheDir(src.URL, src.Version)
+		if cacheErr != nil {
+			l.Warn(fmt.Sprintf("Failed to get cache dir: %s", cacheErr))
+			// Fallback to temp
+			cacheDir = ""
+		} else {
+			// Ensure cache dir exists
+			if err := os.MkdirAll(cacheDir, 0755); err != nil {
+				l.Warn(fmt.Sprintf("Failed to create cache dir: %s", err))
+				cacheDir = ""
+			}
 		}
-		defer os.RemoveAll(tmpDir)
 
-		chartPath, downloadErr := downloadChart(src.URL, src.Version, tmpDir)
-		if downloadErr != nil {
-			return nil, fmt.Errorf("failed to download chart: %w", downloadErr)
+		loadedFromCache := false
+		if cacheDir != "" && !opts.NoCache {
+			matches, _ := filepath.Glob(filepath.Join(cacheDir, "*.tgz"))
+			if len(matches) > 0 {
+				chartArchive := matches[0]
+				l.Debug(fmt.Sprintf("Found chart in cache: %s", chartArchive))
+				src.LocalPath = chartArchive
+				c, err = loader.Load(chartArchive)
+				if err == nil {
+					l.Info(fmt.Sprintf("Using cached chart %s:%s", src.URL, src.Version))
+					loadedFromCache = true
+				} else {
+					l.Warn(fmt.Sprintf("Failed to load cached chart, redownloading: %s", err))
+					os.RemoveAll(cacheDir)
+				}
+			}
+		} else if opts.NoCache {
+			l.Debug("Skipping cache due to --no-cache")
+			// Clean up existing cache if present to force fresh download
+			if cacheDir != "" {
+				l.Debug(fmt.Sprintf("Cleaning up existing cache: %s", cacheDir))
+				os.RemoveAll(cacheDir)
+				// Re-create cache dir for the new download
+				if err := os.MkdirAll(cacheDir, 0755); err != nil {
+					l.Warn(fmt.Sprintf("Failed to recreate cache dir: %s", err))
+				}
+			}
 		}
-		src.LocalPath = chartPath // Update source to the downloaded path for reporting
-		c, err = loader.Load(chartPath)
+
+		if !loadedFromCache {
+			destDir := cacheDir
+			if destDir == "" {
+				tmpDir, downloadErr := os.MkdirTemp("", "neutrino-chart-*")
+				if downloadErr != nil {
+					return nil, fmt.Errorf("failed to create temp dir: %w", downloadErr)
+				}
+				defer os.RemoveAll(tmpDir)
+				destDir = tmpDir
+			}
+
+			l.Info(fmt.Sprintf("Downloading chart %s:%s...", src.URL, src.Version))
+			chartPath, downloadErr := downloadChart(src.URL, src.Version, destDir)
+			if downloadErr != nil {
+				return nil, fmt.Errorf("failed to download chart: %w", downloadErr)
+			}
+			l.Debug(fmt.Sprintf("Download took %s", time.Since(start)))
+			src.LocalPath = chartPath
+			c, err = loader.Load(chartPath)
+		}
 	} else {
 		return nil, fmt.Errorf("no chart source provided")
 	}
@@ -50,7 +109,10 @@ func IntrospectHelmValues(src ChartSource, opts IntrospectOptions) (*IntrospectR
 		Values:       []ValueUsage{},
 	}
 
+	l.Info("Analyzing chart templates...")
+	analyzeStart := time.Now()
 	analyzeChart(c, result, opts)
+	l.Debug(fmt.Sprintf("Analysis took %s", time.Since(analyzeStart)))
 
 	return result, nil
 }
