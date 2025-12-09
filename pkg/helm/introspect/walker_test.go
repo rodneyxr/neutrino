@@ -68,12 +68,12 @@ func TestWalker_ScopeWildcards(t *testing.T) {
 			name:         "With block should NOT add wildcard",
 			template:     `{{ with .Values.probes.readiness }} {{ .timeoutSeconds }} {{ end }}`,
 			wantPath:     "probes.readiness.timeoutSeconds",
-			dontWantPatn: "probes.readiness.*.timeoutSeconds",
+			dontWantPatn: "probes.readiness[].timeoutSeconds",
 		},
 		{
 			name:         "Range block SHOULD add wildcard",
 			template:     `{{ range .Values.items }} {{ .name }} {{ end }}`,
-			wantPath:     "items.*.name",
+			wantPath:     "items[].name",
 			dontWantPatn: "items.name",
 		},
 	}

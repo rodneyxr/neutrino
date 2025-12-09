@@ -231,7 +231,7 @@ func (w *walker) pushScope(pipe *parse.PipeNode, allowWildcard bool) {
 			if strings.HasPrefix(path, "Values.") {
 				if allowWildcard {
 					// Use hash/wildcard
-					w.dotPathStack = append(w.dotPathStack, path+".*")
+					w.dotPathStack = append(w.dotPathStack, path+"[]")
 				} else {
 					// For with blocks, we just append the path
 					w.dotPathStack = append(w.dotPathStack, path)
@@ -280,7 +280,7 @@ func (w *walker) addUsage(path string, node parse.Node, kind string, wildcard bo
 	w.Results = append(w.Results, ValueUsage{
 		Path:      path,
 		Chart:     w.ChartName,
-		Wildcard:  wildcard || strings.Contains(path, "*"),
+		Wildcard:  wildcard || strings.Contains(path, "[]"),
 		Locations: []ValueUsageLocation{loc},
 	})
 }
