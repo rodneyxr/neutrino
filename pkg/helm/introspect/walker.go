@@ -136,8 +136,9 @@ func (w *walker) handleVariable(n *parse.VariableNode) {
 		if strings.HasPrefix(val, "Values.") {
 			// Used the variable itself
 			// e.g. {{ $v }} where $v is .Values.foo
-			// We should record usage of .Values.foo
-			w.addUsage(val, n, "variable", false)
+			// We should record usage of .Values.foo, but stripped
+			path := strings.TrimPrefix(val, "Values.")
+			w.addUsage(path, n, "variable", false)
 		}
 	}
 }

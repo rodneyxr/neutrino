@@ -102,3 +102,49 @@ func TestWalker_ScopeWildcards(t *testing.T) {
 		})
 	}
 }
+
+func TestWalker_Variables(t *testing.T) {
+	tests := []struct {
+		name     string
+		template string
+		wantPath string
+		dontWant string
+	}{
+		{
+			name:     "Direct variable assignment",
+			template: `{{ $foo := .Values.bar }}{{ $foo }}`,
+			wantPath: "bar",
+			dontWant: "Values.bar",
+		},
+		{
+			name:     "Variable from scope",
+			template: `{{ with .Values.baz }}{{ $val := . }}{{ $val }}{{ end }}`,
+			wantPath: "baz",
+			dontWant: "Values.baz",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpl := template.New("test")
+			parsed, err := tmpl.Parse(tt.template)
+			require.NoError(t, err)
+
+			w := newWalker("testchart", "test.yaml", tt.template)
+			w.walk(parsed.Tree.Root)
+
+			foundWant := false
+			foundDontWant := false
+			for _, res := range w.Results {
+				if res.Path == tt.wantPath {
+					foundWant = true
+				}
+				if res.Path == tt.dontWant {
+					foundDontWant = true
+				}
+			}
+			assert.True(t, foundWant, "Expected to find usage of %s", tt.wantPath)
+			assert.False(t, foundDontWant, "Expected NOT to find usage of %s", tt.dontWant)
+		})
+	}
+}
