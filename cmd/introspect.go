@@ -11,6 +11,7 @@ import (
 
 	"github.com/defenseunicorns/pkg/oci"
 	"github.com/goccy/go-yaml"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/rodneyxr/neutrino/pkg/helm/introspect"
 	"github.com/spf13/cobra"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
@@ -93,7 +94,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 			}
 
 			// Determine if it's a Zarf package
-			isZarf, err := isZarfPackage(source, architecture)
+			isZarf, err := isZarfPackage(ctx, source, architecture)
 			if err != nil {
 				return fmt.Errorf("failed to determine source type: %w", err)
 			}
@@ -105,8 +106,6 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				}
 
 				report.Variables = pkgInspection.Variables
-
-				// Fix: using explicit filtering loop instead of generic one
 
 				// Fix: using explicit filtering loop instead of generic one
 				keys := make([]string, 0, len(pkgInspection.ChartResults))
@@ -175,14 +174,13 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 			case "table":
 				if len(report.Variables) > 0 {
 					fmt.Fprintln(out, "\n=== Zarf Package Variables ===")
-					header := []string{"Name", "Default", "Description", "AutoIndent"}
+					header := []string{"Name", "Default", "Description"}
 					var data [][]string
 					for _, v := range report.Variables {
 						data = append(data, []string{
 							v.Name,
 							v.Default,
 							v.Description,
-							fmt.Sprintf("%t", v.AutoIndent),
 						})
 					}
 					message.TableWithWriter(out, header, data)
@@ -224,33 +222,56 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 	return cmd
 }
 
-func isZarfPackage(source string, arch string) (bool, error) {
+func isZarfPackage(ctx context.Context, source string, arch string) (bool, error) {
 	if strings.HasSuffix(source, ".tar.zst") {
 		return true, nil
 	}
 	if strings.HasPrefix(source, "oci://") {
 		// potential zarf oci package
-		ctx := context.TODO()
+		l := logger.From(ctx)
 
 		targetArch := config.GetArch(arch)
-		remote, err := oci.NewOrasRemote(source, oci.PlatformForArch(targetArch))
-		if err != nil {
-			// If we can't create a remote, it's likely not a Zarf package or accessible as one
-			// We return false to allow the Helm inspector to try
-			return false, nil
+		platform := oci.PlatformForArch(targetArch)
+
+		// 1. Try with the target/default architecture
+		isZarf, err := checkZarfRef(ctx, source, platform)
+		if err == nil {
+			return isZarf, nil
+		}
+		l.Debug(fmt.Sprintf("isZarfPackage: failed with target arch %s: %s", targetArch, err))
+
+		// 2. Fallback: If target was not amd64, try amd64 as it's the most common for Zarf packages
+		if platform.Architecture != "amd64" {
+			amd64Platform := oci.PlatformForArch("amd64")
+			isZarf, err := checkZarfRef(ctx, source, amd64Platform)
+			if err == nil {
+				if isZarf {
+					l.Debug("isZarfPackage: detected Zarf package via amd64 fallback")
+					return true, nil
+				}
+				// Found something on amd64 but it wasn't Zarf
+				l.Debug("isZarfPackage: detected non-Zarf artifact via amd64 fallback")
+				return false, nil
+			}
+			l.Debug(fmt.Sprintf("isZarfPackage: fallback arch (amd64) check failed: %s", err))
 		}
 
-		// Fetch root/manifest
-		root, err := remote.FetchRoot(ctx)
-		if err != nil {
-			// If we can't fetch the root, it might be a Helm chart OCI
-			return false, nil
-		}
-
-		if root.Config.MediaType == "application/vnd.zarf.config.v1+json" {
-			return true, nil
-		}
 		return false, nil
+	}
+	return false, nil
+}
+
+func checkZarfRef(ctx context.Context, source string, platform ocispec.Platform) (bool, error) {
+	remote, err := oci.NewOrasRemote(source, platform)
+	if err != nil {
+		return false, err
+	}
+	root, err := remote.FetchRoot(ctx)
+	if err != nil {
+		return false, err
+	}
+	if root.Config.MediaType == "application/vnd.zarf.config.v1+json" {
+		return true, nil
 	}
 	return false, nil
 }

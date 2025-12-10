@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -50,7 +51,7 @@ func Test_isZarfPackage(t *testing.T) {
 			}
 
 			// We can pass empty arch as it defaults in the function
-			got, err := isZarfPackage(tt.source, "")
+			got, err := isZarfPackage(context.Background(), tt.source, "")
 
 			if tt.wantError {
 				assert.Error(t, err)
