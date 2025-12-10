@@ -264,9 +264,10 @@ func (w *walker) addUsage(path string, node parse.Node, kind string, wildcard bo
 	// Validate it looks like a graph path
 
 	loc := ValueUsageLocation{
-		File: w.File,
-		Kind: kind,
-		Line: w.lineFromPos(node.Position()),
+		File:   w.File,
+		Kind:   kind,
+		Line:   w.lineFromPos(node.Position()),
+		Column: w.columnFromPos(node.Position()),
 	}
 
 	// Check if already exists
@@ -290,4 +291,18 @@ func (w *walker) lineFromPos(pos parse.Pos) int {
 		return 0
 	}
 	return strings.Count(w.Content[:int(pos)], "\n") + 1
+}
+
+func (w *walker) columnFromPos(pos parse.Pos) int {
+	// +1 to put cursor after 'Values.' or '$'
+	p := int(pos) + 1
+	if p > len(w.Content) {
+		return 0
+	}
+	// Find last newline
+	lastNewLine := strings.LastIndex(w.Content[:p], "\n")
+	if lastNewLine == -1 {
+		return p + 1 // 1-based column
+	}
+	return p - lastNewLine
 }

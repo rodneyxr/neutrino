@@ -109,7 +109,7 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 		Values:       []ValueUsage{},
 	}
 
-	l.Info("Analyzing chart templates...")
+	l.Info(fmt.Sprintf("Analyzing chart templates for %s...", c.Metadata.Name))
 	analyzeStart := time.Now()
 	analyzeChart(c, result, opts)
 	l.Debug(fmt.Sprintf("Analysis took %s", time.Since(analyzeStart)))

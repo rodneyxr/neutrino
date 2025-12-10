@@ -1,5 +1,10 @@
 package introspect
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // ChartSource defines where to load the chart from.
 type ChartSource struct {
 	// LocalPath is the filesystem path to the chart directory or archive.
@@ -24,6 +29,28 @@ type ValueUsageLocation struct {
 	Kind string `json:"kind"`
 }
 
+func (l ValueUsageLocation) MarshalJSON() ([]byte, error) {
+	type Alias struct {
+		Kind     string `json:"kind"`
+		Location string `json:"location"`
+	}
+	return json.Marshal(&Alias{
+		Kind:     l.Kind,
+		Location: fmt.Sprintf("%s:%d:%d", l.File, l.Line, l.Column),
+	})
+}
+
+func (l ValueUsageLocation) MarshalYAML() (interface{}, error) {
+	type Alias struct {
+		Kind     string `yaml:"kind"`
+		Location string `yaml:"location"`
+	}
+	return &Alias{
+		Kind:     l.Kind,
+		Location: fmt.Sprintf("%s:%d:%d", l.File, l.Line, l.Column),
+	}, nil
+}
+
 // ValueUsage represents a discovered usage of a value in the templates.
 type ValueUsage struct {
 	// Path is the dot-notation path to the value (e.g., "image.repository").
@@ -31,7 +58,7 @@ type ValueUsage struct {
 	// Chart is the name of the chart where this usage occurs (root or subchart).
 	Chart string `json:"chart"`
 	// Wildcard indicates if the path contains dynamic segments (e.g., "apps.*.port").
-	Wildcard bool `json:"wildcard"`
+	Wildcard bool `json:"-" yaml:"-"`
 	// Locations lists all occurrences of this value usage.
 	Locations []ValueUsageLocation `json:"locations"`
 }

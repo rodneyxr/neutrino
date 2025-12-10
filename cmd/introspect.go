@@ -13,6 +13,7 @@ import (
 	"github.com/goccy/go-yaml"
 	"github.com/rodneyxr/neutrino/pkg/helm/introspect"
 	"github.com/spf13/cobra"
+	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	"github.com/zarf-dev/zarf/src/config"
 	"github.com/zarf-dev/zarf/src/pkg/logger"
 	"github.com/zarf-dev/zarf/src/pkg/message"
@@ -31,6 +32,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 		architecture     string
 		logLevel         string
 		noCache          bool
+		wildcards        bool
 	)
 
 	cmd := &cobra.Command{
@@ -58,6 +60,38 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				NoCache:          noCache,
 			}
 
+			// Structure for final output
+			type InspectionReport struct {
+				Variables  []v1alpha1.InteractiveVariable          `json:"variables,omitempty" yaml:"variables,omitempty"`
+				Components map[string]*introspect.IntrospectResult `json:"components" yaml:"components"`
+			}
+
+			report := InspectionReport{
+				Components: make(map[string]*introspect.IntrospectResult),
+			}
+
+			// Helper to filter and add result
+			addResult := func(componentName string, res *introspect.IntrospectResult) {
+				// Filter wildcards if not requested
+				if !wildcards {
+					var filteredValues []introspect.ValueUsage
+					for _, v := range res.Values {
+						if !v.Wildcard {
+							filteredValues = append(filteredValues, v)
+						}
+					}
+					res.Values = filteredValues
+				}
+
+				if sortOutput {
+					sort.Slice(res.Values, func(i, j int) bool {
+						return res.Values[i].Path < res.Values[j].Path
+					})
+				}
+
+				report.Components[componentName] = res
+			}
+
 			// Determine if it's a Zarf package
 			isZarf, err := isZarfPackage(source, architecture)
 			if err != nil {
@@ -70,12 +104,80 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 					return err
 				}
 
-				// Print Variables if present
-				if len(pkgInspection.Variables) > 0 {
+				report.Variables = pkgInspection.Variables
+
+				// Fix: using explicit filtering loop instead of generic one
+
+				// Fix: using explicit filtering loop instead of generic one
+				keys := make([]string, 0, len(pkgInspection.ChartResults))
+				for k := range pkgInspection.ChartResults {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys) // Stable order for output
+
+				for _, key := range keys {
+					addResult(key, pkgInspection.ChartResults[key])
+				}
+
+				// We need to output variables too?
+				// The previous code printed variables separately.
+				// For JSON/YAML, we want them in the object.
+				// For Table, we should specific format.
+
+				// Let's handle output printing at the end.
+				// But first let's finish gathering logic.
+
+			} else {
+				// Handle Helm chart
+				src := introspect.ChartSource{
+					Version: version,
+				}
+
+				if isRemote(source) {
+					// Handle OCI tags if present (e.g. oci://...:tag)
+					if strings.HasPrefix(source, "oci://") {
+						lastColon := strings.LastIndex(source, ":")
+						if lastColon > 5 {
+							tag := source[lastColon+1:]
+							urlWithoutTag := source[:lastColon]
+							if tag != "" {
+								if version != "" && version != tag {
+									return fmt.Errorf("version flag '%s' conflicts with tag '%s' in source URL", version, tag)
+								}
+								if version == "" {
+									src.Version = tag
+								}
+								source = urlWithoutTag
+							}
+						}
+					}
+					src.URL = source
+				} else {
+					src.LocalPath = source
+				}
+
+				result, err := introspect.IntrospectHelmValues(ctx, src, opts)
+				if err != nil {
+					return err
+				}
+
+				addResult("", result)
+			}
+
+			// OUTPUT GENERATION
+			switch outputFormat {
+			case "json":
+				enc := json.NewEncoder(out)
+				enc.SetIndent("", "  ")
+				return enc.Encode(report)
+			case "yaml":
+				return yaml.NewEncoder(out).Encode(report)
+			case "table":
+				if len(report.Variables) > 0 {
 					fmt.Fprintln(out, "\n=== Zarf Package Variables ===")
 					header := []string{"Name", "Default", "Description", "AutoIndent"}
 					var data [][]string
-					for _, v := range pkgInspection.Variables {
+					for _, v := range report.Variables {
 						data = append(data, []string{
 							v.Name,
 							v.Default,
@@ -87,64 +189,26 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 					fmt.Fprintln(out, "")
 				}
 
-				for key, res := range pkgInspection.ChartResults {
-					fmt.Fprintf(out, "\n=== Component/Chart: %s ===\n", key)
-					if sortOutput {
-						sort.Slice(res.Values, func(i, j int) bool {
-							return res.Values[i].Path < res.Values[j].Path
-						})
+				// Sort keys for deterministic table output
+				keys := make([]string, 0, len(report.Components))
+				for k := range report.Components {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+
+				for _, k := range keys {
+					res := report.Components[k]
+					if k != "" {
+						fmt.Fprintf(out, "\n=== Component/Chart: %s ===\n", k)
 					}
-					if err := printIntrospectResult(out, res, outputFormat); err != nil {
+					if err := printIntrospectResult(out, res, "table"); err != nil {
 						return err
 					}
 				}
 				return nil
+			default:
+				return fmt.Errorf("unknown output format: %s", outputFormat)
 			}
-
-			// Handle Helm chart
-
-			src := introspect.ChartSource{
-				Version: version,
-			}
-
-			if isRemote(source) {
-				// Handle OCI tags if present (e.g. oci://...:tag)
-				if strings.HasPrefix(source, "oci://") {
-					lastColon := strings.LastIndex(source, ":")
-					// Check if colon is after the protocol separator (oci:// is index 0-5)
-					if lastColon > 5 {
-						tag := source[lastColon+1:]
-						urlWithoutTag := source[:lastColon]
-
-						if tag != "" {
-							if version != "" && version != tag {
-								return fmt.Errorf("version flag '%s' conflicts with tag '%s' in source URL", version, tag)
-							}
-							if version == "" {
-								src.Version = tag
-							}
-							// Canonicalize source to be without tag for the inspector
-							source = urlWithoutTag
-						}
-					}
-				}
-				src.URL = source
-			} else {
-				src.LocalPath = source
-			}
-
-			result, err := introspect.IntrospectHelmValues(ctx, src, opts)
-			if err != nil {
-				return err
-			}
-
-			if sortOutput {
-				sort.Slice(result.Values, func(i, j int) bool {
-					return result.Values[i].Path < result.Values[j].Path
-				})
-			}
-
-			return printIntrospectResult(out, result, outputFormat)
 		},
 	}
 
@@ -155,6 +219,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 	cmd.Flags().StringVarP(&architecture, "architecture", "a", "", "Architecture for OCI images and Zarf packages")
 	cmd.Flags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Force re-download of a package, ignoring cache")
+	cmd.Flags().BoolVar(&wildcards, "wildcards", false, "Include wildcard/dynamic values in output")
 
 	return cmd
 }
@@ -221,7 +286,7 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 				data = append(data, []string{
 					rowPath,
 					loc.Kind,
-					fmt.Sprintf("%s:%d", loc.File, loc.Line),
+					fmt.Sprintf("%s:%d:%d", loc.File, loc.Line, loc.Column),
 				})
 			}
 		}
