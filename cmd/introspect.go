@@ -29,7 +29,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 		version          string
 		outputFormat     string
 		includeSubcharts bool
-		sortOutput       bool
+		sortMode         string
 		architecture     string
 		logLevel         string
 		noCache          bool
@@ -84,7 +84,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 					res.Values = filteredValues
 				}
 
-				if sortOutput {
+				if sortMode == "path" {
 					sort.Slice(res.Values, func(i, j int) bool {
 						return res.Values[i].Path < res.Values[j].Path
 					})
@@ -213,7 +213,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&version, "version", "", "Version of the chart to fetch (if using URL)")
 	cmd.Flags().StringVarP(&outputFormat, "output", "o", "table", "Output format (table, json, yaml)")
 	cmd.Flags().BoolVar(&includeSubcharts, "include-subcharts", true, "Include subcharts in the analysis")
-	cmd.Flags().BoolVar(&sortOutput, "sort", false, "Sort the output by path")
+	cmd.Flags().StringVar(&sortMode, "sort-mode", "path", "Sort mode (path, discovery)")
 	cmd.Flags().StringVarP(&architecture, "architecture", "a", "", "Architecture for OCI images and Zarf packages")
 	cmd.Flags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Force re-download of a package, ignoring cache")
