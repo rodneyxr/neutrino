@@ -61,6 +61,8 @@ type ValueUsage struct {
 	Wildcard bool `json:"-" yaml:"-"`
 	// Locations lists all occurrences of this value usage.
 	Locations []ValueUsageLocation `json:"locations"`
+	// DefaultValue is the value found in the chart's values.yaml at this path.
+	DefaultValue interface{} `json:"default,omitempty" yaml:"default,omitempty"`
 }
 
 // IntrospectResult contains the full analysis result for a chart.

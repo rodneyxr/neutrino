@@ -280,6 +280,33 @@ func isRemote(source string) bool {
 	return len(source) > 6 && (source[:6] == "oci://" || source[:7] == "http://" || source[:8] == "https://")
 }
 
+func formatDefaultValue(val interface{}) string {
+	if val == nil {
+		return "-"
+	}
+
+	// Marshal to YAML in flow style (JSON-like with {} and [])
+	yamlBytes, err := yaml.MarshalWithOptions(val, yaml.Flow(true))
+	if err != nil {
+		return fmt.Sprintf("%v", val)
+	}
+
+	result := strings.TrimSpace(string(yamlBytes))
+
+	// Remove .0 from integers (e.g., "1.0" -> "1")
+	// Match pattern: digit followed by .0 followed by non-digit or end of string
+	result = strings.ReplaceAll(result, ".0,", ",")
+	result = strings.ReplaceAll(result, ".0}", "}")
+	result = strings.ReplaceAll(result, ".0]", "]")
+	result = strings.TrimSuffix(result, ".0")
+
+	// Truncate to 32 characters
+	if len(result) > 32 {
+		return result[:29] + "..."
+	}
+	return result
+}
+
 func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, format string) error {
 	switch format {
 	case "json":
@@ -292,7 +319,7 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 		fmt.Fprintf(out, "Chart: %s (%s)\n", result.ChartName, result.ChartVersion)
 		fmt.Fprintf(out, "Source: %s\n", result.Source)
 
-		header := []string{"Path", "Type", "Location"}
+		header := []string{"Path", "Default", "Type", "Location"}
 		var data [][]string
 
 		for _, v := range result.Values {
@@ -304,8 +331,15 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 					rowPath = ""
 				}
 
+				// Format default value for display (only on first occurrence)
+				defVal := ""
+				if i == 0 {
+					defVal = formatDefaultValue(v.DefaultValue)
+				}
+
 				data = append(data, []string{
 					rowPath,
+					defVal,
 					loc.Kind,
 					fmt.Sprintf("%s:%d:%d", loc.File, loc.Line, loc.Column),
 				})

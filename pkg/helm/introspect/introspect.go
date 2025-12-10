@@ -112,6 +112,13 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 	l.Info(fmt.Sprintf("Analyzing chart templates for %s...", c.Metadata.Name))
 	analyzeStart := time.Now()
 	analyzeChart(c, result, opts)
+	// Populate default values
+	for i, v := range result.Values {
+		// Use cached values if available, otherwise just use what chart has
+		// Note: c.Values are map[string]interface{}
+		result.Values[i].DefaultValue = GetValue(c.Values, v.Path)
+	}
+
 	l.Debug(fmt.Sprintf("Analysis took %s", time.Since(analyzeStart)))
 
 	return result, nil

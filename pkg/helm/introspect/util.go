@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // getCacheDir returns the directory where the chart should be cached.
@@ -25,4 +26,29 @@ func getCacheDir(url string, version string) (string, error) {
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
 	return filepath.Join(cacheBase, hash), nil
+}
+
+// GetValue looks up a value in a map using dot notation.
+func GetValue(values map[string]interface{}, path string) interface{} {
+	parts := strings.Split(path, ".")
+	current := values
+
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			return current[part]
+		}
+
+		val, ok := current[part]
+		if !ok {
+			return nil
+		}
+
+		if nextMap, ok := val.(map[string]interface{}); ok {
+			current = nextMap
+		} else {
+			return nil
+		}
+	}
+
+	return nil
 }
