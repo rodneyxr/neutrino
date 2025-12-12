@@ -36,6 +36,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 		noCache          bool
 		wildcards        bool
 		absolute         bool
+		noValues         bool
 	)
 
 	cmd := &cobra.Command{
@@ -61,6 +62,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 			opts := introspect.IntrospectOptions{
 				IncludeSubcharts: includeSubcharts,
 				NoCache:          noCache,
+				NoValues:         noValues,
 			}
 
 			// Structure for final output
@@ -240,6 +242,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Force re-download of a package, ignoring cache")
 	cmd.Flags().BoolVar(&wildcards, "wildcards", false, "Include wildcard/dynamic values in output")
 	cmd.Flags().BoolVar(&absolute, "absolute", false, "Output absolute filepaths for locations")
+	cmd.Flags().BoolVar(&noValues, "no-values", false, "Disable inference of nested paths from values.yaml")
 
 	return cmd
 }
@@ -347,24 +350,33 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 		for _, v := range result.Values {
 			path := v.Path
 
-			for i, loc := range v.Locations {
-				rowPath := path
-				if i > 0 {
-					rowPath = ""
-				}
-
-				// Format default value for display (only on first occurrence)
-				defVal := ""
-				if i == 0 {
-					defVal = formatDefaultValue(v.DefaultValue)
-				}
-
+			if len(v.Locations) == 0 {
 				data = append(data, []string{
-					rowPath,
-					defVal,
-					loc.Kind,
-					fmt.Sprintf("%s:%d:%d", loc.File, loc.Line, loc.Column),
+					path,
+					formatDefaultValue(v.DefaultValue),
+					"inferred",
+					"(inferred from values.yaml)",
 				})
+			} else {
+				for i, loc := range v.Locations {
+					rowPath := path
+					if i > 0 {
+						rowPath = ""
+					}
+
+					// Format default value for display (only on first occurrence)
+					defVal := ""
+					if i == 0 {
+						defVal = formatDefaultValue(v.DefaultValue)
+					}
+
+					data = append(data, []string{
+						rowPath,
+						defVal,
+						loc.Kind,
+						fmt.Sprintf("%s:%d:%d", loc.File, loc.Line, loc.Column),
+					})
+				}
 			}
 		}
 

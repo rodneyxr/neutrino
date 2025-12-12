@@ -132,6 +132,52 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 	l.Info(fmt.Sprintf("Analyzing chart templates for %s...", c.Metadata.Name))
 	analyzeStart := time.Now()
 	analyzeChart(c, result, opts)
+
+	// Infer nested values from values.yaml if requested
+	if !opts.NoValues {
+		l.Debug("Inferring nested paths from values.yaml...")
+
+		// Track existing paths to avoid duplicates
+		existingPaths := make(map[string]bool)
+		for _, v := range result.Values {
+			existingPaths[v.Path] = true
+		}
+
+		// Snapshot current values to iterate over
+		discovered := make([]ValueUsage, len(result.Values))
+		copy(discovered, result.Values)
+
+		for _, v := range discovered {
+			// Find value in values.yaml
+			val := GetValue(c.Values, v.Path)
+			if val == nil {
+				continue
+			}
+
+			// Flatten and find new paths
+			subPaths := FlattenToPaths(v.Path, val)
+			for _, sub := range subPaths {
+				if !existingPaths[sub] {
+					// Add inferred value
+					newVal := ValueUsage{
+						Path:      sub,
+						Chart:     v.Chart,
+						Wildcard:  v.Wildcard,             // Inherit wildcard status? Or maybe false? Let's say false unless parent was wildcard.
+						Locations: []ValueUsageLocation{}, // No specific location in template
+					}
+					// If parent was wildcard, child might technically be enveloped by it,
+					// but usually we want to see specific keys.
+					// However, if we are inferring specific keys from a wildcard match,
+					// they aren't wildcards themselves (they are concrete keys).
+					newVal.Wildcard = false
+
+					result.Values = append(result.Values, newVal)
+					existingPaths[sub] = true
+				}
+			}
+		}
+	}
+
 	// Populate default values
 	for i, v := range result.Values {
 		// Use cached values if available, otherwise just use what chart has

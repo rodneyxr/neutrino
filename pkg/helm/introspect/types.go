@@ -85,4 +85,6 @@ type IntrospectOptions struct {
 	ExcludeHooks bool
 	// NoCache forces a re-download of the chart, bypassing the cache.
 	NoCache bool
+	// NoValues disables the inference of nested paths from values.yaml.
+	NoValues bool
 }

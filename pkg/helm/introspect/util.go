@@ -53,6 +53,30 @@ func GetValue(values map[string]interface{}, path string) interface{} {
 	return nil
 }
 
+// FlattenToPaths recursively finds all dot-notation paths in a map.
+func FlattenToPaths(prefix string, value interface{}) []string {
+	var paths []string
+
+	if m, ok := value.(map[string]interface{}); ok {
+		for k, v := range m {
+			newPath := k
+			if prefix != "" {
+				newPath = prefix + "." + k
+			}
+
+			// Add the current path itself (it might be a leaf or a branch)
+			paths = append(paths, newPath)
+
+			// Recurse
+			paths = append(paths, FlattenToPaths(newPath, v)...)
+		}
+	}
+	// Note: We deliberately stop at arrays and primitives, consistent with the goal
+	// of finding addressable keys in values.yaml.
+
+	return paths
+}
+
 // FindChartRoot walks the directory to find the directory containing Chart.yaml.
 // Prioritizes the root, then immediate subdirectories.
 func FindChartRoot(dir string) (string, error) {
