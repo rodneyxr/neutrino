@@ -53,33 +53,58 @@ type ZarfPackageIntrospection struct {
 
 // InspectZarfPackage analyzes a Zarf package to find Helm values.
 func InspectZarfPackage(ctx context.Context, path string, version string, arch string, opts IntrospectOptions) (*ZarfPackageIntrospection, error) {
-	// If path is remote, pull it first
-	if isRemote(path) {
-		localPath, err := PullZarfPackage(ctx, path, version, arch)
+	// Determine persistent cache directory for the extracted package
+	// usage: getCacheDir("zarf-pkgs", packageSource+arch, version)
+	// We combine path and arch as the 'url' key to distinguish architectures
 
-		if err != nil {
-			return nil, err
+	cacheKey := path
+	if arch != "" {
+		cacheKey = fmt.Sprintf("%s-%s", path, arch)
+	}
+	cacheDir, err := getCacheDir("zarf-pkgs", cacheKey, version)
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine cache dir: %w", err)
+	}
+
+	// Ensure cache dir exists
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create cache dir: %w", err)
+	}
+
+	// Check if already extracted (look for zarf.yaml)
+	zarfYamlPath := filepath.Join(cacheDir, layout.ZarfYAML)
+	_, err = os.Stat(zarfYamlPath)
+	alreadyExtracted := err == nil
+
+	if !alreadyExtracted || opts.NoCache {
+		// Clean up if forcing no cache
+		if opts.NoCache && alreadyExtracted {
+			os.RemoveAll(cacheDir)
+			os.MkdirAll(cacheDir, 0755)
 		}
-		defer os.RemoveAll(filepath.Dir(localPath)) // Cleanup the temp dir created by PullZarfPackage
-		path = localPath
-	}
 
-	// 1. Create temp directory for extraction
-	tmpDir, err := os.MkdirTemp("", "neutrino-zarf-pkg-*")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
+		// Pull if remote
+		localTarPath := path
+		if isRemote(path) {
+			pulledPath, err := PullZarfPackage(ctx, path, version, arch)
+			if err != nil {
+				return nil, err
+			}
+			localTarPath = pulledPath
+			// Clean up the pulled tarball after extraction
+			defer os.Remove(localTarPath)
+			// Note: PullZarfPackage creates a temp dir for the file, we might leave that empty dir.
+			// It's acceptable for now.
+		}
 
-	// 2. Extract zarf.yaml
-	// We handle .tar.zst using Zarf's archive package
-	err = archive.Decompress(context.TODO(), path, tmpDir, archive.DecompressOpts{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to extract zarf package: %w", err)
+		// Extract to cacheDir
+		err = archive.Decompress(context.TODO(), localTarPath, cacheDir, archive.DecompressOpts{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to extract zarf package: %w", err)
+		}
 	}
 
 	// 3. Read zarf.yaml
-	zarfYamlPath := filepath.Join(tmpDir, layout.ZarfYAML)
 	zarfBytes, err := os.ReadFile(zarfYamlPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read zarf.yaml: %w", err)
@@ -95,12 +120,16 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 	// 4. Find charts
 	for _, component := range pkg.Components {
 		// Check for component tarball (components/<name>.tar)
-		compTarPath := filepath.Join(tmpDir, layout.ComponentsDir, component.Name+".tar")
+		compTarPath := filepath.Join(cacheDir, layout.ComponentsDir, component.Name+".tar")
 
-		// If tarball exists, extract it
+		// If tarball exists, extract it to a persistent location inside cacheDir
 		var chartsBaseDir string
 		if _, err := os.Stat(compTarPath); err == nil {
-			compExtractDir := filepath.Join(tmpDir, "extracted-components", component.Name)
+			compExtractDir := filepath.Join(cacheDir, "extracted-components", component.Name)
+			// Only extract if not already extracted ??
+			// For simplicity, we can rely on Decompress overwriting or checking.
+			// Ideally we check if charts dir exists.
+
 			if err := archive.Decompress(context.TODO(), compTarPath, compExtractDir, archive.DecompressOpts{}); err != nil {
 				return nil, fmt.Errorf("failed to extract component %s: %w", component.Name, err)
 			}
@@ -109,12 +138,29 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 		} else {
 			// Fallback: check if it's a directory (legacy or uncompressed layout?)
 			// Or check if charts are directly in components/<name>/charts (old layout)
-			chartsBaseDir = filepath.Join(tmpDir, layout.ComponentsDir, component.Name, "charts")
+			chartsBaseDir = filepath.Join(cacheDir, layout.ComponentsDir, component.Name, "charts")
 		}
 
 		for _, chart := range component.Charts {
 			chartFileName := fmt.Sprintf("%s-%s.tgz", chart.Name, chart.Version)
 			chartPath := filepath.Join(chartsBaseDir, chartFileName)
+
+			// Expand the chart to a subdirectory so we can point to it
+			// chartsBaseDir/<chartName-Version> (expanded)
+			expandedChartDir := filepath.Join(chartsBaseDir, fmt.Sprintf("%s-%s", chart.Name, chart.Version))
+			if _, err := os.Stat(chartPath); err == nil {
+				// Archive exists. Expand it to expandedChartDir
+				// Check if already expanded?
+				if _, err := FindChartRoot(expandedChartDir); err != nil || opts.NoCache {
+					// Clean up before re-expanding if needed
+					os.RemoveAll(expandedChartDir)
+					archive.Decompress(ctx, chartPath, expandedChartDir, archive.DecompressOpts{})
+				}
+				// Use expanded path
+				if root, err := FindChartRoot(expandedChartDir); err == nil {
+					chartPath = root
+				}
+			}
 
 			// Verify file exists
 			if _, err := os.Stat(chartPath); err != nil {

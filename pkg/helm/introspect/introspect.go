@@ -17,6 +17,8 @@ import (
 	"helm.sh/helm/v3/pkg/downloader"
 	"helm.sh/helm/v3/pkg/getter"
 	"helm.sh/helm/v3/pkg/registry"
+
+	"github.com/zarf-dev/zarf/src/pkg/archive"
 )
 
 // IntrospectHelmValues loads a chart and analyzes its templates to find overridable values.
@@ -32,7 +34,7 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 	} else if src.URL != "" {
 		start := time.Now()
 		// Determine cache path
-		cacheDir, cacheErr := getCacheDir(src.URL, src.Version)
+		cacheDir, cacheErr := getCacheDir("charts", src.URL, src.Version)
 		if cacheErr != nil {
 			l.Warn(fmt.Sprintf("Failed to get cache dir: %s", cacheErr))
 			// Fallback to temp
@@ -50,14 +52,22 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 			matches, _ := filepath.Glob(filepath.Join(cacheDir, "*.tgz"))
 			if len(matches) > 0 {
 				chartArchive := matches[0]
-				l.Debug(fmt.Sprintf("Found chart in cache: %s", chartArchive))
-				src.LocalPath = chartArchive
-				c, err = loader.Load(chartArchive)
+				l.Debug(fmt.Sprintf("Found chart archive in cache: %s", chartArchive))
+
+				// Ensure it is expanded
+				expandedPath, err := ensureExpanded(ctx, cacheDir, chartArchive)
 				if err == nil {
 					l.Info(fmt.Sprintf("Using cached chart %s:%s", src.URL, src.Version))
-					loadedFromCache = true
+					src.LocalPath = expandedPath
+					c, err = loader.Load(expandedPath)
+					if err == nil {
+						loadedFromCache = true
+					} else {
+						l.Warn(fmt.Sprintf("Failed to load cached chart, redownloading: %s", err))
+						os.RemoveAll(cacheDir)
+					}
 				} else {
-					l.Warn(fmt.Sprintf("Failed to load cached chart, redownloading: %s", err))
+					l.Warn(fmt.Sprintf("Failed to expand cached chart: %s", err))
 					os.RemoveAll(cacheDir)
 				}
 			}
@@ -91,8 +101,18 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 				return nil, fmt.Errorf("failed to download chart: %w", downloadErr)
 			}
 			l.Debug(fmt.Sprintf("Download took %s", time.Since(start)))
-			src.LocalPath = chartPath
-			c, err = loader.Load(chartPath)
+
+			// Expand and use expanded path
+			expandedPath, err := ensureExpanded(ctx, destDir, chartPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to expand chart: %w", err)
+			}
+
+			src.LocalPath = expandedPath
+			c, err = loader.Load(expandedPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load chart: %w", err)
+			}
 		}
 	} else {
 		return nil, fmt.Errorf("no chart source provided")
@@ -157,6 +177,27 @@ func downloadChart(url string, version string, destDir string) (string, error) {
 	}
 
 	return saved, nil
+}
+
+// ensureExpanded extracts the chart archive if not already expanded.
+// Returns the path to the expanded chart directory.
+func ensureExpanded(ctx context.Context, destDir string, archivePath string) (string, error) {
+	// Check if already expanded (try to find root)
+	if root, err := FindChartRoot(destDir); err == nil {
+		return root, nil
+	}
+
+	// Not found, extract
+	if err := archive.Decompress(ctx, archivePath, destDir, archive.DecompressOpts{}); err != nil {
+		return "", err
+	}
+
+	// Find it again
+	if root, err := FindChartRoot(destDir); err == nil {
+		return root, nil
+	}
+
+	return "", fmt.Errorf("extraction succeeded but no chart found in %s", destDir)
 }
 
 func analyzeChart(c *chart.Chart, result *IntrospectResult, opts IntrospectOptions) {

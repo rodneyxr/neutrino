@@ -369,7 +369,7 @@ require (
 	github.com/olekukonko/tablewriter v1.1.1 // indirect
 	github.com/open-policy-agent/opa v1.9.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
-	github.com/opencontainers/image-spec v1.1.1 // indirect
+	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/runtime-spec v1.2.1 // indirect
 	github.com/opencontainers/selinux v1.13.0 // indirect
 	github.com/otiai10/copy v1.14.1 // indirect

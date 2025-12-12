@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -34,6 +35,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 		logLevel         string
 		noCache          bool
 		wildcards        bool
+		absolute         bool
 	)
 
 	cmd := &cobra.Command{
@@ -163,6 +165,25 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				addResult("", result)
 			}
 
+			// Resolve absolute paths if requested
+			if absolute {
+				for _, res := range report.Components {
+					// Ensure source is absolute
+					absSource, err := filepath.Abs(res.Source)
+					if err != nil {
+						l.Warn(fmt.Sprintf("Failed to resolve absolute path for %s: %s", res.Source, err))
+						absSource = res.Source
+					}
+					res.Source = absSource
+
+					for i := range res.Values {
+						for j := range res.Values[i].Locations {
+							res.Values[i].Locations[j].File = filepath.Join(absSource, res.Values[i].Locations[j].File)
+						}
+					}
+				}
+			}
+
 			// OUTPUT GENERATION
 			switch outputFormat {
 			case "json":
@@ -218,6 +239,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Force re-download of a package, ignoring cache")
 	cmd.Flags().BoolVar(&wildcards, "wildcards", false, "Include wildcard/dynamic values in output")
+	cmd.Flags().BoolVar(&absolute, "absolute", false, "Output absolute filepaths for locations")
 
 	return cmd
 }
