@@ -183,6 +183,11 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 							res.Values[i].Locations[j].File = filepath.Join(absSource, res.Values[i].Locations[j].File)
 						}
 					}
+
+					// Resolve absolute paths for ValuesFiles
+					for i := range res.ValuesFiles {
+						res.ValuesFiles[i] = filepath.Join(absSource, res.ValuesFiles[i])
+					}
 				}
 			}
 
@@ -343,6 +348,21 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 	case "table":
 		fmt.Fprintf(out, "Chart: %s (%s)\n", result.ChartName, result.ChartVersion)
 		fmt.Fprintf(out, "Source: %s\n", result.Source)
+
+		if len(result.ValuesFiles) > 0 {
+			// Always display absolute paths for values files in the header
+			absSource, err := filepath.Abs(result.Source)
+			if err != nil {
+				// Fallback if abs fails
+				absSource = result.Source
+			}
+
+			var absFiles []string
+			for _, f := range result.ValuesFiles {
+				absFiles = append(absFiles, filepath.Join(absSource, f))
+			}
+			fmt.Fprintf(out, "Values Files: %s\n", strings.Join(absFiles, ", "))
+		}
 
 		header := []string{"Path", "Default", "Type", "Location"}
 		var data [][]string

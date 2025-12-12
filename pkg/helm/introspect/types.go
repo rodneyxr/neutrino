@@ -75,6 +75,8 @@ type IntrospectResult struct {
 	Source string `json:"source"`
 	// Values is the list of discovered overridable values.
 	Values []ValueUsage `json:"values"`
+	// ValuesFiles is the list of values files used (e.g. values.yaml).
+	ValuesFiles []string `json:"valuesFiles"`
 }
 
 // IntrospectOptions configures the introspection process.

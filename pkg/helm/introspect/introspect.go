@@ -133,6 +133,20 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 	analyzeStart := time.Now()
 	analyzeChart(c, result, opts)
 
+	// Try to parse values.yaml for locations
+	var valuesIdx map[string]ValueUsageLocation
+	for _, f := range c.Raw {
+		if f.Name == "values.yaml" {
+			result.ValuesFiles = append(result.ValuesFiles, "values.yaml")
+			var err error
+			valuesIdx, err = ParseValuesLocations(f.Data)
+			if err != nil {
+				l.Warn(fmt.Sprintf("Failed to parse values.yaml for locations: %s", err))
+			}
+			break
+		}
+	}
+
 	// Infer nested values from values.yaml if requested
 	if !opts.NoValues {
 		l.Debug("Inferring nested paths from values.yaml...")
@@ -162,14 +176,14 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 					newVal := ValueUsage{
 						Path:      sub,
 						Chart:     v.Chart,
-						Wildcard:  v.Wildcard,             // Inherit wildcard status? Or maybe false? Let's say false unless parent was wildcard.
-						Locations: []ValueUsageLocation{}, // No specific location in template
+						Wildcard:  false,
+						Locations: []ValueUsageLocation{},
 					}
-					// If parent was wildcard, child might technically be enveloped by it,
-					// but usually we want to see specific keys.
-					// However, if we are inferring specific keys from a wildcard match,
-					// they aren't wildcards themselves (they are concrete keys).
-					newVal.Wildcard = false
+
+					// Add location if available
+					if loc, ok := valuesIdx[sub]; ok {
+						newVal.Locations = append(newVal.Locations, loc)
+					}
 
 					result.Values = append(result.Values, newVal)
 					existingPaths[sub] = true

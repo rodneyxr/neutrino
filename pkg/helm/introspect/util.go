@@ -7,7 +7,58 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/goccy/go-yaml/ast"
+	"github.com/goccy/go-yaml/parser"
 )
+
+// ParseValuesLocations parses values.yaml content and returns a map of paths to their locations.
+func ParseValuesLocations(content []byte) (map[string]ValueUsageLocation, error) {
+	file, err := parser.ParseBytes(content, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse values.yaml: %w", err)
+	}
+
+	locations := make(map[string]ValueUsageLocation)
+
+	var walk func(node ast.Node, prefix string)
+	walk = func(node ast.Node, prefix string) {
+		switch n := node.(type) {
+		case *ast.MappingNode:
+			for _, value := range n.Values {
+				key := value.Key.String()
+				currentPath := key
+				if prefix != "" {
+					currentPath = prefix + "." + key
+				}
+
+				// Store location of the key (or the value? User wants to jump to definition)
+				// Usually jumping to the key definition is good.
+				line := value.Key.GetToken().Position.Line
+				col := value.Key.GetToken().Position.Column
+
+				locations[currentPath] = ValueUsageLocation{
+					File:   "values.yaml",
+					Line:   line,
+					Column: col,
+					Kind:   "value",
+				}
+
+				walk(value.Value, currentPath)
+			}
+		case *ast.MappingValueNode:
+			// Already handled in MappingNode
+		case *ast.DocumentNode:
+			walk(n.Body, prefix)
+		}
+	}
+
+	for _, doc := range file.Docs {
+		walk(doc.Body, "")
+	}
+
+	return locations, nil
+}
 
 // getCacheDir returns the directory where the artifact should be cached.
 // It uses a hash of the URL and version to create a unique path under the category.
