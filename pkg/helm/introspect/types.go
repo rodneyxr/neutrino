@@ -77,6 +77,8 @@ type IntrospectResult struct {
 	Values []ValueUsage `json:"values"`
 	// ValuesFiles is the list of values files used (e.g. values.yaml).
 	ValuesFiles []string `json:"valuesFiles"`
+	// RemoteSource is the URL to the chart source code (e.g. GitHub repo), if found.
+	RemoteSource string `json:"remoteSource,omitempty"`
 }
 
 // IntrospectOptions configures the introspection process.

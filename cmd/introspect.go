@@ -348,6 +348,9 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 	case "table":
 		fmt.Fprintf(out, "Chart: %s (%s)\n", result.ChartName, result.ChartVersion)
 		fmt.Fprintf(out, "Source: %s\n", result.Source)
+		if result.RemoteSource != "" {
+			fmt.Fprintf(out, "Remote Source: %s\n", result.RemoteSource)
+		}
 
 		if len(result.ValuesFiles) > 0 {
 			// Always display absolute paths for values files in the header

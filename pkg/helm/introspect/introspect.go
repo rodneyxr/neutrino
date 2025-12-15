@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/template"
 	"time"
 
@@ -127,6 +128,23 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 		ChartVersion: c.Metadata.Version,
 		Source:       src.LocalPath,
 		Values:       []ValueUsage{},
+	}
+
+	// Detect remote source from metadata
+	// Prioritize Sources (list of URLs), then Home
+	// Use the first github URL found, or fall back to Home
+	for _, s := range c.Metadata.Sources {
+		if strings.Contains(s, "github.com") || strings.Contains(s, "gitlab.com") || strings.Contains(s, "bitbucket.org") {
+			result.RemoteSource = s
+			break
+		}
+	}
+	if result.RemoteSource == "" && len(c.Metadata.Sources) > 0 {
+		// Fallback to first source if no known git host found
+		result.RemoteSource = c.Metadata.Sources[0]
+	}
+	if result.RemoteSource == "" && c.Metadata.Home != "" {
+		result.RemoteSource = c.Metadata.Home
 	}
 
 	l.Info(fmt.Sprintf("Analyzing chart templates for %s...", c.Metadata.Name))
