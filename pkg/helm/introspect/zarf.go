@@ -174,6 +174,16 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 				return nil, fmt.Errorf("failed to introspect chart %s in component %s: %w", chart.Name, component.Name, err)
 			}
 
+			// Populate default values for Zarf variables
+			for i, zv := range res.ZarfVars {
+				for _, pkgVar := range pkg.Variables {
+					if pkgVar.Name == zv.Name {
+						res.ZarfVars[i].DefaultValue = pkgVar.Default
+						break
+					}
+				}
+			}
+
 			key := fmt.Sprintf("%s/%s", component.Name, chart.Name)
 			results[key] = res
 		}

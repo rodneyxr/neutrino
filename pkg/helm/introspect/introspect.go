@@ -128,6 +128,7 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 		ChartVersion: c.Metadata.Version,
 		Source:       src.LocalPath,
 		Values:       []ValueUsage{},
+		ZarfVars:     []ZarfVariableUsage{},
 	}
 
 	// Detect remote source from metadata
@@ -160,6 +161,12 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 			valuesIdx, err = ParseValuesLocations(f.Data)
 			if err != nil {
 				l.Warn(fmt.Sprintf("Failed to parse values.yaml for locations: %s", err))
+			}
+
+			// Detect Zarf variables in values.yaml
+			zarfVars := FindZarfVariables(f.Data, "values.yaml")
+			for name, locs := range zarfVars {
+				mergeZarfVars(result, name, locs)
 			}
 			break
 		}
@@ -210,11 +217,33 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 		}
 	}
 
+	// Build alias map for direct dependencies
+	aliasMap := make(map[string]string)
+	for _, dep := range c.Metadata.Dependencies {
+		if dep.Alias != "" {
+			aliasMap[dep.Name] = dep.Alias
+		}
+	}
+
 	// Populate default values
 	for i, v := range result.Values {
-		// Use cached values if available, otherwise just use what chart has
-		// Note: c.Values are map[string]interface{}
-		result.Values[i].DefaultValue = GetValue(c.Values, v.Path)
+		// Try direct path first (handled by GetValue, including _internal fallback)
+		val := GetValue(c.Values, v.Path)
+
+		// If not found and it's a subchart, try namespaced path
+		if val == nil && v.Chart != c.Metadata.Name {
+			prefix := v.Chart
+			if alias, ok := aliasMap[v.Chart]; ok {
+				prefix = alias
+			}
+			// Use GetValue again to support fallbacks on the namespaced path too (recursive fallback?)
+			// GetValue("crds.foo") -> if "crds.foo" exists, great.
+			// If "crds.foo" doesn't exist but "_internal...crds.foo" exists?
+			// GetValue wraps logic.
+			val = GetValue(c.Values, prefix+"."+v.Path)
+		}
+
+		result.Values[i].DefaultValue = val
 	}
 
 	l.Debug(fmt.Sprintf("Analysis took %s", time.Since(analyzeStart)))
@@ -311,6 +340,25 @@ func analyzeTemplate(chartName string, t *chart.File, result *IntrospectResult) 
 	for _, v := range w.Results {
 		mergeUsage(result, v)
 	}
+
+	// Scan for Zarf variables in the template
+	zarfVars := FindZarfVariables(t.Data, filepath.Join("templates", t.Name))
+	for name, locs := range zarfVars {
+		mergeZarfVars(result, name, locs)
+	}
+}
+
+func mergeZarfVars(result *IntrospectResult, name string, locs []ValueUsageLocation) {
+	for i, v := range result.ZarfVars {
+		if v.Name == name {
+			result.ZarfVars[i].Locations = append(result.ZarfVars[i].Locations, locs...)
+			return
+		}
+	}
+	result.ZarfVars = append(result.ZarfVars, ZarfVariableUsage{
+		Name:      name,
+		Locations: locs,
+	})
 }
 
 func mergeUsage(result *IntrospectResult, usage ValueUsage) {
