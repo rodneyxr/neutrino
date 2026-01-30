@@ -65,6 +65,16 @@ type ValueUsage struct {
 	DefaultValue interface{} `json:"default,omitempty" yaml:"default,omitempty"`
 }
 
+// ZarfVariableUsage represents a discovered usage of a Zarf variable.
+type ZarfVariableUsage struct {
+	// Name is the name of the Zarf variable (without ###ZARF_VAR_...###).
+	Name string `json:"name"`
+	// DefaultValue is the default value of the variable from zarf.yaml.
+	DefaultValue interface{} `json:"default,omitempty" yaml:"default,omitempty"`
+	// Locations lists all occurrences of this variable usage.
+	Locations []ValueUsageLocation `json:"locations"`
+}
+
 // IntrospectResult contains the full analysis result for a chart.
 type IntrospectResult struct {
 	// ChartName is the name of the root chart.
@@ -79,6 +89,8 @@ type IntrospectResult struct {
 	ValuesFiles []string `json:"valuesFiles"`
 	// RemoteSource is the URL to the chart source code (e.g. GitHub repo), if found.
 	RemoteSource string `json:"remoteSource,omitempty"`
+	// ZarfVars is the list of discovered Zarf variables.
+	ZarfVars []ZarfVariableUsage `json:"zarfVars,omitempty"`
 }
 
 // IntrospectOptions configures the introspection process.

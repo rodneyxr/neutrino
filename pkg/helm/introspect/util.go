@@ -6,11 +6,71 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
 )
+
+var zarfVarRegex = regexp.MustCompile("###ZARF_VAR_([A-Z0-9_]+)###")
+
+// FindZarfVariables finds all Zarf variables in the content and returns their locations.
+func FindZarfVariables(content []byte, fileName string) map[string][]ValueUsageLocation {
+	matches := zarfVarRegex.FindAllIndex(content, -1)
+	if matches == nil {
+		return nil
+	}
+
+	results := make(map[string][]ValueUsageLocation)
+	contentStr := string(content)
+
+	for _, loc := range matches {
+		start := loc[0]
+		end := loc[1]
+		// Extract the variable name (group 1)
+		// loc[0] is start of match, loc[1] is end of match
+		// We need to find the submatch... FindAllStringSubmatchIndex would be better but regular FindAllIndex gives us the full match range.
+		// Let's re-run match on just the substring? Or use FindAllSubmatchIndex.
+		// FindAllSubmatchIndex returns: [start, end, group1Start, group1End...]
+		// Let's switch to FindAllSubmatchIndex logic below.
+		_ = start
+		_ = end
+	}
+
+	// Reset and do it properly with SubmatchIndex
+	allMatches := zarfVarRegex.FindAllSubmatchIndex(content, -1)
+	for _, m := range allMatches {
+		// m[0], m[1] is the full match
+		// m[2], m[3] is the first group (variable name)
+		if len(m) < 4 {
+			continue
+		}
+
+		fullMatchStart := m[0]
+		varName := contentStr[m[2]:m[3]]
+
+		// calculate line and column
+		line := strings.Count(contentStr[:fullMatchStart], "\n") + 1
+
+		lastNewLine := strings.LastIndex(contentStr[:fullMatchStart], "\n")
+		col := fullMatchStart + 1 // 1-based, assuming start of file
+		if lastNewLine != -1 {
+			col = fullMatchStart - lastNewLine
+		}
+
+		location := ValueUsageLocation{
+			File:   fileName,
+			Line:   line,
+			Column: col,
+			Kind:   "zarf_var",
+		}
+
+		results[varName] = append(results[varName], location)
+	}
+
+	return results
+}
 
 // ParseValuesLocations parses values.yaml content and returns a map of paths to their locations.
 func ParseValuesLocations(content []byte) (map[string]ValueUsageLocation, error) {
@@ -80,7 +140,33 @@ func getCacheDir(category string, url string, version string) (string, error) {
 }
 
 // GetValue looks up a value in a map using dot notation.
+// It supports fallback keys (e.g. _internal_defaults_do_not_set) if the direct path is not found.
 func GetValue(values map[string]interface{}, path string) interface{} {
+	// 1. Try direct path
+	if val := getValueStrict(values, path); val != nil {
+		return val
+	}
+
+	// 2. Try fallbacks
+	// These are common wrapper keys used in some Zarf/UDS packages where the values.yaml
+	// namespaces the values (e.g. for subcharts or internal defaults) but the templates
+	// might access them differently or expects them to be merged.
+	fallbacks := []string{"_internal_defaults_do_not_set"}
+
+	for _, prefix := range fallbacks {
+		// Check if the prefix key exists in values
+		if _, ok := values[prefix]; ok {
+			// Try looking up path under prefix
+			if val := getValueStrict(values, prefix+"."+path); val != nil {
+				return val
+			}
+		}
+	}
+
+	return nil
+}
+
+func getValueStrict(values map[string]interface{}, path string) interface{} {
 	parts := strings.Split(path, ".")
 	current := values
 

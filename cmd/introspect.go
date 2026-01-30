@@ -188,6 +188,13 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 					for i := range res.ValuesFiles {
 						res.ValuesFiles[i] = filepath.Join(absSource, res.ValuesFiles[i])
 					}
+
+					// Resolve absolute paths for ZarfVars locations
+					for i := range res.ZarfVars {
+						for j := range res.ZarfVars[i].Locations {
+							res.ZarfVars[i].Locations[j].File = filepath.Join(absSource, res.ZarfVars[i].Locations[j].File)
+						}
+					}
 				}
 			}
 
@@ -352,6 +359,23 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 			fmt.Fprintf(out, "Remote Source: %s\n", result.RemoteSource)
 		}
 
+		// Calculate distinct subcharts
+		subchartsMap := make(map[string]bool)
+		for _, v := range result.Values {
+			if v.Chart != result.ChartName {
+				subchartsMap[v.Chart] = true
+			}
+		}
+		var subcharts []string
+		for k := range subchartsMap {
+			subcharts = append(subcharts, k)
+		}
+		sort.Strings(subcharts)
+
+		if len(subcharts) > 0 {
+			fmt.Fprintf(out, "Subcharts: %s\n", strings.Join(subcharts, ", "))
+		}
+
 		if len(result.ValuesFiles) > 0 {
 			// Always display absolute paths for values files in the header
 			absSource, err := filepath.Abs(result.Source)
@@ -365,6 +389,45 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 				absFiles = append(absFiles, filepath.Join(absSource, f))
 			}
 			fmt.Fprintf(out, "Values Files: %s\n", strings.Join(absFiles, ", "))
+		}
+
+		// Print Zarf Variables if any
+		if len(result.ZarfVars) > 0 {
+			fmt.Fprintln(out, "\nZarf Variables:")
+			zHeader := []string{"Variable", "Default", "Location"}
+			var zData [][]string
+
+			// Group by variable to mimic the "Location" column stacking style if we want,
+			// or just list them. The user asked for "same format as the values table".
+			// The values table lists Path, Default, Type, Location.
+			// Multiple locations for same path are stacked with empty cells for Path/Default.
+
+			// We need to sort by Name first
+			sort.Slice(result.ZarfVars, func(i, j int) bool {
+				return result.ZarfVars[i].Name < result.ZarfVars[j].Name
+			})
+
+			for _, zv := range result.ZarfVars {
+				def := formatDefaultValue(zv.DefaultValue)
+
+				for i, loc := range zv.Locations {
+					rowName := zv.Name
+					rowDef := def
+
+					if i > 0 {
+						rowName = ""
+						rowDef = ""
+					}
+
+					zData = append(zData, []string{
+						rowName,
+						rowDef,
+						fmt.Sprintf("%s:%d:%d", loc.File, loc.Line, loc.Column),
+					})
+				}
+			}
+			message.TableWithWriter(out, zHeader, zData)
+			fmt.Fprintln(out, "")
 		}
 
 		header := []string{"Path", "Default", "Type", "Location"}
