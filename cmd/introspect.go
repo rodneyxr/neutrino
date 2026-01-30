@@ -374,8 +374,6 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 
 		if len(subcharts) > 0 {
 			fmt.Fprintf(out, "Subcharts: %s\n", strings.Join(subcharts, ", "))
-		} else {
-			fmt.Fprintf(out, "Subcharts: .\n")
 		}
 
 		if len(result.ValuesFiles) > 0 {
