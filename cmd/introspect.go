@@ -21,6 +21,7 @@ import (
 	"github.com/zarf-dev/zarf/src/config"
 	"github.com/zarf-dev/zarf/src/pkg/logger"
 	"github.com/zarf-dev/zarf/src/pkg/message"
+	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 )
 
 func init() {
@@ -272,6 +273,17 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 }
 
 func isZarfPackage(ctx context.Context, source string, arch string) (bool, error) {
+	// Check if it's a local directory with a zarf.yaml
+	info, err := os.Stat(source)
+	if err == nil && info.IsDir() {
+		zarfYaml := filepath.Join(source, layout.ZarfYAML)
+		if _, err := os.Stat(zarfYaml); err == nil {
+			return true, nil
+		}
+		// Also check for zarf.yaml in the root if the user pointed to a directory that *contains* the package but isn't the package root?
+		// No, standard behavior is point to package dir.
+	}
+
 	if strings.HasSuffix(source, ".tar.zst") {
 		return true, nil
 	}
