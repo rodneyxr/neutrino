@@ -19,4 +19,7 @@ var (
 	locationStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#56B6C2"))
 	kindStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#C678DD"))
 	headerStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Bold(true).Underline(true)
+	zarfVarStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#D19A66")).Bold(true)
+	// Table styles
+	tableHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ABB2BF")).Bold(true).Underline(true)
 )

@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/goccy/go-yaml"
 	"github.com/rodneyxr/neutrino/pkg/helm/introspect"
+	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 )
 
 // ViewMode defines the current view state
@@ -34,6 +35,7 @@ const (
 type DisplayItem struct {
 	introspect.ValueUsage
 	Component string
+	IsZarfVar bool
 }
 
 type Model struct {
@@ -59,9 +61,10 @@ type Model struct {
 	chartSuggestions []string
 	previousChart    string
 	chartQuery       string
+	pkgVariables     []v1alpha1.InteractiveVariable
 }
 
-func NewModel(components map[string]*introspect.IntrospectResult) Model {
+func NewModel(components map[string]*introspect.IntrospectResult, pkgVariables []v1alpha1.InteractiveVariable) Model {
 
 	// Initialize charts list
 	charts := make([]string, 0, len(components)+1)
@@ -96,6 +99,7 @@ func NewModel(components map[string]*introspect.IntrospectResult) Model {
 		consolidateMode: true,
 		filterInput:     fi,
 		chartInput:      ci,
+		pkgVariables:    pkgVariables,
 	}
 
 	m.updateFilteredValues()
@@ -149,13 +153,51 @@ func (m *Model) updateFilteredValues() {
 				}
 			}
 		}
+
+		// Zarf Vars
+		for _, zv := range res.ZarfVars {
+			// Convert ZarfVariableUsage to ValueUsage structure for display
+			v := introspect.ValueUsage{
+				Path:         zv.Name,
+				Chart:        name, // Zarf vars are package-level but associated with component here
+				Wildcard:     false,
+				Locations:    zv.Locations,
+				DefaultValue: zv.DefaultValue,
+			}
+
+			if filter == "" || strings.Contains(strings.ToLower(v.Path), strings.ToLower(filter)) {
+				item := DisplayItem{
+					ValueUsage: v,
+					Component:  name,
+					IsZarfVar:  true,
+				}
+				if m.consolidateMode {
+					newValues = append(newValues, item)
+				} else {
+					if len(v.Locations) == 0 {
+						newValues = append(newValues, item)
+					} else {
+						for _, loc := range v.Locations {
+							val := item
+							val.Locations = []introspect.ValueUsageLocation{loc}
+							newValues = append(newValues, val)
+						}
+					}
+				}
+			}
+		}
 	}
 
-	// Sort values - Group by Component, then Path
+	// Sort values - Group by Component, then IsZarfVar (descending), then Path
 	sort.Slice(newValues, func(i, j int) bool {
 		// Group by Component
 		if newValues[i].Component != newValues[j].Component {
 			return newValues[i].Component < newValues[j].Component
+		}
+
+		// Sort Zarf vars first
+		if newValues[i].IsZarfVar != newValues[j].IsZarfVar {
+			return newValues[i].IsZarfVar // True (Zarf) comes before False
 		}
 
 		if newValues[i].Path == newValues[j].Path {
@@ -242,6 +284,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.viewMode == ViewModeList {
 					if m.cursor < len(m.filteredValues)-1 {
 						m.cursor++
+						m.ensureCursorVisible()
 					}
 				} else if m.viewMode == ViewModeDetail {
 					v := m.filteredValues[m.cursor]
@@ -253,6 +296,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.viewMode == ViewModeList {
 					if m.cursor > 0 {
 						m.cursor--
+						m.ensureCursorVisible()
 					}
 				} else if m.viewMode == ViewModeDetail {
 					if m.detailCursor > 0 {
@@ -266,10 +310,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// For simple 'g', go top.
 				if m.viewMode == ViewModeList {
 					m.cursor = 0
+					m.viewportOffset = 0
 				}
 			case "G":
 				if m.viewMode == ViewModeList {
 					m.cursor = len(m.filteredValues) - 1
+					m.ensureCursorVisible()
 				}
 			case "/":
 				if m.viewMode == ViewModeList {
@@ -277,6 +323,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.filterInput.SetValue("") // Reset
 					m.filterInput.Focus()
 					m.updateFilteredValues()
+					m.ensureCursorVisible()
 					return m, nil
 				}
 			case ":":
@@ -287,6 +334,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.chartInput.SetValue("") // Reset
 					m.chartInput.Focus()
 					m.updateFilteredValues()
+					m.ensureCursorVisible()
 					return m, nil
 				}
 			case "enter":
@@ -308,6 +356,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.filterInput.SetValue("")
 					m.updateFilteredValues()
 					m.cursor = 0
+					m.ensureCursorVisible()
 				}
 			case "y":
 				if m.viewMode == ViewModeList && len(m.filteredValues) > 0 {
@@ -349,14 +398,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.inputMode = InputModeNormal
 				m.chartInput.Blur()
 				m.chartInput.SetValue("")
+				m.chartInput.SetValue("")
 				m.updateFilteredValues()
 				m.cursor = 0
+				m.ensureCursorVisible()
 			case "esc":
 				m.inputMode = InputModeNormal
 				m.chartInput.Blur()
 				m.currentChart = m.previousChart
 				m.chartInput.SetValue("")
 				m.updateFilteredValues()
+				m.ensureCursorVisible()
 			case "up", "down":
 				// Local calculation of matches for the saved query
 				query := strings.ToLower(m.chartQuery)
@@ -395,6 +447,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.chartInput.SetValue(matches[idx])
 					m.currentChart = matches[idx]
 					m.updateFilteredValues()
+					m.ensureCursorVisible()
 				}
 			default:
 				m.chartInput, cmd = m.chartInput.Update(msg)
@@ -416,6 +469,90 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// ensureCursorVisible adjusts viewportOffset to keep cursor in view.
+// This replaces the recursive View() logic for performance.
+func (m *Model) ensureCursorVisible() {
+	// If cursor is above viewport, move viewport up
+	if m.cursor < m.viewportOffset {
+		m.viewportOffset = m.cursor
+	}
+
+	// If cursor is way below, we need to efficiently calculate where viewport should be.
+	// Since items have variable height (due to headers), we can't just subtract windowHeight.
+	// But we can iterate backwards from cursor?
+	// Or simplistic approach: if cursor >= viewportOffset, check if it renders within maxLines.
+	// If not, increment viewportOffset.
+
+	maxLines := m.windowHeight - 5
+	if maxLines < 1 {
+		maxLines = 10
+	}
+
+	// Iterate from viewportOffset to cursor to count lines
+	lines := 0
+	lastComponent := ""
+	lastIsZarfVar := false // Need to track this for Zarf vs Chart Values headers
+
+	// Initialize lastComponent correctly based on context BEFORE viewportOffset?
+	// This is tricky. If we just start counting from viewportOffset, we might miss context that caused a header.
+	// But View() logic resets context at start loop anyway.
+
+	// We only need to check if the cursor item is visible.
+	// Optimization: If cursor is significantly larger than viewportOffset, bump viewportOffset
+	// to at least (cursor - maxLines). This avoids scanning thousands of items.
+	if m.cursor > m.viewportOffset+maxLines*2 {
+		m.viewportOffset = m.cursor - maxLines
+	}
+
+	for {
+		lines = 0
+		lastComponent = ""
+		// Need to see previous item to determine if we are at start of section
+		if m.viewportOffset > 0 {
+			lastComponent = m.filteredValues[m.viewportOffset-1].Component
+			lastIsZarfVar = m.filteredValues[m.viewportOffset-1].IsZarfVar
+		}
+
+		for i := m.viewportOffset; i <= m.cursor; i++ {
+			v := m.filteredValues[i]
+			itemLines := 1 // Default item line
+
+			// Check separators/headers
+			if v.Component != lastComponent {
+				// Chart Separator + Newline
+				itemLines += 2
+				// Header
+				itemLines += 1
+
+				lastComponent = v.Component
+				lastIsZarfVar = v.IsZarfVar
+			} else {
+				// Same component. Check if we switched from Zarf to Values
+				if lastIsZarfVar && !v.IsZarfVar {
+					// We need a header for "Chart Values"
+					itemLines += 1
+				}
+				lastIsZarfVar = v.IsZarfVar
+			}
+
+			// Are we at the very top (and just rendered a header implicit)?
+			// Logic in View mirrors this.
+
+			lines += itemLines
+		}
+
+		if lines <= maxLines {
+			break // It fits!
+		}
+
+		m.viewportOffset++
+		if m.viewportOffset > m.cursor {
+			m.viewportOffset = m.cursor
+			break
+		}
+	}
+}
+
 func (m Model) View() string {
 	var s string
 
@@ -428,9 +565,44 @@ func (m Model) View() string {
 	chartTitle := m.currentChart
 	if chartTitle == "" {
 		chartTitle = "All Charts"
+		header += fmt.Sprintf(" - %s", chartTitle)
+		s += header + "\n\n"
+	} else if chartTitle == "All Charts" {
+		header += fmt.Sprintf(" - %s", chartTitle)
+		s += header + "\n\n"
+	} else {
+		// Specific chart - show metadata
+		res := m.components[chartTitle]
+		if res != nil {
+			header += fmt.Sprintf(" - %s", chartTitle)
+			header += fmt.Sprintf(" (%s)", res.ChartVersion)
+			s += header + "\n"
+			if res.RemoteSource != "" {
+				s += helpStyle.Render("Source: "+res.RemoteSource) + "\n"
+			} else {
+				s += helpStyle.Render("Source: "+res.Source) + "\n"
+			}
+			s += "\n"
+
+			// Zarf Package Variables for this chart selection?
+			// They are global, so show them always? Or just if associated?
+			// User asked for "zarf package variables table ... at the top of each chart info"
+			if len(m.pkgVariables) > 0 {
+				s += zarfVarStyle.Render("Package Variables:") + "\n"
+				for _, pv := range m.pkgVariables {
+					def := pv.Default
+					if def == "" {
+						def = "nil"
+					}
+					s += fmt.Sprintf("  %s: %s (%s)\n", pv.Name, codeStyle.Render(def), helpStyle.Render(pv.Description))
+				}
+				s += "\n"
+			}
+		} else {
+			header += fmt.Sprintf(" - %s", chartTitle)
+			s += header + "\n\n"
+		}
 	}
-	header += fmt.Sprintf(" - %s", chartTitle)
-	s += header + "\n\n"
 
 	// List
 	var listContent string
@@ -449,31 +621,104 @@ func (m Model) View() string {
 
 	// We'll iterate from start and stop when linesUsed >= maxLines
 	lastComponent := ""
+	lastIsZarfVar := false
+
 	if start > 0 {
-		// Figure out lastComponent for the start item to avoid redundant headers
-		// or just always show header for first item if start > 0?
-		// Prefer being accurate.
+		// Initialize context from previous item
 		lastComponent = m.filteredValues[start-1].Component
+		lastIsZarfVar = m.filteredValues[start-1].IsZarfVar
 	}
 
 	for i := start; i < len(m.filteredValues); i++ {
 		v := m.filteredValues[i]
 		itemStr := ""
 
-		// Chart/Component Separator
+		// Check for transition
 		if v.Component != lastComponent {
+			// New Component Section
 			sepPrefix := "\n"
 			if linesUsed == 0 {
 				sepPrefix = "" // No leading newline for first item on screen
 			}
-			itemStr += chartFilterStyle.Render(fmt.Sprintf("%s--- %s ---", sepPrefix, v.Component)) + "\n"
+			versionStr := ""
+			if c, ok := m.components[v.Component]; ok {
+				versionStr = fmt.Sprintf(" (%s)", c.ChartVersion)
+			}
+			itemStr += chartFilterStyle.Render(fmt.Sprintf("%s--- %s%s ---", sepPrefix, v.Component, versionStr)) + "\n"
+
+			// Render Header dependent on first item type
+			if v.IsZarfVar {
+				headerStr := fmt.Sprintf("    %-50s %-20s %-10s %s", "VARIABLE", "DEFAULT", "TYPE", "LOCATION")
+				itemStr += tableHeaderStyle.Render(headerStr) + "\n"
+			} else {
+				headerStr := fmt.Sprintf("    %-50s %-20s %-10s %s", "PATH", "DEFAULT", "TYPE", "LOCATION")
+				itemStr += tableHeaderStyle.Render(headerStr) + "\n"
+			}
+
 			lastComponent = v.Component
+			lastIsZarfVar = v.IsZarfVar
+		} else {
+			// Same Component, check if we switched from Zarf to Values
+			if lastIsZarfVar && !v.IsZarfVar {
+				// Transition from Zarf -> Values
+				// Render Values Header
+				headerStr := fmt.Sprintf("\n    %-50s %-20s %-10s %s", "PATH", "DEFAULT", "TYPE", "LOCATION")
+				itemStr += tableHeaderStyle.Render(headerStr) + "\n"
+				lastIsZarfVar = v.IsZarfVar
+			}
 		}
 
-		line := v.Path
+		// Also check if we are at the very start of viewing (linesUsed==0) and missed the header logic
+		// due to start > 0.
+		// If start > 0, we initialized lastComponent/lastIsZarfVar.
+		// But we might be in the middle of a list.
+		// If we want sticky headers, we'd need to render them always if linesUsed==0.
+		// But sticky headers are complex to implement without overlay.
+		// Let's stick to "render header on transition".
+		// BUT: If the user scrolls down, they lose the header.
+		// "I would like the column headers to be on each table".
+		// If the table is long, headers disappear.
+		// For now, let's satisfy the layout requirement of separation.
+
+		// If we are at the very top (linesUsed==0) and no transition occurred (because we are in middle of list),
+		// we *could* render a header for context?
+		// That might look duplicate if we scroll just past a header.
+		// Let's rely on transitions for now.
+
+		// Format columns
+		pathCol := v.Path
+		if len(pathCol) > 48 {
+			pathCol = pathCol[:47] + "…"
+		}
+
+		defCol := formatDefaultValue(v.DefaultValue)
+		if defCol == "-" {
+			defCol = ""
+		}
+		if len(defCol) > 18 {
+			defCol = defCol[:17] + "…"
+		}
+
+		typeCol := "inferred"
+		if v.IsZarfVar {
+			typeCol = "variable"
+		} else if len(v.Locations) > 0 {
+			typeCol = "field"
+		}
+
+		locCol := ""
 		if m.consolidateMode {
 			if len(v.Locations) > 1 {
-				line += fmt.Sprintf(" (%d locs)", len(v.Locations))
+				locCol = fmt.Sprintf("(%d locs)", len(v.Locations))
+			} else if len(v.Locations) == 1 {
+				loc := v.Locations[0]
+				file := loc.File
+				if res, ok := m.components[v.Component]; ok && res.Source != "" {
+					if rel, err := filepath.Rel(res.Source, file); err == nil {
+						file = rel
+					}
+				}
+				locCol = fmt.Sprintf("%s:%d", file, loc.Line)
 			}
 		} else {
 			if len(v.Locations) > 0 {
@@ -484,23 +729,26 @@ func (m Model) View() string {
 						file = rel
 					}
 				}
-				line += fmt.Sprintf(" %s:%d", file, loc.Line)
+				locCol = fmt.Sprintf("%s:%d", file, loc.Line)
 			}
 		}
+
+		// Construct line
+		line := fmt.Sprintf("%-50s %-20s %-10s %s", pathCol, defCol, typeCol, locCol)
 
 		if i == m.cursor {
 			itemStr += selectedItemStyle.Render(fmt.Sprintf("> %s", line)) + "\n"
 		} else {
-			itemStr += itemStyle.Render(line) + "\n"
+			if v.IsZarfVar {
+				itemStr += itemStyle.Render(zarfVarStyle.Render(line)) + "\n"
+			} else {
+				itemStr += itemStyle.Render(line) + "\n"
+			}
 		}
 
-		// Check if this item (including potential separator) fits
+		// Check if this item (including potential headers) fits
 		itemLines := strings.Count(itemStr, "\n")
-		if linesUsed+itemLines > maxLines && i <= m.cursor {
-			// If we haven't reached the cursor yet, we must adjust viewport
-			m.viewportOffset++
-			return m.View() // Re-render with new offset
-		}
+		// FIX: Do NOT recurse View(). Just stop rendering if full.
 		if linesUsed+itemLines > maxLines {
 			break // Stop rendering
 		}
@@ -537,7 +785,12 @@ func (m Model) detailView() string {
 	}
 	v := m.filteredValues[m.cursor]
 
-	s := headerStyle.Render("Value:") + " " + v.Path + "\n"
+	label := "Value:"
+	if v.IsZarfVar {
+		label = "Zarf Variable:"
+	}
+
+	s := headerStyle.Render(label) + " " + v.Path + "\n"
 	s += headerStyle.Render("Component:") + " " + v.Component + "\n"
 	if v.Chart != "" && v.Chart != v.Component {
 		s += headerStyle.Render("Chart:") + " " + v.Chart + "\n"
@@ -621,4 +874,20 @@ func openEditor(filename string, line, col int) tea.Cmd {
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		return nil
 	})
+}
+
+func formatDefaultValue(val interface{}) string {
+	if val == nil {
+		return "-"
+	}
+	valBytes, _ := yaml.MarshalWithOptions(val, yaml.Flow(true))
+	str := strings.TrimSpace(string(valBytes))
+	str = strings.ReplaceAll(str, ".0,", ",")
+	str = strings.ReplaceAll(str, ".0}", "}")
+	str = strings.ReplaceAll(str, ".0]", "]")
+	str = strings.TrimSuffix(str, ".0")
+	if len(str) > 32 {
+		return str[:29] + "..."
+	}
+	return str
 }

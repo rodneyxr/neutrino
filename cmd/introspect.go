@@ -204,7 +204,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 			}
 
 			if interactive {
-				p := tea.NewProgram(tui.NewModel(report.Components), tea.WithAltScreen())
+				p := tea.NewProgram(tui.NewModel(report.Components, report.Variables), tea.WithAltScreen())
 				_, err := p.Run()
 				return err
 			}
