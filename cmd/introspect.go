@@ -413,8 +413,10 @@ func checkUDSRef(ctx context.Context, source string, platform ocispec.Platform) 
 	if err != nil {
 		return false, err
 	}
-	if root.Config.MediaType == introspect.UDSBundleMediaType {
-		return true, nil
+	for _, layer := range root.Layers {
+		if layer.Annotations["org.opencontainers.image.title"] == introspect.UDSBundleFile {
+			return true, nil
+		}
 	}
 	return false, nil
 }

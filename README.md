@@ -117,7 +117,13 @@ neutrino inspect ./zarf-package-podinfo-amd64-0.0.1.tar.zst
 **5. Inspect an OCI Zarf package (specific architecture):**
 
 ```bash
-./neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/core-base:0.57.0-upstream -a amd64
+./neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/core-base:0.62.0-upstream -a amd64
+```
+
+**6. Inspect a UDS Bundle:**
+
+```bash
+./neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/bundles/k3d-core-slim-dev:0.62.0
 ```
 
 ---
