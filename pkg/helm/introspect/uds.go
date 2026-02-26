@@ -10,6 +10,7 @@ import (
 
 	"github.com/defenseunicorns/pkg/oci"
 	"github.com/goccy/go-yaml"
+	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	"github.com/zarf-dev/zarf/src/config"
@@ -118,6 +119,20 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 
 	var tmpDir string
 
+	var remoteOci *oci.OrasRemote
+	var remoteRoot *oci.Manifest
+
+	if isRemote(path) {
+		targetArch := config.GetArch(arch)
+		platform := oci.PlatformForArch(targetArch)
+		if remote, err := oci.NewOrasRemote(path, platform); err == nil {
+			remoteOci = remote
+			if root, err := remoteOci.FetchRoot(ctx); err == nil {
+				remoteRoot = root
+			}
+		}
+	}
+
 	if !alreadyExtracted || opts.NoCache {
 		if opts.NoCache && alreadyExtracted {
 			os.RemoveAll(cacheDir)
@@ -199,38 +214,99 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 		// Usually, the annotations in index.json help identify the package.
 
 		layoutPath := ""
-		if !isRemote(path) {
-			indexBytes, err := os.ReadFile(filepath.Join(cacheDir, "index.json"))
-			if err == nil {
-				var list struct {
-					Manifests []struct {
-						Digest string `json:"digest"`
-					} `json:"manifests"`
-				}
-				if err := json.Unmarshal(indexBytes, &list); err != nil {
-					l.Debug(fmt.Sprintf("Failed to decode index.json: %s", err))
-				} else if len(list.Manifests) > 0 {
-					// There is usually only one manifest which is the bundle manifest
-					bundleManifestHash := list.Manifests[0].Digest[7:]
-					bundleManifestPath := filepath.Join(cacheDir, "blobs", "sha256", bundleManifestHash)
+		parts := strings.Split(pkg.Ref, "@sha256:")
+		if len(parts) == 2 {
+			targetLayerDigest := parts[1]
 
-					bundleManifestBytes, err := os.ReadFile(bundleManifestPath)
+			if isRemote(path) && remoteOci != nil && remoteRoot != nil {
+				foundTarget := false
+				var targetLayer ocispec.Descriptor
+				for _, layer := range remoteRoot.Layers {
+					if layer.Digest.String() == "sha256:"+targetLayerDigest {
+						targetLayer = layer
+						foundTarget = true
+						break
+					}
+				}
+
+				if foundTarget {
+					pkgCacheDir := filepath.Join(cacheDir, "extracted-packages", pkgName)
+					os.MkdirAll(pkgCacheDir, 0755)
+
+					manifestData, err := remoteOci.FetchLayer(ctx, targetLayer)
 					if err == nil {
-						var bundleManifest struct {
+						var pkgManifest struct {
 							Layers []struct {
+								MediaType   string            `json:"mediaType"`
 								Digest      string            `json:"digest"`
+								Size        int64             `json:"size"`
 								Annotations map[string]string `json:"annotations"`
 							} `json:"layers"`
 						}
-						if err := json.Unmarshal(bundleManifestBytes, &bundleManifest); err != nil {
-							l.Debug(fmt.Sprintf("Failed to decode bundle manifest json: %s", err))
+						if err := json.Unmarshal(manifestData, &pkgManifest); err != nil {
+							l.Debug(fmt.Sprintf("Failed to decode remote pkg manifest json: %s", err))
 						} else {
-							// Extract what we know of the package ref from uds-bundle.yaml
-							parts := strings.Split(pkg.Ref, "@sha256:")
-							if len(parts) == 2 {
-								targetLayerDigest := parts[1]
+							for _, layer := range pkgManifest.Layers {
+								filename, ok := layer.Annotations["org.opencontainers.image.title"]
+								if !ok || filename == "" || strings.HasPrefix(filename, "images/") {
+									continue
+								}
 
-								// We now confirm if this digest exists in the bundle's layers.
+								dstFile := filepath.Join(pkgCacheDir, filename)
+								os.MkdirAll(filepath.Dir(dstFile), 0755)
+
+								if _, err := os.Stat(dstFile); err == nil {
+									continue
+								}
+
+								desc := ocispec.Descriptor{
+									MediaType:   layer.MediaType,
+									Digest:      digest.Digest(layer.Digest),
+									Size:        layer.Size,
+									Annotations: layer.Annotations,
+								}
+
+								layerData, err := remoteOci.FetchLayer(ctx, desc)
+								if err == nil {
+									os.WriteFile(dstFile, layerData, 0644)
+								} else {
+									l.Warn(fmt.Sprintf("Failed to fetch remote layer blob for %s: %s", filename, err))
+								}
+							}
+							layoutPath = pkgCacheDir
+							l.Debug(fmt.Sprintf("Successfully reconstructed remote uncompressed package layout for %s at %s", pkgName, layoutPath))
+						}
+					} else {
+						l.Debug(fmt.Sprintf("Failed to fetch manifest layer %s: %s", targetLayerDigest, err))
+					}
+				} else {
+					l.Debug(fmt.Sprintf("Target package digest %s not found in remote bundle layers.", targetLayerDigest))
+				}
+			} else if !isRemote(path) {
+				indexBytes, err := os.ReadFile(filepath.Join(cacheDir, "index.json"))
+				if err == nil {
+					var list struct {
+						Manifests []struct {
+							Digest string `json:"digest"`
+						} `json:"manifests"`
+					}
+					if err := json.Unmarshal(indexBytes, &list); err != nil {
+						l.Debug(fmt.Sprintf("Failed to decode index.json: %s", err))
+					} else if len(list.Manifests) > 0 {
+						bundleManifestHash := list.Manifests[0].Digest[7:]
+						bundleManifestPath := filepath.Join(cacheDir, "blobs", "sha256", bundleManifestHash)
+
+						bundleManifestBytes, err := os.ReadFile(bundleManifestPath)
+						if err == nil {
+							var bundleManifest struct {
+								Layers []struct {
+									Digest      string            `json:"digest"`
+									Annotations map[string]string `json:"annotations"`
+								} `json:"layers"`
+							}
+							if err := json.Unmarshal(bundleManifestBytes, &bundleManifest); err != nil {
+								l.Debug(fmt.Sprintf("Failed to decode bundle manifest json: %s", err))
+							} else {
 								foundTarget := false
 								for _, layer := range bundleManifest.Layers {
 									if layer.Digest == "sha256:"+targetLayerDigest {
@@ -240,14 +316,9 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 								}
 
 								if foundTarget {
-									// The target layer itself IS the Zarf package manifest.
-									// It describes the package configuration (zst blobs, component tars).
-
-									// 1. Create directory for reconstructed package
 									pkgCacheDir := filepath.Join(cacheDir, "extracted-packages", pkgName)
 									os.MkdirAll(pkgCacheDir, 0755)
 
-									// 2. Read the package manifest
 									manifestPath := filepath.Join(cacheDir, "blobs", "sha256", targetLayerDigest)
 									manifestData, err := os.ReadFile(manifestPath)
 									if err == nil {
@@ -261,8 +332,6 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 											l.Debug(fmt.Sprintf("Failed to decode pkg manifest json: %s", err))
 										}
 
-										// 3. Reconstruct the uncompressed Zarf package layout by hardlinking the blobs
-										// to their proper file paths based on the org.opencontainers.image.title annotation.
 										for _, layer := range pkgManifest.Layers {
 											if len(layer.Digest) > 7 {
 												layerHash := layer.Digest[7:]
@@ -270,7 +339,7 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 
 												filename, ok := layer.Annotations["org.opencontainers.image.title"]
 												if !ok || filename == "" {
-													continue // Skip layers without explicit filenames
+													continue
 												}
 
 												dstFile := filepath.Join(pkgCacheDir, filename)
@@ -279,7 +348,6 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 												if _, err := os.Stat(srcBlob); err == nil {
 													err = os.Link(srcBlob, dstFile)
 													if err != nil && !os.IsExist(err) {
-														// Try copy if link fails
 														data, _ := os.ReadFile(srcBlob)
 														os.WriteFile(dstFile, data, 0644)
 													}
@@ -288,7 +356,6 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 												}
 											}
 										}
-										// Format the path for normal Zarf directory inspection
 										layoutPath = pkgCacheDir
 										l.Debug(fmt.Sprintf("Successfully reconstructed uncompressed package layout for %s at %s", pkgName, layoutPath))
 									} else {
@@ -297,8 +364,6 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 								} else {
 									l.Debug(fmt.Sprintf("Target package digest %s not found in bundle layers.", targetLayerDigest))
 								}
-							} else {
-								l.Debug(fmt.Sprintf("Could not split Ref correctly: %s", pkg.Ref))
 							}
 						}
 					}
