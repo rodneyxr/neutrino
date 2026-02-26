@@ -100,6 +100,10 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				report.Components[componentName] = res
 			}
 
+			if isRemote(source) {
+				l.Info(fmt.Sprintf("Connecting to remote OCI registry %s...", source))
+			}
+
 			// Determine if it's a Zarf package or a UDS Bundle
 			isZarf, err := isZarfPackage(ctx, source, architecture)
 			if err != nil {
