@@ -48,6 +48,9 @@ func PullUDSBundle(ctx context.Context, source string, version string, arch stri
 		return "", fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
+	l := logger.From(ctx)
+	l.Info(fmt.Sprintf("Pulling UDS Bundle metadata from %s...", source))
+
 	targetArch := config.GetArch(arch)
 	platform := oci.PlatformForArch(targetArch)
 
@@ -232,6 +235,8 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 				if foundTarget {
 					pkgCacheDir := filepath.Join(cacheDir, "extracted-packages", pkgName)
 					os.MkdirAll(pkgCacheDir, 0755)
+
+					l.Info(fmt.Sprintf("Pulling remote OCI layers for embedded package %s...", pkgName))
 
 					manifestData, err := remoteOci.FetchLayer(ctx, targetLayer)
 					if err == nil {
