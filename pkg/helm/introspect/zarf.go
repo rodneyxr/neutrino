@@ -53,28 +53,41 @@ type ZarfPackageIntrospection struct {
 
 // InspectZarfPackage analyzes a Zarf package to find Helm values.
 func InspectZarfPackage(ctx context.Context, path string, version string, arch string, opts IntrospectOptions) (*ZarfPackageIntrospection, error) {
-	// Determine persistent cache directory for the extracted package
-	// usage: getCacheDir("zarf-pkgs", packageSource+arch, version)
-	// We combine path and arch as the 'url' key to distinguish architectures
+	var cacheDir string
+	var alreadyExtracted bool
 
-	cacheKey := path
-	if arch != "" {
-		cacheKey = fmt.Sprintf("%s-%s", path, arch)
-	}
-	cacheDir, err := getCacheDir("zarf-pkgs", cacheKey, version)
-	if err != nil {
-		return nil, fmt.Errorf("failed to determine cache dir: %w", err)
+	// Check if path is already an extracted directory
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		if _, err := os.Stat(filepath.Join(path, layout.ZarfYAML)); err == nil {
+			cacheDir = path
+			alreadyExtracted = true
+		}
 	}
 
-	// Ensure cache dir exists
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create cache dir: %w", err)
+	// If not already a directory with zarf.yaml, we need to extract it to a cache
+	if !alreadyExtracted {
+		// Determine persistent cache directory for the extracted package
+		cacheKey := path
+		if arch != "" {
+			cacheKey = fmt.Sprintf("%s-%s", path, arch)
+		}
+		var err error
+		cacheDir, err = getCacheDir("zarf-pkgs", cacheKey, version)
+		if err != nil {
+			return nil, fmt.Errorf("failed to determine cache dir: %w", err)
+		}
+
+		// Ensure cache dir exists
+		if err := os.MkdirAll(cacheDir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create cache dir: %w", err)
+		}
+
+		// Check if it was extracted previously in our cache
+		_, err = os.Stat(filepath.Join(cacheDir, layout.ZarfYAML))
+		alreadyExtracted = err == nil
 	}
 
-	// Check if already extracted (look for zarf.yaml)
 	zarfYamlPath := filepath.Join(cacheDir, layout.ZarfYAML)
-	_, err = os.Stat(zarfYamlPath)
-	alreadyExtracted := err == nil
 
 	if !alreadyExtracted || opts.NoCache {
 		// Clean up if forcing no cache
@@ -98,7 +111,7 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 		}
 
 		// Extract to cacheDir
-		err = archive.Decompress(context.TODO(), localTarPath, cacheDir, archive.DecompressOpts{})
+		err := archive.Decompress(context.TODO(), localTarPath, cacheDir, archive.DecompressOpts{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to extract zarf package: %w", err)
 		}
