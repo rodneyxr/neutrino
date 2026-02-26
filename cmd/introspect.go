@@ -10,10 +10,12 @@ import (
 	"sort"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/defenseunicorns/pkg/oci"
 	"github.com/goccy/go-yaml"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/rodneyxr/neutrino/pkg/helm/introspect"
+	"github.com/rodneyxr/neutrino/pkg/tui"
 	"github.com/spf13/cobra"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	"github.com/zarf-dev/zarf/src/config"
@@ -37,6 +39,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 		wildcards        bool
 		absolute         bool
 		noValues         bool
+		interactive      bool
 	)
 
 	cmd := &cobra.Command{
@@ -167,8 +170,8 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				addResult("", result)
 			}
 
-			// Resolve absolute paths if requested
-			if absolute {
+			// Resolve absolute paths if requested OR if interactive (needed for editor)
+			if absolute || interactive {
 				for _, res := range report.Components {
 					// Ensure source is absolute
 					absSource, err := filepath.Abs(res.Source)
@@ -186,7 +189,9 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 
 					// Resolve absolute paths for ValuesFiles
 					for i := range res.ValuesFiles {
-						res.ValuesFiles[i] = filepath.Join(absSource, res.ValuesFiles[i])
+						if !filepath.IsAbs(res.ValuesFiles[i]) {
+							res.ValuesFiles[i] = filepath.Join(absSource, res.ValuesFiles[i])
+						}
 					}
 
 					// Resolve absolute paths for ZarfVars locations
@@ -196,6 +201,12 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 						}
 					}
 				}
+			}
+
+			if interactive {
+				p := tea.NewProgram(tui.NewModel(report.Components, report.Variables), tea.WithAltScreen())
+				_, err := p.Run()
+				return err
 			}
 
 			// OUTPUT GENERATION
@@ -255,6 +266,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 	cmd.Flags().BoolVar(&wildcards, "wildcards", false, "Include wildcard/dynamic values in output")
 	cmd.Flags().BoolVar(&absolute, "absolute", false, "Output absolute filepaths for locations")
 	cmd.Flags().BoolVar(&noValues, "no-values", false, "Disable inference of nested paths from values.yaml")
+	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "Enter interactive TUI mode")
 
 	return cmd
 }
