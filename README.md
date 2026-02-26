@@ -78,6 +78,8 @@ neutrino inspect [PACKAGE_SOURCE] [flags]
 - An OCI URL: `oci://ghcr.io/stefanprodan/charts/podinfo`
 - An HTTP(S) URL: `https://example.com/charts/podinfo-6.4.0.tgz`
 - A Zarf package: `./zarf-package-app-amd64-0.0.1.tar.zst`
+- A UDS Bundle:
+  `oci://ghcr.io/defenseunicorns/packages/uds/core:0.62.0-upstream`
 
 #### Flags
 
@@ -117,13 +119,13 @@ neutrino inspect ./zarf-package-podinfo-amd64-0.0.1.tar.zst
 **5. Inspect an OCI Zarf package (specific architecture):**
 
 ```bash
-./neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/core-base:0.62.0-upstream -a amd64
+neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/core-base:0.62.0-upstream -a amd64
 ```
 
 **6. Inspect a UDS Bundle:**
 
 ```bash
-./neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/bundles/k3d-core-slim-dev:0.62.0
+neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/core:0.62.0-upstream
 ```
 
 ---
