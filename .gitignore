@@ -9,6 +9,7 @@
 *.dylib
 /main
 /neutrino
+*.zst
 
 # Test binary, built with `go test -c`
 *.test
