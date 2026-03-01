@@ -199,6 +199,7 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 	}
 
 	results := make(map[string]*IntrospectResult)
+	var componentOrder []string
 	var allVariables []v1alpha1.InteractiveVariable
 
 	for _, pkg := range bundle.Packages {
@@ -411,9 +412,13 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 		}
 
 		// Prefix component keys with the package name to distinguish them
-		for k, v := range pkgInspection.ChartResults {
-			prefixedKey := fmt.Sprintf("%s/%s", pkgName, k)
-			results[prefixedKey] = v
+		// And preserve their original ordering inside the bundle.
+		for _, k := range pkgInspection.ComponentOrder {
+			if v, ok := pkgInspection.ChartResults[k]; ok {
+				prefixedKey := fmt.Sprintf("%s/%s", pkgName, k)
+				results[prefixedKey] = v
+				componentOrder = append(componentOrder, prefixedKey)
+			}
 		}
 
 		// Also grab variables, and perhaps prefix them or at least collect them
@@ -425,8 +430,9 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 	}
 
 	return &ZarfPackageIntrospection{
-		ChartResults: results,
-		Variables:    allVariables,
+		ComponentOrder: componentOrder,
+		ChartResults:   results,
+		Variables:      allVariables,
 	}, nil
 }
 

@@ -70,8 +70,9 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 
 			// Structure for final output
 			type InspectionReport struct {
-				Variables  []v1alpha1.InteractiveVariable          `json:"variables,omitempty" yaml:"variables,omitempty"`
-				Components map[string]*introspect.IntrospectResult `json:"components" yaml:"components"`
+				Variables      []v1alpha1.InteractiveVariable          `json:"variables,omitempty" yaml:"variables,omitempty"`
+				Components     map[string]*introspect.IntrospectResult `json:"components" yaml:"components"`
+				ComponentOrder []string                                `json:"-" yaml:"-"`
 			}
 
 			report := InspectionReport{
@@ -121,12 +122,9 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				}
 
 				report.Variables = bundleInspection.Variables
+				report.ComponentOrder = bundleInspection.ComponentOrder
 
-				keys := make([]string, 0, len(bundleInspection.ChartResults))
-				for k := range bundleInspection.ChartResults {
-					keys = append(keys, k)
-				}
-				sort.Strings(keys) // Stable order for output
+				keys := bundleInspection.ComponentOrder
 
 				for _, key := range keys {
 					addResult(key, bundleInspection.ChartResults[key])
@@ -138,13 +136,10 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				}
 
 				report.Variables = pkgInspection.Variables
+				report.ComponentOrder = pkgInspection.ComponentOrder
 
-				// Fix: using explicit filtering loop instead of generic one
-				keys := make([]string, 0, len(pkgInspection.ChartResults))
-				for k := range pkgInspection.ChartResults {
-					keys = append(keys, k)
-				}
-				sort.Strings(keys) // Stable order for output
+				// Provide stable chronologic output ordering
+				keys := pkgInspection.ComponentOrder
 
 				for _, key := range keys {
 					addResult(key, pkgInspection.ChartResults[key])
@@ -229,7 +224,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 			}
 
 			if interactive {
-				p := tea.NewProgram(tui.NewModel(report.Components, report.Variables), tea.WithAltScreen())
+				p := tea.NewProgram(tui.NewModel(report.Components, report.ComponentOrder, report.Variables), tea.WithAltScreen())
 				_, err := p.Run()
 				return err
 			}
@@ -258,12 +253,8 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 					fmt.Fprintln(out, "")
 				}
 
-				// Sort keys for deterministic table output
-				keys := make([]string, 0, len(report.Components))
-				for k := range report.Components {
-					keys = append(keys, k)
-				}
-				sort.Strings(keys)
+				// Sort keys using the tracked chronological component order
+				keys := report.ComponentOrder
 
 				for _, k := range keys {
 					res := report.Components[k]
