@@ -47,8 +47,9 @@ func PullZarfPackage(ctx context.Context, source string, version string, arch st
 
 // ZarfPackageIntrospection contains the results of introspecting a Zarf package.
 type ZarfPackageIntrospection struct {
-	ChartResults map[string]*IntrospectResult
-	Variables    []v1alpha1.InteractiveVariable
+	ComponentOrder []string
+	ChartResults   map[string]*IntrospectResult
+	Variables      []v1alpha1.InteractiveVariable
 }
 
 // InspectZarfPackage analyzes a Zarf package to find Helm values.
@@ -129,6 +130,7 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 	}
 
 	results := make(map[string]*IntrospectResult)
+	var componentOrder []string
 
 	// 4. Find charts
 	for _, component := range pkg.Components {
@@ -199,12 +201,14 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 
 			key := fmt.Sprintf("%s/%s", component.Name, chart.Name)
 			results[key] = res
+			componentOrder = append(componentOrder, key)
 		}
 	}
 
 	return &ZarfPackageIntrospection{
-		ChartResults: results,
-		Variables:    pkg.Variables,
+		ComponentOrder: componentOrder,
+		ChartResults:   results,
+		Variables:      pkg.Variables,
 	}, nil
 }
 

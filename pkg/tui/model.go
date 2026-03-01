@@ -64,18 +64,16 @@ type Model struct {
 	pkgVariables     []v1alpha1.InteractiveVariable
 }
 
-func NewModel(components map[string]*introspect.IntrospectResult, pkgVariables []v1alpha1.InteractiveVariable) Model {
+func NewModel(components map[string]*introspect.IntrospectResult, componentOrder []string, pkgVariables []v1alpha1.InteractiveVariable) Model {
 
-	// Initialize charts list
-	charts := make([]string, 0, len(components)+1)
+	// Initialize charts list in chronological definition order
+	charts := make([]string, 0, len(componentOrder)+1)
 	charts = append(charts, "All Charts")
-	for k := range components {
-		charts = append(charts, k)
+	for _, k := range componentOrder {
+		if _, ok := components[k]; ok {
+			charts = append(charts, k)
+		}
 	}
-	// Sort charts, keeping "All Charts" at top?
-	// sort.Strings sorts alphabetically. "All Charts" comes before "podinfo" etc usually.
-	// But let's ensure it.
-	sort.Strings(charts)
 
 	currentChart := "All Charts"
 
