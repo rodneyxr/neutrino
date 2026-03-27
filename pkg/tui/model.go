@@ -126,7 +126,7 @@ func (m *Model) updateFilteredValues() {
 					Path:         pv.Name,
 					DefaultValue: pv.Default,
 				},
-				Component:  "Package Variables",
+				Component:  "Zarf Package Variables",
 				IsPkgVar:   true,
 				PkgVarDesc: desc,
 			})
@@ -208,6 +208,12 @@ func (m *Model) updateFilteredValues() {
 		}
 	}
 
+	// Build map to track chronological component order
+	compOrderIndex := make(map[string]int)
+	for i, name := range m.chartNames {
+		compOrderIndex[name] = i
+	}
+
 	sort.SliceStable(newValues, func(i, j int) bool {
 		// Package Variables always go first
 		if newValues[i].IsPkgVar && !newValues[j].IsPkgVar {
@@ -216,10 +222,16 @@ func (m *Model) updateFilteredValues() {
 		if !newValues[i].IsPkgVar && newValues[j].IsPkgVar {
 			return false
 		}
+		
+		// If both are package variables, they are already in correct chronological order 
+		// via iteration insertion. Return false to treat them as equal so SliceStable preserves their relative order.
+		if newValues[i].IsPkgVar && newValues[j].IsPkgVar {
+			return false
+		}
 
-		// Group by Component
+		// Group by Component (chronological order)
 		if newValues[i].Component != newValues[j].Component {
-			return newValues[i].Component < newValues[j].Component
+			return compOrderIndex[newValues[i].Component] < compOrderIndex[newValues[j].Component]
 		}
 
 		// Sort Zarf vars first
@@ -331,9 +343,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case "g":
-				// Handle gg (need state? simplify: use Home/End for non-modal TUI or assume quick double press?
-				// standard behavior: 'g' usually waits. 'Home' works.
-				// Let's implement 'G' first. 'gg' is harder without state.
 				// For simple 'g', go top.
 				if m.viewMode == ViewModeList {
 					m.cursor = 0
