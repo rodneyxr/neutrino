@@ -12,26 +12,30 @@ import (
 
 	"github.com/Masterminds/sprig/v3"
 	"github.com/zarf-dev/zarf/src/pkg/logger"
-	"helm.sh/helm/v3/pkg/chart"
-	"helm.sh/helm/v3/pkg/chart/loader"
-	"helm.sh/helm/v3/pkg/cli"
-	"helm.sh/helm/v3/pkg/downloader"
-	"helm.sh/helm/v3/pkg/getter"
-	"helm.sh/helm/v3/pkg/registry"
+	"helm.sh/helm/v4/pkg/chart/common"
+	"helm.sh/helm/v4/pkg/chart/loader"
+	v2 "helm.sh/helm/v4/pkg/chart/v2"
+	"helm.sh/helm/v4/pkg/cli"
+	"helm.sh/helm/v4/pkg/downloader"
+	"helm.sh/helm/v4/pkg/getter"
+	"helm.sh/helm/v4/pkg/registry"
 
 	"github.com/zarf-dev/zarf/src/pkg/archive"
 )
 
 // IntrospectHelmValues loads a chart and analyzes its templates to find overridable values.
 func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectOptions) (*IntrospectResult, error) {
-	var c *chart.Chart
+	var c *v2.Chart
 	var err error
 
 	l := logger.From(ctx)
 
 	if src.LocalPath != "" {
 		l.Debug(fmt.Sprintf("Loading chart from local path: %s", src.LocalPath))
-		c, err = loader.Load(src.LocalPath)
+		ch, err := loader.Load(src.LocalPath)
+		if err == nil {
+			c = ch.(*v2.Chart)
+		}
 	} else if src.URL != "" {
 		start := time.Now()
 		// Determine cache path
@@ -60,8 +64,9 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 				if err == nil {
 					l.Info(fmt.Sprintf("Using cached chart %s:%s", src.URL, src.Version))
 					src.LocalPath = expandedPath
-					c, err = loader.Load(expandedPath)
-					if err == nil {
+					ch, loadErr := loader.Load(expandedPath)
+					if loadErr == nil {
+						c = ch.(*v2.Chart)
 						loadedFromCache = true
 					} else {
 						l.Warn(fmt.Sprintf("Failed to load cached chart, redownloading: %s", err))
@@ -110,10 +115,11 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 			}
 
 			src.LocalPath = expandedPath
-			c, err = loader.Load(expandedPath)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load chart: %w", err)
+			ch, loadErr := loader.Load(expandedPath)
+			if loadErr != nil {
+				return nil, fmt.Errorf("failed to load chart: %w", loadErr)
 			}
+			c = ch.(*v2.Chart)
 		}
 	} else {
 		return nil, fmt.Errorf("no chart source provided")
@@ -307,7 +313,7 @@ func ensureExpanded(ctx context.Context, destDir string, archivePath string) (st
 	return "", fmt.Errorf("extraction succeeded but no chart found in %s", destDir)
 }
 
-func analyzeChart(c *chart.Chart, result *IntrospectResult, opts IntrospectOptions) {
+func analyzeChart(c *v2.Chart, result *IntrospectResult, opts IntrospectOptions) {
 	for _, t := range c.Templates {
 		// Include hooks if requested or default (ADR says include by default)
 		// We process everything in templates/
@@ -321,7 +327,7 @@ func analyzeChart(c *chart.Chart, result *IntrospectResult, opts IntrospectOptio
 	}
 }
 
-func analyzeTemplate(chartName string, t *chart.File, result *IntrospectResult) {
+func analyzeTemplate(chartName string, t *common.File, result *IntrospectResult) {
 	// Parse with Sprig and Helm-like functions to avoid failing on known functions.
 	// We don't need actual execution logic, just enough to parse.
 	tmpl := template.New(t.Name).Funcs(helmFuncMap())
