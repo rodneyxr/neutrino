@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/rodneyxr/neutrino/pkg/helm/introspect"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -51,7 +53,7 @@ func Test_isZarfPackage(t *testing.T) {
 			}
 
 			// We can pass empty arch as it defaults in the function
-			got, err := isZarfPackage(context.Background(), tt.source, "")
+			got, err := introspect.IsZarfPackage(context.Background(), tt.source, "")
 
 			if tt.wantError {
 				assert.Error(t, err)
@@ -81,7 +83,7 @@ func Test_isRemote(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.source, func(t *testing.T) {
-			got := isRemote(tt.source)
+			got := introspect.IsRemote(tt.source)
 			assert.Equal(t, tt.want, got)
 		})
 	}

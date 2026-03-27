@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"context"
+
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,14 +11,10 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/defenseunicorns/pkg/oci"
 	"github.com/goccy/go-yaml"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/rodneyxr/neutrino/pkg/helm/introspect"
 	"github.com/rodneyxr/neutrino/pkg/tui"
 	"github.com/spf13/cobra"
-	"github.com/zarf-dev/zarf/src/api/v1alpha1"
-	"github.com/zarf-dev/zarf/src/config"
 	"github.com/zarf-dev/zarf/src/pkg/logger"
 	"github.com/zarf-dev/zarf/src/pkg/message"
 )
@@ -68,14 +64,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				NoValues:         noValues,
 			}
 
-			// Structure for final output
-			type InspectionReport struct {
-				Variables      []v1alpha1.InteractiveVariable          `json:"variables,omitempty" yaml:"variables,omitempty"`
-				Components     map[string]*introspect.IntrospectResult `json:"components" yaml:"components"`
-				ComponentOrder []string                                `json:"-" yaml:"-"`
-			}
-
-			report := InspectionReport{
+			report := introspect.InspectionReport{
 				Components: make(map[string]*introspect.IntrospectResult),
 			}
 
@@ -101,16 +90,16 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				report.Components[componentName] = res
 			}
 
-			if isRemote(source) {
+			if introspect.IsRemote(source) {
 				l.Info(fmt.Sprintf("Connecting to remote OCI registry %s...", source))
 			}
 
 			// Determine if it's a Zarf package or a UDS Bundle
-			isZarf, err := isZarfPackage(ctx, source, architecture)
+			isZarf, err := introspect.IsZarfPackage(ctx, source, architecture)
 			if err != nil {
 				return fmt.Errorf("failed to determine source type: %w", err)
 			}
-			isUDS, err := isUDSBundle(ctx, source, architecture)
+			isUDS, err := introspect.IsUDSBundle(ctx, source, architecture)
 			if err != nil {
 				return fmt.Errorf("failed to determine source type: %w", err)
 			}
@@ -159,7 +148,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 					Version: version,
 				}
 
-				if isRemote(source) {
+				if introspect.IsRemote(source) {
 					// Handle OCI tags if present (e.g. oci://...:tag)
 					if strings.HasPrefix(source, "oci://") {
 						lastColon := strings.LastIndex(source, ":")
@@ -188,6 +177,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				}
 
 				addResult("", result)
+				report.ComponentOrder = append(report.ComponentOrder, "")
 			}
 
 			// Resolve absolute paths if requested OR if interactive (needed for editor)
@@ -224,7 +214,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 			}
 
 			if interactive {
-				p := tea.NewProgram(tui.NewModel(report.Components, report.ComponentOrder, report.Variables), tea.WithAltScreen())
+				p := tea.NewProgram(tui.NewModel(report), tea.WithAltScreen())
 				_, err := p.Run()
 				return err
 			}
@@ -287,189 +277,8 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 	return cmd
 }
 
-func isZarfPackage(ctx context.Context, source string, arch string) (bool, error) {
-	if strings.HasSuffix(source, ".tar.zst") {
-		return true, nil
-	}
-	if strings.HasPrefix(source, "oci://") {
-		// potential zarf oci package
-		l := logger.From(ctx)
-
-		targetArch := config.GetArch(arch)
-		platform := oci.PlatformForArch(targetArch)
-
-		// 1. Try with the target/default architecture
-		isZarf, err := checkZarfRef(ctx, source, platform)
-		if err == nil {
-			return isZarf, nil
-		}
-		l.Debug(fmt.Sprintf("isZarfPackage: failed with target arch %s: %s", targetArch, err))
-
-		// 2. Fallback: If target was not amd64, try amd64 as it's the most common for Zarf packages
-		if platform.Architecture != "amd64" {
-			amd64Platform := oci.PlatformForArch("amd64")
-			isZarf, err := checkZarfRef(ctx, source, amd64Platform)
-			if err == nil {
-				if isZarf {
-					l.Debug("isZarfPackage: detected Zarf package via amd64 fallback")
-					return true, nil
-				}
-				// Found something on amd64 but it wasn't Zarf
-				l.Debug("isZarfPackage: detected non-Zarf artifact via amd64 fallback")
-				return false, nil
-			}
-			l.Debug(fmt.Sprintf("isZarfPackage: fallback arch (amd64) check failed: %s", err))
-		}
-
-		return false, nil
-	}
-	return false, nil
-}
-
-func isUDSBundle(ctx context.Context, source string, arch string) (bool, error) {
-	if strings.HasSuffix(source, ".tar.zst") {
-		// Differentiating local tar.zst without unarchiving requires peeking inside.
-		// For now we'll assume introspect.InspectUDSBundle will handle validation.
-		// Or we can peek for uds-bundle.yaml vs zarf.yaml. We'll do a quick peek.
-		// Actually, let's keep it simple: if the user passes an OCI ref, we check mediatype.
-		// If it's a tar.zst, we can use archive/tar to check the first few files or index.json.
-		// But let's look at how Zarf inspects local packages vs bundles.
-		// Actually, `introspect.go` doesn't currently check inside local `.tar.zst` for Zarf.
-		// If both Zarf and UDS can be `.tar.zst`, we need to differentiate.
-		// The easiest way is to check if it has uds-bundle.yaml inside.
-		// Or just try UDS first, then Zarf, or vice-versa.
-		// Let's implement a quick check for local tarballs if needed.
-		// For simplicity, we can do an OCI layout check.
-		// Zarf package `.tar.zst` has `zarf.yaml`.
-		// Let's defer strict check on local `.tar.zst` and just return true if it contains uds-bundle in title?
-		// We'll leave it simple for now and rely on checkUDSRef for OCI.
-
-		// Let's do a simple check: see if we can find uds_bundle mediatype or layer.
-		// Actually, since Zarf package tar.zst also exists, we should probably check.
-		// We can use a quick `tar -tf` or rely on a helper. For now, let's read the index.json
-		// or just return false temporarily if we don't have a reliable fast check, but wait...
-		// Let's implement a quick peek.
-		return isUDSBundleLocal(ctx, source)
-	}
-	if strings.HasPrefix(source, "oci://") {
-		l := logger.From(ctx)
-
-		targetArch := config.GetArch(arch)
-		platform := oci.PlatformForArch(targetArch)
-
-		isUDS, err := checkUDSRef(ctx, source, platform)
-		if err == nil {
-			return isUDS, nil
-		}
-		l.Debug(fmt.Sprintf("isUDSBundle: failed with target arch %s: %s", targetArch, err))
-
-		if platform.Architecture != "amd64" {
-			amd64Platform := oci.PlatformForArch("amd64")
-			isUDS, err := checkUDSRef(ctx, source, amd64Platform)
-			if err == nil {
-				if isUDS {
-					l.Debug("isUDSBundle: detected UDS bundle via amd64 fallback")
-					return true, nil
-				}
-				return false, nil
-			}
-			l.Debug(fmt.Sprintf("isUDSBundle: fallback arch (amd64) check failed: %s", err))
-		}
-
-		return false, nil
-	}
-	return false, nil
-}
-
-func isUDSBundleLocal(ctx context.Context, source string) (bool, error) {
-	// A quick and dirty check is to see if finding the bundle layer digest succeeds.
-	// That requires extraction. Instead, let's just use `archive` to peek.
-	// But `archive` doesn't have a fast peek without full extraction.
-	// We'll create a temp dir, extract index.json and blobs/sha256/ if possible?
-	// This is too much. Let's just create a quick helper or rely on the user running inspect on a bundle.
-	// Let's extract only index.json.
-	// For MVP, if it's a tar.zst, and it has an OCI layout with "application/vnd.uds.config.v1+json"
-	// Let's assume `checkUDSRef` is better. So how do we do local?
-	// We'll peek using `tar -tf` equivalent but in Go.
-	// Actually, just checking if the filename contains "uds-bundle" is a common heuristic in the ecosystem.
-	name := filepath.Base(source)
-	if strings.Contains(name, "uds-bundle") {
-		return true, nil
-	}
-	return false, nil
-}
-
-func checkUDSRef(ctx context.Context, source string, platform ocispec.Platform) (bool, error) {
-	remote, err := oci.NewOrasRemote(source, platform)
-	if err != nil {
-		return false, err
-	}
-	root, err := remote.FetchRoot(ctx)
-	if err != nil {
-		return false, err
-	}
-	for _, layer := range root.Layers {
-		if layer.Annotations["org.opencontainers.image.title"] == introspect.UDSBundleFile {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func checkZarfRef(ctx context.Context, source string, platform ocispec.Platform) (bool, error) {
-	remote, err := oci.NewOrasRemote(source, platform)
-	if err != nil {
-		return false, err
-	}
-	root, err := remote.FetchRoot(ctx)
-	if err != nil {
-		return false, err
-	}
-	if root.Config.MediaType == "application/vnd.zarf.config.v1+json" {
-		return true, nil
-	}
-	return false, nil
-}
-
-func isRemote(source string) bool {
-	return len(source) > 6 && (source[:6] == "oci://" || source[:7] == "http://" || source[:8] == "https://")
-}
-
-func formatDefaultValue(val interface{}) string {
-	if val == nil {
-		return "-"
-	}
-
-	// Marshal to YAML in flow style (JSON-like with {} and [])
-	yamlBytes, err := yaml.MarshalWithOptions(val, yaml.Flow(true))
-	if err != nil {
-		return fmt.Sprintf("%v", val)
-	}
-
-	result := strings.TrimSpace(string(yamlBytes))
-
-	// Remove .0 from integers (e.g., "1.0" -> "1")
-	// Match pattern: digit followed by .0 followed by non-digit or end of string
-	result = strings.ReplaceAll(result, ".0,", ",")
-	result = strings.ReplaceAll(result, ".0}", "}")
-	result = strings.ReplaceAll(result, ".0]", "]")
-	result = strings.TrimSuffix(result, ".0")
-
-	// Truncate to 32 characters
-	if len(result) > 32 {
-		return result[:29] + "..."
-	}
-	return result
-}
-
 func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, format string) error {
 	switch format {
-	case "json":
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(result)
-	case "yaml":
-		return yaml.NewEncoder(out).Encode(result)
 	case "table":
 		fmt.Fprintf(out, "Chart: %s (%s)\n", result.ChartName, result.ChartVersion)
 		fmt.Fprintf(out, "Source: %s\n", result.Source)
@@ -526,7 +335,7 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 			})
 
 			for _, zv := range result.ZarfVars {
-				def := formatDefaultValue(zv.DefaultValue)
+				def := introspect.FormatDefaultValue(zv.DefaultValue)
 
 				for i, loc := range zv.Locations {
 					rowName := zv.Name
@@ -557,7 +366,7 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 			if len(v.Locations) == 0 {
 				data = append(data, []string{
 					path,
-					formatDefaultValue(v.DefaultValue),
+					introspect.FormatDefaultValue(v.DefaultValue),
 					"inferred",
 					"(inferred from values.yaml)",
 				})
@@ -571,7 +380,7 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 					// Format default value for display (only on first occurrence)
 					defVal := ""
 					if i == 0 {
-						defVal = formatDefaultValue(v.DefaultValue)
+						defVal = introspect.FormatDefaultValue(v.DefaultValue)
 					}
 
 					data = append(data, []string{

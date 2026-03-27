@@ -148,8 +148,9 @@ func (w *walker) handleAssignment(n *parse.PipeNode) {
 		return
 	}
 	// Simple case: $var := .Values.foo
-	// We need to resolve the RHS.
-	// Only handling single variable assignment for now.
+	// Note to Contributors: Helm heavily relies on multiple assignments in loops (e.g. range $key, $val := ...).
+	// Currently, this only inspects n.Decl[0] (the first variable), meaning it misses $val when multiple bindings
+	// are declared. This is an area for future improvement.
 
 	destVar := n.Decl[0] // *parse.VariableNode
 	if len(destVar.Ident) == 0 {
@@ -171,6 +172,10 @@ func (w *walker) resolveCommandToPath(cmd *parse.CommandNode) string {
 		return ""
 	}
 	// Check first arg
+	// Note to Contributors: This only inspects the first argument (cmd.Args[0]).
+	// If a template uses a function like `index .Values.foo "bar"`, the first argument is `index`.
+	// As a result, the walker fails to resolve the path for assignment.
+	// A future improvement should recursively walk pipeline arguments or identify common Helm funcs (like `index`).
 	switch arg := cmd.Args[0].(type) {
 	case *parse.FieldNode:
 		// .Values.foo

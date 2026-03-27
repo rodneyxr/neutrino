@@ -64,7 +64,11 @@ type Model struct {
 	pkgVariables     []v1alpha1.InteractiveVariable
 }
 
-func NewModel(components map[string]*introspect.IntrospectResult, componentOrder []string, pkgVariables []v1alpha1.InteractiveVariable) Model {
+func NewModel(report introspect.InspectionReport) Model {
+
+	components := report.Components
+	componentOrder := report.ComponentOrder
+	pkgVariables := report.Variables
 
 	// Initialize charts list in chronological definition order
 	charts := make([]string, 0, len(componentOrder)+1)
@@ -470,6 +474,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // ensureCursorVisible adjusts viewportOffset to keep cursor in view.
 // This replaces the recursive View() logic for performance.
 func (m *Model) ensureCursorVisible() {
+	if len(m.filteredValues) == 0 {
+		return
+	}
+
 	// If cursor is above viewport, move viewport up
 	if m.cursor < m.viewportOffset {
 		m.viewportOffset = m.cursor
