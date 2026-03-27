@@ -1,0 +1,18 @@
+kind: ZarfPackageConfig
+metadata:
+  name: podinfo
+  version: 0.0.1
+
+variables:
+  - name: TEST_VAR
+    description: "A test variable"
+    default: "test"
+
+components:
+  - name: podinfo
+    required: true
+    charts:
+      - name: podinfo
+        version: 6.11.1
+        namespace: podinfo
+        localPath: ../podinfo-6.11.1.tgz

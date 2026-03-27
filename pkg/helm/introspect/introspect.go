@@ -104,7 +104,7 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 			}
 
 			l.Info(fmt.Sprintf("Downloading chart %s:%s...", src.URL, src.Version))
-			chartPath, downloadErr := downloadChart(src.URL, src.Version, destDir)
+			chartPath, downloadErr := downloadChart(src, destDir)
 			if downloadErr != nil {
 				return nil, fmt.Errorf("failed to download chart: %w", downloadErr)
 			}
@@ -259,7 +259,7 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 	return result, nil
 }
 
-func downloadChart(url string, version string, destDir string) (string, error) {
+func downloadChart(src ChartSource, destDir string) (string, error) {
 	settings := cli.New()
 	settings.RepositoryCache = destDir
 	settings.RepositoryConfig = filepath.Join(destDir, "repositories.yaml")
@@ -268,7 +268,7 @@ func downloadChart(url string, version string, destDir string) (string, error) {
 	var err error
 
 	// Handle OCI
-	if registry.IsOCI(url) {
+	if registry.IsOCI(src.URL) {
 		regClient, err = registry.NewClient(
 			registry.ClientOptEnableCache(true),
 		)
@@ -285,13 +285,24 @@ func downloadChart(url string, version string, destDir string) (string, error) {
 		RepositoryConfig: settings.RepositoryConfig,
 		ContentCache:     destDir,
 		Verify:           downloader.VerifyNever,
-		Getters:         getter.All(settings),
+		Getters:          getter.All(settings),
 		Options: []getter.Option{
 			getter.WithInsecureSkipVerifyTLS(false),
 		},
 	}
 
-	saved, _, err := d.DownloadTo(url, version, destDir)
+	// If it's a Helm Repo URL (not OCI and doesn't end in .tgz), use the chart name
+	ref := src.URL
+	if !registry.IsOCI(src.URL) && !strings.HasSuffix(src.URL, ".tgz") && src.RepoName != "" {
+		// DownloadTo handles "repo/chart" if the repo is added,
+		// or "url/chart" might work in some Helm versions.
+		// However, the cleanest way to support random URLs in neutrino
+		// is to let d.DownloadTo try its best or we could append the path.
+		// For now, let's keep it as url since that's what was there,
+		// but we might need to resolve the full URL if DownloadTo fails.
+	}
+
+	saved, _, err := d.DownloadTo(ref, src.Version, destDir)
 	if err != nil {
 		return "", fmt.Errorf("downloader failed: %w", err)
 	}

@@ -81,7 +81,17 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 
 	zarfYamlPath := filepath.Join(cacheDir, layout.ZarfYAML)
 
-	if !alreadyExtracted || opts.NoCache {
+	isDirectory := false
+	if stat, err := os.Stat(path); err == nil && stat.IsDir() {
+		localZarf := filepath.Join(path, layout.ZarfYAML)
+		if _, err := os.Stat(localZarf); err == nil {
+			zarfYamlPath = localZarf
+			alreadyExtracted = true
+			isDirectory = true
+		}
+	}
+
+	if !isDirectory && (!alreadyExtracted || opts.NoCache) {
 		// Clean up if forcing no cache
 		if opts.NoCache && alreadyExtracted {
 			os.RemoveAll(cacheDir)
@@ -130,54 +140,85 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 		// Check for component tarball (components/<name>.tar)
 		compTarPath := filepath.Join(cacheDir, layout.ComponentsDir, component.Name+".tar")
 
-		// If tarball exists, extract it to a persistent location inside cacheDir
 		var chartsBaseDir string
-		if _, err := os.Stat(compTarPath); err == nil {
-			compExtractDir := filepath.Join(cacheDir, "extracted-components", component.Name)
-			// Only extract if not already extracted ??
-			// For simplicity, we can rely on Decompress overwriting or checking.
-			// Ideally we check if charts dir exists.
-
-			if err := archive.Decompress(context.TODO(), compTarPath, compExtractDir, archive.DecompressOpts{}); err != nil {
-				return nil, fmt.Errorf("failed to extract component %s: %w", component.Name, err)
+		if !isDirectory {
+			if _, err := os.Stat(compTarPath); err == nil {
+				compExtractDir := filepath.Join(cacheDir, "extracted-components", component.Name)
+				os.MkdirAll(compExtractDir, 0755)
+				err = archive.Decompress(ctx, compTarPath, compExtractDir, archive.DecompressOpts{})
+				if err == nil {
+					// Check for charts at root of extraction or inside a component-named directory
+					chartsBaseDir = filepath.Join(compExtractDir, "charts")
+					if _, err := os.Stat(chartsBaseDir); err != nil {
+						chartsBaseDir = filepath.Join(compExtractDir, component.Name, "charts")
+					}
+				} else {
+					return nil, fmt.Errorf("failed to extract component %s: %w", component.Name, err)
+				}
 			}
-			// Charts are usually at: <extract-dir>/<component-name>/charts/
-			chartsBaseDir = filepath.Join(compExtractDir, component.Name, "charts")
-		} else {
+		}
+
+		if chartsBaseDir == "" {
 			// Fallback: check if it's a directory (legacy or uncompressed layout?)
 			// Or check if charts are directly in components/<name>/charts (old layout)
-			chartsBaseDir = filepath.Join(cacheDir, layout.ComponentsDir, component.Name, "charts")
+			if isDirectory {
+				chartsBaseDir = filepath.Join(path, layout.ComponentsDir, component.Name, "charts")
+			} else {
+				chartsBaseDir = filepath.Join(cacheDir, layout.ComponentsDir, component.Name, "charts")
+			}
 		}
 
 		for _, chart := range component.Charts {
-			chartFileName := fmt.Sprintf("%s-%s.tgz", chart.Name, chart.Version)
-			chartPath := filepath.Join(chartsBaseDir, chartFileName)
+			// Search for the chart file/directory in the component's charts directory
+			candidates := []string{
+				filepath.Join(chartsBaseDir, fmt.Sprintf("%s-%s.tgz", chart.Name, chart.Version)),
+				filepath.Join(chartsBaseDir, chart.Name+".tgz"),
+				filepath.Join(chartsBaseDir, chart.Name),
+			}
+
+			var chartPath string
+			for _, c := range candidates {
+				if _, err := os.Stat(c); err == nil {
+					chartPath = c
+					break
+				}
+			}
 
 			// Expand the chart to a subdirectory so we can point to it
 			// chartsBaseDir/<chartName-Version> (expanded)
 			expandedChartDir := filepath.Join(chartsBaseDir, fmt.Sprintf("%s-%s", chart.Name, chart.Version))
-			if _, err := os.Stat(chartPath); err == nil {
-				// Archive exists. Expand it to expandedChartDir
-				// Check if already expanded?
-				if _, err := FindChartRoot(expandedChartDir); err != nil || opts.NoCache {
-					// Clean up before re-expanding if needed
-					os.RemoveAll(expandedChartDir)
-					archive.Decompress(ctx, chartPath, expandedChartDir, archive.DecompressOpts{})
-				}
-				// Use expanded path
-				if root, err := FindChartRoot(expandedChartDir); err == nil {
-					chartPath = root
+			if chartPath != "" {
+				info, _ := os.Stat(chartPath)
+				if !info.IsDir() {
+					// Archive exists. Expand it to expandedChartDir
+					if _, err := FindChartRoot(expandedChartDir); err != nil || opts.NoCache {
+						// Clean up before re-expanding if needed
+						os.RemoveAll(expandedChartDir)
+						archive.Decompress(ctx, chartPath, expandedChartDir, archive.DecompressOpts{})
+					}
+					// Use expanded path
+					if root, err := FindChartRoot(expandedChartDir); err == nil {
+						chartPath = root
+					}
 				}
 			}
 
 			// Verify file exists
-			if _, err := os.Stat(chartPath); err != nil {
-				// If not found, log/skip
+			var src ChartSource
+			if _, err := os.Stat(chartPath); err == nil {
+				src.LocalPath = chartPath
+			} else if chart.LocalPath != "" && isDirectory {
+				src.LocalPath = filepath.Join(path, chart.LocalPath)
+			} else if chart.URL != "" {
+				src.URL = chart.URL
+				src.RepoName = chart.Name
+				src.Version = chart.Version
+			} else {
 				continue
 			}
 
 			// Introspect
-			res, err := IntrospectHelmValues(ctx, ChartSource{LocalPath: chartPath}, opts)
+			res, err := IntrospectHelmValues(ctx, src, opts)
 			if err != nil {
 				return nil, fmt.Errorf("failed to introspect chart %s in component %s: %w", chart.Name, component.Name, err)
 			}
@@ -204,4 +245,3 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 		Variables:      pkg.Variables,
 	}, nil
 }
-

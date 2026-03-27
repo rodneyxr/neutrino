@@ -1,0 +1,9 @@
+kind: UDSBundle
+metadata:
+  name: podinfo-bundle
+  description: podinfo test bundle
+  version: 0.0.1
+
+packages:
+  - name: podinfo
+    path: ../../packages/00-podinfo
