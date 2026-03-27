@@ -158,6 +158,16 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 				return nil, fmt.Errorf("failed to write bundle yaml to cache: %w", err)
 			}
 
+		} else if stat, err := os.Stat(path); err == nil && stat.IsDir() {
+			bundleYamlPath = filepath.Join(path, UDSBundleFile)
+			if _, err := os.Stat(bundleYamlPath); err != nil {
+				return nil, fmt.Errorf("uds-bundle.yaml not found in directory: %s", path)
+			}
+
+			// If it's a directory, try treating the bundle as a standard uncompressed layout.
+			// But since we aren't copying the whole directory to cache, we just override bundleYamlPath
+			// and skip extraction. The logic below that parses packages should attempt to lookup local paths relative to this bundle directory.
+			alreadyExtracted = true
 		} else {
 			// Local tar.zst extraction
 			err = archive.Decompress(ctx, path, cacheDir, archive.DecompressOpts{})
@@ -165,12 +175,6 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 				return nil, fmt.Errorf("failed to extract uds bundle: %w", err)
 			}
 
-			// In a local tar.zst, uds-bundle.yaml is stored as a layer.
-			// We need to find it by reading index.json, then manifest, then finding the layer digest.
-			// But archive.Decompress for UDS might just extract the blobs.
-			// Wait, if it's an OCI layout, we have to parse index.json to find the manifest,
-			// then parse the manifest to find the layer with "org.opencontainers.image.title": "uds-bundle.yaml".
-			// Let's implement a quick helper for that.
 			layerDigest, err := findUdsBundleLayerDigest(cacheDir)
 			if err != nil {
 				return nil, fmt.Errorf("failed to find uds-bundle.yaml layer in local archive: %w", err)
@@ -392,7 +396,7 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 				pkgSource = pkg.Path
 			} else {
 				// Try to construct a path relative to the bundle
-				relPath := filepath.Join(filepath.Dir(path), filepath.Base(pkg.Path))
+				relPath := filepath.Join(filepath.Dir(bundleYamlPath), pkg.Path)
 				if _, err := os.Stat(relPath); err == nil {
 					pkgSource = relPath
 				} else {

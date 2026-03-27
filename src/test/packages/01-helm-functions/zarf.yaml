@@ -1,0 +1,18 @@
+kind: ZarfPackageConfig
+metadata:
+  name: helm-functions
+  version: 0.0.1
+
+variables:
+  - name: OVERRIDE_VAR
+    description: "An override var"
+    default: "override"
+
+components:
+  - name: parser-test
+    required: true
+    charts:
+      - name: parser-test
+        version: 0.1.0
+        namespace: test
+        localPath: charts/parser-test

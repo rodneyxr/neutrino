@@ -1,0 +1,14 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: parser-test
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          ports:
+            - containerPort: {{ index .Values.ports "http" }}
+          env:
+            - name: EXTERNAL_IP
+              value: {{ index .Values.configs "external-ip" }}

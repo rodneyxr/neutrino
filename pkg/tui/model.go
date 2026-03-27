@@ -222,8 +222,8 @@ func (m *Model) updateFilteredValues() {
 		if !newValues[i].IsPkgVar && newValues[j].IsPkgVar {
 			return false
 		}
-		
-		// If both are package variables, they are already in correct chronological order 
+
+		// If both are package variables, they are already in correct chronological order
 		// via iteration insertion. Return false to treat them as equal so SliceStable preserves their relative order.
 		if newValues[i].IsPkgVar && newValues[j].IsPkgVar {
 			return false

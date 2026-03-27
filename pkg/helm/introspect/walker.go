@@ -65,6 +65,14 @@ func (w *walker) walk(node parse.Node) {
 			w.handleAssignment(n)
 		}
 	case *parse.CommandNode:
+		if len(n.Args) > 0 {
+			if ident, ok := n.Args[0].(*parse.IdentifierNode); ok && ident.Ident == "index" {
+				path := w.resolveCommandToPath(n)
+				if path != "" {
+					w.addUsage(path, n, "value", false)
+				}
+			}
+		}
 		for _, arg := range n.Args {
 			w.walk(arg)
 		}
@@ -167,20 +175,15 @@ func (w *walker) handleAssignment(n *parse.PipeNode) {
 	}
 }
 
-func (w *walker) resolveCommandToPath(cmd *parse.CommandNode) string {
-	if len(cmd.Args) == 0 {
-		return ""
-	}
-	// Check first arg
-	// Note to Contributors: This only inspects the first argument (cmd.Args[0]).
-	// If a template uses a function like `index .Values.foo "bar"`, the first argument is `index`.
-	// As a result, the walker fails to resolve the path for assignment.
-	// A future improvement should recursively walk pipeline arguments or identify common Helm funcs (like `index`).
-	switch arg := cmd.Args[0].(type) {
+func (w *walker) resolveNodeToPath(node parse.Node) string {
+	switch arg := node.(type) {
 	case *parse.FieldNode:
 		// .Values.foo
 		if len(arg.Ident) > 0 && arg.Ident[0] == "Values" {
 			parts := arg.Ident[1:]
+			if len(parts) == 0 {
+				return "Values"
+			}
 			return "Values." + strings.Join(parts, ".")
 		}
 		// .foo where . is Values...
@@ -189,7 +192,13 @@ func (w *walker) resolveCommandToPath(cmd *parse.CommandNode) string {
 			if strings.HasPrefix(currentDot, "Values.") || currentDot == "Values" {
 				suffix := strings.Join(arg.Ident, ".")
 				if currentDot == "Values" {
+					if suffix == "" {
+						return currentDot
+					}
 					return "Values." + suffix
+				}
+				if suffix == "" {
+					return currentDot
 				}
 				return currentDot + "." + suffix
 			}
@@ -200,8 +209,38 @@ func (w *walker) resolveCommandToPath(cmd *parse.CommandNode) string {
 				return val
 			}
 		}
+	case *parse.StringNode:
+		return arg.Text
 	}
 	return ""
+}
+
+func (w *walker) resolveCommandToPath(cmd *parse.CommandNode) string {
+	if len(cmd.Args) == 0 {
+		return ""
+	}
+
+	// Handle functions like `index`
+	if ident, ok := cmd.Args[0].(*parse.IdentifierNode); ok {
+		if ident.Ident == "index" && len(cmd.Args) > 1 {
+			basePath := w.resolveNodeToPath(cmd.Args[1])
+			if basePath != "" {
+				var parts []string
+				for i := 2; i < len(cmd.Args); i++ {
+					if strNode, ok := cmd.Args[i].(*parse.StringNode); ok {
+						parts = append(parts, strings.Trim(strNode.Text, `"'`))
+					}
+				}
+				if len(parts) > 0 {
+					return basePath + "." + strings.Join(parts, ".")
+				}
+				return basePath
+			}
+		}
+	}
+
+	// Fallback to evaluating the first argument normally
+	return w.resolveNodeToPath(cmd.Args[0])
 }
 
 func (w *walker) handleRange(n *parse.RangeNode) {
@@ -267,6 +306,8 @@ func (w *walker) addUsage(path string, node parse.Node, kind string, wildcard bo
 	// Clean path?
 	// e.g. remove trailing dots?
 	// Validate it looks like a graph path
+
+	path = strings.TrimPrefix(path, "Values.")
 
 	loc := ValueUsageLocation{
 		File:   w.File,
