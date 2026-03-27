@@ -34,8 +34,10 @@ const (
 
 type DisplayItem struct {
 	introspect.ValueUsage
-	Component string
-	IsZarfVar bool
+	Component  string
+	IsZarfVar  bool
+	IsPkgVar   bool
+	PkgVarDesc string
 }
 
 type Model struct {
@@ -110,8 +112,26 @@ func NewModel(report introspect.InspectionReport) Model {
 
 func (m *Model) updateFilteredValues() {
 	var newValues []DisplayItem
+	filter := m.filterInput.Value()
 
-	// filteredValues are derived from components based on currentChart and filterInput
+	// Add package variables unconditionally at the top if matches filter
+	for _, pv := range m.pkgVariables {
+		if filter == "" || strings.Contains(strings.ToLower(pv.Name), strings.ToLower(filter)) {
+			desc := strings.ReplaceAll(pv.Description, "\n", " ")
+			if len(desc) > 60 {
+				desc = desc[:57] + "..."
+			}
+			newValues = append(newValues, DisplayItem{
+				ValueUsage: introspect.ValueUsage{
+					Path:         pv.Name,
+					DefaultValue: pv.Default,
+				},
+				Component:  "Package Variables",
+				IsPkgVar:   true,
+				PkgVarDesc: desc,
+			})
+		}
+	}
 
 	// Iterate valid chart names to maintain order and get keys
 	for _, name := range m.chartNames {
@@ -128,8 +148,6 @@ func (m *Model) updateFilteredValues() {
 		if res == nil {
 			continue
 		}
-
-		filter := m.filterInput.Value()
 
 		for _, v := range res.Values {
 			if filter == "" || strings.Contains(strings.ToLower(v.Path), strings.ToLower(filter)) {
@@ -190,8 +208,15 @@ func (m *Model) updateFilteredValues() {
 		}
 	}
 
-	// Sort values - Group by Component, then IsZarfVar (descending), then Path
-	sort.Slice(newValues, func(i, j int) bool {
+	sort.SliceStable(newValues, func(i, j int) bool {
+		// Package Variables always go first
+		if newValues[i].IsPkgVar && !newValues[j].IsPkgVar {
+			return true
+		}
+		if !newValues[i].IsPkgVar && newValues[j].IsPkgVar {
+			return false
+		}
+
 		// Group by Component
 		if newValues[i].Component != newValues[j].Component {
 			return newValues[i].Component < newValues[j].Component
@@ -567,7 +592,7 @@ func (m Model) View() string {
 	}
 
 	// Header
-	header := titleStyle.Render("Neutrino TUI")
+	header := titleStyle.Render("Neutrino")
 	chartTitle := m.currentChart
 	if chartTitle == "" {
 		chartTitle = "All Charts"
@@ -589,21 +614,6 @@ func (m Model) View() string {
 				s += helpStyle.Render("Source: "+res.Source) + "\n"
 			}
 			s += "\n"
-
-			// Zarf Package Variables for this chart selection?
-			// They are global, so show them always? Or just if associated?
-			// User asked for "zarf package variables table ... at the top of each chart info"
-			if len(m.pkgVariables) > 0 {
-				s += zarfVarStyle.Render("Package Variables:") + "\n"
-				for _, pv := range m.pkgVariables {
-					def := pv.Default
-					if def == "" {
-						def = "nil"
-					}
-					s += fmt.Sprintf("  %s: %s (%s)\n", pv.Name, codeStyle.Render(def), helpStyle.Render(pv.Description))
-				}
-				s += "\n"
-			}
 		} else {
 			header += fmt.Sprintf(" - %s", chartTitle)
 			s += header + "\n\n"
@@ -613,8 +623,10 @@ func (m Model) View() string {
 	// List
 	var listContent string
 	linesUsed := 0
-	// 5 = Header(2) + Footer(3)
-	maxLines := m.windowHeight - 5
+
+	// Dynamically calculate maxLines based on the size of the header and footer
+	linesInHeader := strings.Count(s, "\n")
+	maxLines := m.windowHeight - linesInHeader - 3 // 3 for footer
 	if maxLines < 1 {
 		maxLines = 10
 	}
@@ -653,8 +665,11 @@ func (m Model) View() string {
 			itemStr += chartFilterStyle.Render(fmt.Sprintf("%s--- %s%s ---", sepPrefix, v.Component, versionStr)) + "\n"
 
 			// Render Header dependent on first item type
-			if v.IsZarfVar {
-				headerStr := fmt.Sprintf("    %-50s %-20s %-10s %s", "VARIABLE", "DEFAULT", "TYPE", "LOCATION")
+			if v.IsPkgVar {
+				headerStr := fmt.Sprintf("    %-50s %-20s %s", "VARIABLE", "DEFAULT", "DESCRIPTION")
+				itemStr += tableHeaderStyle.Render(headerStr) + "\n"
+			} else if v.IsZarfVar {
+				headerStr := fmt.Sprintf("    %-50s %-20s %-10s %s", "ZARF VARIABLE", "DEFAULT", "TYPE", "LOCATION")
 				itemStr += tableHeaderStyle.Render(headerStr) + "\n"
 			} else {
 				headerStr := fmt.Sprintf("    %-50s %-20s %-10s %s", "PATH", "DEFAULT", "TYPE", "LOCATION")
@@ -665,7 +680,7 @@ func (m Model) View() string {
 			lastIsZarfVar = v.IsZarfVar
 		} else {
 			// Same Component, check if we switched from Zarf to Values
-			if lastIsZarfVar && !v.IsZarfVar {
+			if lastIsZarfVar && !v.IsZarfVar && !v.IsPkgVar {
 				// Transition from Zarf -> Values
 				// Render Values Header
 				headerStr := fmt.Sprintf("\n    %-50s %-20s %-10s %s", "PATH", "DEFAULT", "TYPE", "LOCATION")
@@ -740,12 +755,17 @@ func (m Model) View() string {
 		}
 
 		// Construct line
-		line := fmt.Sprintf("%-50s %-20s %-10s %s", pathCol, defCol, typeCol, locCol)
+		var line string
+		if v.IsPkgVar {
+			line = fmt.Sprintf("%-50s %-20s %s", pathCol, defCol, helpStyle.Render(v.PkgVarDesc))
+		} else {
+			line = fmt.Sprintf("%-50s %-20s %-10s %s", pathCol, defCol, typeCol, locCol)
+		}
 
 		if i == m.cursor {
 			itemStr += selectedItemStyle.Render(fmt.Sprintf("> %s", line)) + "\n"
 		} else {
-			if v.IsZarfVar {
+			if v.IsPkgVar || v.IsZarfVar {
 				itemStr += itemStyle.Render(zarfVarStyle.Render(line)) + "\n"
 			} else {
 				itemStr += itemStyle.Render(line) + "\n"
