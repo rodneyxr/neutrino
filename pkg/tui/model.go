@@ -35,9 +35,10 @@ const (
 type DisplayItem struct {
 	introspect.ValueUsage
 	Component  string
-	IsZarfVar  bool
-	IsPkgVar   bool
-	PkgVarDesc string
+	IsZarfVar    bool
+	IsPkgVar     bool
+	PkgVarDesc   string
+	IsEmptyState bool
 }
 
 type Model struct {
@@ -149,8 +150,11 @@ func (m *Model) updateFilteredValues() {
 			continue
 		}
 
+		chartHasItems := false
+
 		for _, v := range res.Values {
 			if filter == "" || strings.Contains(strings.ToLower(v.Path), strings.ToLower(filter)) {
+				chartHasItems = true
 				// Create DisplayItem
 				item := DisplayItem{
 					ValueUsage: v,
@@ -186,6 +190,7 @@ func (m *Model) updateFilteredValues() {
 			}
 
 			if filter == "" || strings.Contains(strings.ToLower(v.Path), strings.ToLower(filter)) {
+				chartHasItems = true
 				item := DisplayItem{
 					ValueUsage: v,
 					Component:  name,
@@ -205,6 +210,17 @@ func (m *Model) updateFilteredValues() {
 					}
 				}
 			}
+		}
+
+		// Inject Empty State Dummy Row if zero items matched
+		if !chartHasItems && filter == "" {
+			newValues = append(newValues, DisplayItem{
+				ValueUsage: introspect.ValueUsage{
+					Path: "(No values discovered)",
+				},
+				Component:    name,
+				IsEmptyState: true,
+			})
 		}
 	}
 
@@ -375,8 +391,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "enter":
 				if m.viewMode == ViewModeList && len(m.filteredValues) > 0 {
-					m.viewMode = ViewModeDetail
-					m.detailCursor = 0
+					if !m.filteredValues[m.cursor].IsEmptyState {
+						m.viewMode = ViewModeDetail
+						m.detailCursor = 0
+					}
 				} else if m.viewMode == ViewModeDetail {
 					// Open the selected location in detail view
 					v := m.filteredValues[m.cursor]
@@ -397,6 +415,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "y":
 				if m.viewMode == ViewModeList && len(m.filteredValues) > 0 {
 					v := m.filteredValues[m.cursor]
+					if v.IsEmptyState {
+						return m, nil
+					}
 					if len(v.Locations) > 0 {
 						loc := v.Locations[0]
 						return m, openEditor(loc.File, loc.Line, loc.Column)
@@ -730,7 +751,9 @@ func (m Model) View() string {
 		}
 
 		typeCol := "inferred"
-		if v.IsZarfVar {
+		if v.IsEmptyState {
+			typeCol = "-"
+		} else if v.IsZarfVar {
 			typeCol = "variable"
 		} else if len(v.Locations) > 0 {
 			typeCol = "field"
@@ -767,6 +790,8 @@ func (m Model) View() string {
 		var line string
 		if v.IsPkgVar {
 			line = fmt.Sprintf("%-50s %-20s %s", pathCol, defCol, helpStyle.Render(v.PkgVarDesc))
+		} else if v.IsEmptyState {
+			line = fmt.Sprintf("%-50s %-20s %-10s %s", pathCol, "", typeCol, "")
 		} else {
 			line = fmt.Sprintf("%-50s %-20s %-10s %s", pathCol, defCol, typeCol, locCol)
 		}
@@ -776,6 +801,9 @@ func (m Model) View() string {
 		} else {
 			if v.IsPkgVar || v.IsZarfVar {
 				itemStr += itemStyle.Render(zarfVarStyle.Render(line)) + "\n"
+			} else if v.IsEmptyState {
+				// Gray out identical to description format
+				itemStr += itemStyle.Render(helpStyle.Render(line)) + "\n"
 			} else {
 				itemStr += itemStyle.Render(line) + "\n"
 			}
