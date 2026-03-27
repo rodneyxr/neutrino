@@ -32,9 +32,11 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 
 	if src.LocalPath != "" {
 		l.Debug(fmt.Sprintf("Loading chart from local path: %s", src.LocalPath))
-		ch, err := loader.Load(src.LocalPath)
-		if err == nil {
+		ch, loadErr := loader.Load(src.LocalPath)
+		if loadErr == nil {
 			c = ch.(*v2.Chart)
+		} else {
+			err = loadErr
 		}
 	} else if src.URL != "" {
 		start := time.Now()
@@ -259,6 +261,8 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 
 func downloadChart(url string, version string, destDir string) (string, error) {
 	settings := cli.New()
+	settings.RepositoryCache = destDir
+	settings.RepositoryConfig = filepath.Join(destDir, "repositories.yaml")
 
 	var regClient *registry.Client
 	var err error
@@ -275,10 +279,13 @@ func downloadChart(url string, version string, destDir string) (string, error) {
 
 	// Set up the chart downloader
 	d := downloader.ChartDownloader{
-		Out:            io.Discard,
-		RegistryClient: regClient,
-		Verify:         downloader.VerifyNever,
-		Getters:        getter.All(settings),
+		Out:              io.Discard,
+		RegistryClient:   regClient,
+		RepositoryCache:  settings.RepositoryCache,
+		RepositoryConfig: settings.RepositoryConfig,
+		ContentCache:     destDir,
+		Verify:           downloader.VerifyNever,
+		Getters:         getter.All(settings),
 		Options: []getter.Option{
 			getter.WithInsecureSkipVerifyTLS(false),
 		},

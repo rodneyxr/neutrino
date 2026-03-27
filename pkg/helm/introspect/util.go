@@ -1,6 +1,7 @@
 package introspect
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -9,8 +10,13 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/defenseunicorns/pkg/oci"
+	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/zarf-dev/zarf/src/config"
+	"github.com/zarf-dev/zarf/src/pkg/logger"
 )
 
 var zarfVarRegex = regexp.MustCompile("###ZARF_VAR_([A-Z0-9_]+)###")
@@ -238,4 +244,133 @@ func FindChartRoot(dir string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no Chart.yaml found in %s or immediate subdirectories", dir)
+}
+
+// IsZarfPackage checks if the source is a Zarf package.
+func IsZarfPackage(ctx context.Context, source string, arch string) (bool, error) {
+	if strings.HasSuffix(source, ".tar.zst") {
+		return true, nil
+	}
+	if strings.HasPrefix(source, "oci://") {
+		l := logger.From(ctx)
+		targetArch := config.GetArch(arch)
+		platform := oci.PlatformForArch(targetArch)
+
+		isZarf, err := checkZarfRef(ctx, source, platform)
+		if err == nil {
+			return isZarf, nil
+		}
+		l.Debug(fmt.Sprintf("IsZarfPackage: failed with target arch %s: %s", targetArch, err))
+
+		if platform.Architecture != "amd64" {
+			amd64Platform := oci.PlatformForArch("amd64")
+			isZarf, err := checkZarfRef(ctx, source, amd64Platform)
+			if err == nil {
+				if isZarf {
+					return true, nil
+				}
+				return false, nil
+			}
+			l.Debug(fmt.Sprintf("IsZarfPackage: fallback arch (amd64) check failed: %s", err))
+		}
+		return false, nil
+	}
+	return false, nil
+}
+
+// IsUDSBundle checks if the source is a UDS bundle.
+func IsUDSBundle(ctx context.Context, source string, arch string) (bool, error) {
+	if strings.HasSuffix(source, ".tar.zst") {
+		return isUDSBundleLocal(ctx, source)
+	}
+	if strings.HasPrefix(source, "oci://") {
+		l := logger.From(ctx)
+		targetArch := config.GetArch(arch)
+		platform := oci.PlatformForArch(targetArch)
+
+		isUDS, err := checkUDSRef(ctx, source, platform)
+		if err == nil {
+			return isUDS, nil
+		}
+		l.Debug(fmt.Sprintf("IsUDSBundle: failed with target arch %s: %s", targetArch, err))
+
+		if platform.Architecture != "amd64" {
+			amd64Platform := oci.PlatformForArch("amd64")
+			isUDS, err := checkUDSRef(ctx, source, amd64Platform)
+			if err == nil {
+				if isUDS {
+					return true, nil
+				}
+				return false, nil
+			}
+			l.Debug(fmt.Sprintf("IsUDSBundle: fallback arch (amd64) check failed: %s", err))
+		}
+		return false, nil
+	}
+	return false, nil
+}
+
+func isUDSBundleLocal(ctx context.Context, source string) (bool, error) {
+	name := filepath.Base(source)
+	if strings.Contains(name, "uds-bundle") {
+		return true, nil
+	}
+	return false, nil
+}
+
+func checkUDSRef(ctx context.Context, source string, platform ocispec.Platform) (bool, error) {
+	remote, err := oci.NewOrasRemote(source, platform)
+	if err != nil {
+		return false, err
+	}
+	root, err := remote.FetchRoot(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, layer := range root.Layers {
+		if layer.Annotations["org.opencontainers.image.title"] == UDSBundleFile {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func checkZarfRef(ctx context.Context, source string, platform ocispec.Platform) (bool, error) {
+	remote, err := oci.NewOrasRemote(source, platform)
+	if err != nil {
+		return false, err
+	}
+	root, err := remote.FetchRoot(ctx)
+	if err != nil {
+		return false, err
+	}
+	if root.Config.MediaType == "application/vnd.zarf.config.v1+json" {
+		return true, nil
+	}
+	return false, nil
+}
+
+// IsRemote determines if a source string is a remote URL.
+func IsRemote(source string) bool {
+	return len(source) > 6 && (source[:6] == "oci://" || source[:7] == "http://" || source[:8] == "https://")
+}
+
+// FormatDefaultValue formats a value consistently for display (YAML style, truncated).
+func FormatDefaultValue(val interface{}) string {
+	if val == nil {
+		return "-"
+	}
+	yamlBytes, err := yaml.MarshalWithOptions(val, yaml.Flow(true))
+	if err != nil {
+		return fmt.Sprintf("%v", val)
+	}
+	result := strings.TrimSpace(string(yamlBytes))
+	result = strings.ReplaceAll(result, ".0,", ",")
+	result = strings.ReplaceAll(result, ".0}", "}")
+	result = strings.ReplaceAll(result, ".0]", "]")
+	result = strings.TrimSuffix(result, ".0")
+	if len(result) > 32 {
+		return result[:29] + "..."
+	}
+	return result
 }

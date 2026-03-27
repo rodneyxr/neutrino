@@ -125,7 +125,7 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 	var remoteOci *oci.OrasRemote
 	var remoteRoot *oci.Manifest
 
-	if isRemote(path) {
+	if IsRemote(path) {
 		targetArch := config.GetArch(arch)
 		platform := oci.PlatformForArch(targetArch)
 		if remote, err := oci.NewOrasRemote(path, platform); err == nil {
@@ -142,7 +142,7 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 			os.MkdirAll(cacheDir, 0755)
 		}
 
-		if isRemote(path) {
+		if IsRemote(path) {
 			tmpDir, err = PullUDSBundle(ctx, path, version, arch)
 			if err != nil {
 				return nil, err
@@ -222,7 +222,7 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 		if len(parts) == 2 {
 			targetLayerDigest := parts[1]
 
-			if isRemote(path) && remoteOci != nil && remoteRoot != nil {
+			if IsRemote(path) && remoteOci != nil && remoteRoot != nil {
 				foundTarget := false
 				var targetLayer ocispec.Descriptor
 				for _, layer := range remoteRoot.Layers {
@@ -288,7 +288,7 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 				} else {
 					l.Debug(fmt.Sprintf("Target package digest %s not found in remote bundle layers.", targetLayerDigest))
 				}
-			} else if !isRemote(path) {
+			} else if !IsRemote(path) {
 				indexBytes, err := os.ReadFile(filepath.Join(cacheDir, "index.json"))
 				if err == nil {
 					var list struct {

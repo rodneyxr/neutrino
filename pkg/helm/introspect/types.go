@@ -3,6 +3,7 @@ package introspect
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 )
 
 // ChartSource defines where to load the chart from.
@@ -103,4 +104,11 @@ type IntrospectOptions struct {
 	NoCache bool
 	// NoValues disables the inference of nested paths from values.yaml.
 	NoValues bool
+}
+
+// InspectionReport is the unified output structure for purely Helm, Zarf, and UDS introspection.
+type InspectionReport struct {
+	Variables      []v1alpha1.InteractiveVariable `json:"variables,omitempty" yaml:"variables,omitempty"`
+	Components     map[string]*IntrospectResult   `json:"components" yaml:"components"`
+	ComponentOrder []string                       `json:"-" yaml:"-"`
 }

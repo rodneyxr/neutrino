@@ -14,15 +14,7 @@ import (
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 )
 
-// PullZarfPackage pulls a Zarf package from a remote source (OCI or HTTP) to the temp directory.
-func PullZarfPackage(ctx context.Context, source string, version string, arch string) (string, error) {
-	// Create temp directory for the package file
-	tmpDir, err := os.MkdirTemp("", "neutrino-zarf-pull-*")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp dir: %w", err)
-	}
-	// Caller responsible for cleanup or it happens when main exits (OS temp)
-	// But better if we could clean up. For now, it returns the file path.
+func PullZarfPackage(ctx context.Context, source string, version string, arch string, destDir string) (string, error) {
 
 	// Determine cache path
 	cachePath, err := config.GetAbsHomePath(config.ZarfDefaultCachePath)
@@ -36,9 +28,8 @@ func PullZarfPackage(ctx context.Context, source string, version string, arch st
 		Architecture: arch,
 	}
 
-	pkgPath, err := packager.Pull(ctx, source, tmpDir, pullOpts)
+	pkgPath, err := packager.Pull(ctx, source, destDir, pullOpts)
 	if err != nil {
-		os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("failed to pull zarf package: %w", err)
 	}
 
@@ -99,16 +90,18 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 
 		// Pull if remote
 		localTarPath := path
-		if isRemote(path) {
-			pulledPath, err := PullZarfPackage(ctx, path, version, arch)
+		if IsRemote(path) {
+			tmpDir, err := os.MkdirTemp("", "neutrino-zarf-pull-*")
+			if err != nil {
+				return nil, fmt.Errorf("failed to create temp dir: %w", err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			pulledPath, err := PullZarfPackage(ctx, path, version, arch, tmpDir)
 			if err != nil {
 				return nil, err
 			}
 			localTarPath = pulledPath
-			// Clean up the pulled tarball after extraction
-			defer os.Remove(localTarPath)
-			// Note: PullZarfPackage creates a temp dir for the file, we might leave that empty dir.
-			// It's acceptable for now.
 		}
 
 		// Extract to cacheDir
@@ -212,6 +205,3 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 	}, nil
 }
 
-func isRemote(source string) bool {
-	return len(source) > 6 && (source[:6] == "oci://" || source[:7] == "http://" || source[:8] == "https://")
-}
