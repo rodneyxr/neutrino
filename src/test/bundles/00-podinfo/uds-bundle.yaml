@@ -1,9 +1,14 @@
+# Copyright 2024 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
 kind: UDSBundle
 metadata:
-  name: podinfo-bundle
+  name: 00-podinfo
   description: podinfo test bundle
   version: 0.0.1
 
 packages:
   - name: podinfo
-    path: ../../packages/00-podinfo
+    path: "../../packages/00-podinfo/zarf-package-podinfo-amd64-0.0.1.tar.zst"
+    ref: 0.0.1
+

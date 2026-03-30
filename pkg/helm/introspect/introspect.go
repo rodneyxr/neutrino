@@ -10,8 +10,8 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/goccy/go-yaml"
 	"github.com/Masterminds/sprig/v3"
+	"github.com/goccy/go-yaml"
 	"github.com/zarf-dev/zarf/src/pkg/logger"
 	"helm.sh/helm/v4/pkg/chart/common"
 	"helm.sh/helm/v4/pkg/chart/loader"
