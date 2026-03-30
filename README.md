@@ -189,6 +189,29 @@ When using `-o json`, the output provides a machine-readable schema:
 
 ---
 
+## 📖 Documentation
+
+Neutrino comes with a comprehensive documentation site built with MkDocs. This
+site covers technical deep-dives into package handling, caching mechanisms,
+Helm introspection, and known edge cases.
+
+### Serving Docs Locally
+
+To view the documentation site locally, ensure you have `mkdocs` installed
+(via Homebrew is recommended) and run:
+
+```bash
+# Install mkdocs
+brew install mkdocs
+
+# Serve the documentation
+mkdocs serve
+```
+
+The site will be available at `http://localhost:8000`.
+
+---
+
 ## 🧩 Architecture
 
 Neutrino utilizes the `text/template/parse` package from the Go standard library

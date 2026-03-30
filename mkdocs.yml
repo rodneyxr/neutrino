@@ -1,0 +1,17 @@
+site_name: Neutrino
+site_description: An advanced introspection and management tool for Zarf, UDS dependencies, and Helm charts.
+repo_url: https://github.com/defenseunicorns/neutrino
+repo_name: defenseunicorns/neutrino
+
+theme:
+  name: mkdocs
+
+nav:
+  - General Overview: index.md
+  - Architecture & Mechanics: 
+      - Package Handling: package-handling.md
+      - Helm Introspection: helm-introspection.md
+  - Core Systems:
+      - Caching Mechanism: caching.md
+  - Reference:
+      - Edge Cases & Workarounds: edge-cases.md
