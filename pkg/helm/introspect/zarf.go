@@ -141,6 +141,7 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 		compTarPath := filepath.Join(cacheDir, layout.ComponentsDir, component.Name+".tar")
 
 		var chartsBaseDir string
+		var valuesBaseDir string
 		if _, err := os.Stat(compTarPath); err == nil {
 			compExtractDir := filepath.Join(cacheDir, "extracted-components", component.Name)
 			os.MkdirAll(compExtractDir, 0755)
@@ -148,8 +149,10 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 			if err == nil {
 				// Check for charts at root of extraction or inside a component-named directory
 				chartsBaseDir = filepath.Join(compExtractDir, "charts")
+				valuesBaseDir = filepath.Join(compExtractDir, "values")
 				if _, err := os.Stat(chartsBaseDir); err != nil {
 					chartsBaseDir = filepath.Join(compExtractDir, component.Name, "charts")
+					valuesBaseDir = filepath.Join(compExtractDir, component.Name, "values")
 				}
 			} else {
 				return nil, fmt.Errorf("failed to extract component %s: %w", component.Name, err)
@@ -161,8 +164,10 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 			// Or check if charts are directly in components/<name>/charts (old layout)
 			if isDirectory {
 				chartsBaseDir = filepath.Join(path, layout.ComponentsDir, component.Name, "charts")
+				valuesBaseDir = filepath.Join(path, layout.ComponentsDir, component.Name, "values")
 			} else {
 				chartsBaseDir = filepath.Join(cacheDir, layout.ComponentsDir, component.Name, "charts")
+				valuesBaseDir = filepath.Join(cacheDir, layout.ComponentsDir, component.Name, "values")
 			}
 		}
 
@@ -214,6 +219,26 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 			} else {
 				continue
 			}
+
+			// Gather Zarf managed values files
+			var valuesFiles []string
+			for i, vf := range chart.ValuesFiles {
+				var found bool
+				if valuesBaseDir != "" {
+					vfPath := filepath.Join(valuesBaseDir, fmt.Sprintf("%s-%s-%d", chart.Name, chart.Version, i))
+					if _, err := os.Stat(vfPath); err == nil {
+						valuesFiles = append(valuesFiles, vfPath)
+						found = true
+					}
+				}
+				if !found && isDirectory {
+					vfPath := filepath.Join(path, vf)
+					if _, err := os.Stat(vfPath); err == nil {
+						valuesFiles = append(valuesFiles, vfPath)
+					}
+				}
+			}
+			src.ValuesFiles = valuesFiles
 
 			// Introspect
 			res, err := IntrospectHelmValues(ctx, src, opts)

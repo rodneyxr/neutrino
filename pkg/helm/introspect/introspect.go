@@ -10,6 +10,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/goccy/go-yaml"
 	"github.com/Masterminds/sprig/v3"
 	"github.com/zarf-dev/zarf/src/pkg/logger"
 	"helm.sh/helm/v4/pkg/chart/common"
@@ -129,6 +130,21 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to load chart: %w", err)
+	}
+
+	// Merge provided custom values files into the loaded chart's values
+	for _, vf := range src.ValuesFiles {
+		l.Debug(fmt.Sprintf("Merging values file: %s", vf))
+		if vfBytes, readErr := os.ReadFile(vf); readErr == nil {
+			var m map[string]interface{}
+			if parseErr := yaml.Unmarshal(vfBytes, &m); parseErr == nil {
+				c.Values = mergeMaps(c.Values, m)
+			} else {
+				l.Warn(fmt.Sprintf("Failed to parse values file %s: %s", vf, parseErr))
+			}
+		} else {
+			l.Warn(fmt.Sprintf("Failed to read values file %s: %s", vf, readErr))
+		}
 	}
 
 	result := &IntrospectResult{

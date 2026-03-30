@@ -107,14 +107,15 @@ neutrino inspect ./charts/podinfo -o json > introspection.json
 **3. Inspect an OCI chart:**
 
 ```bash
-neutrino inspect oci://ghcr.io/stefanprodan/charts/podinfo --version 6.11.1
 neutrino inspect oci://ghcr.io/stefanprodan/charts/podinfo:6.11.1
+neutrino inspect oci://ghcr.io/stefanprodan/charts/podinfo --version 6.11.1
 ```
 
 **4. Inspect a Zarf package:**
 
 ```bash
 neutrino inspect ./zarf-package-podinfo-amd64-0.0.1.tar.zst
+neutrino inspect oci://ghcr.io/zarf-dev/packages/init:v0.74.0
 ```
 
 **5. Inspect an OCI Zarf package (specific architecture):**
