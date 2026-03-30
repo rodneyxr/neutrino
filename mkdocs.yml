@@ -1,7 +1,7 @@
 site_name: Neutrino
 site_description: An advanced introspection and management tool for Zarf, UDS dependencies, and Helm charts.
-repo_url: https://github.com/defenseunicorns/neutrino
-repo_name: defenseunicorns/neutrino
+repo_url: https://github.com/rodneyxr/neutrino
+repo_name: rodneyxr/neutrino
 
 theme:
   name: mkdocs
