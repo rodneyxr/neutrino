@@ -1,0 +1,46 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "inspect",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}",
+            "args": [
+                "inspect",
+                "${input:packagePath}"
+            ]
+        },
+        {
+            "name": "inspect (interactive)",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}",
+            "args": [
+                "inspect",
+                "${input:packagePath}",
+                "--interactive"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "docs",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "mkdocs serve"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "packagePath",
+            "type": "promptString",
+            "description": "Path to the Zarf package or Helm chart",
+            "default": "./src/test/bundles/00-podinfo/uds-bundle-00-podinfo-arm64-0.0.1.tar.zst"
+        }
+    ]
+}

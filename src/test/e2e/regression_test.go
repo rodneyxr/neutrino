@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rodneyxr/neutrino/pkg/helm/introspect"
+	"github.com/rodneyxr/neutrino/src/pkg/helm/introspect"
 	"github.com/rodneyxr/neutrino/src/test/helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

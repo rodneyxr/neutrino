@@ -1,12 +1,13 @@
 # Neutrino ⚛️
 
-> **Static Analysis & Introspection for Helm Charts and Zarf Packages.**
+> **Static Analysis & Introspection for Helm Charts, Zarf Packages, and UDS
+> Bundles.**
 
 Neutrino is a standalone command-line tool designed to provide deep insights
-into Helm charts and Zarf packages. Unlike simple linters or text search tools,
-Neutrino statically analyzes the Abstract Syntax Tree (AST) of Helm templates to
-discover **actual usage** of values, uncovering the true configuration surface
-of a chart.
+into Helm charts, Zarf packages, and UDS bundles. Unlike simple linters or text
+search tools, Neutrino statically analyzes the Abstract Syntax Tree (AST) of
+Helm templates to discover **actual usage** of values, uncovering the true
+configuration surface of a chart.
 
 ---
 
@@ -223,16 +224,18 @@ rendering context.
 
 ```
 neutrino/
-├── cmd/           # CLI command definitions (Cobra)
-│   ├── root.go    # Root command
-│   └── inspect.go # Inspection logic
-├── pkg/           # Core library code
-│   └── helm/
-│       └── introspect/
-│           ├── introspect.go # Main analysis orchestration
-│           ├── walker.go     # AST traversal and state tracking
-│           └── types.go      # Data structures
-└── main.go        # Entry point
+├── src/
+│   ├── cmd/           # CLI command definitions (Cobra)
+│   │   ├── root.go    # Root command
+│   │   └── inspect.go # Inspection logic
+│   ├── pkg/           # Core library code
+│   │   └── helm/
+│   │       └── introspect/
+│   │           ├── introspect.go # Main analysis orchestration
+│   │           ├── walker.go     # AST traversal and state tracking
+│   │           └── types.go      # Data structures
+│   └── test/          # Test assets and E2E suites
+└── main.go            # Entry point
 ```
 
 ---

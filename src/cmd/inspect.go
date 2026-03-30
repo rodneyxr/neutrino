@@ -11,8 +11,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/goccy/go-yaml"
-	"github.com/rodneyxr/neutrino/pkg/helm/introspect"
-	"github.com/rodneyxr/neutrino/pkg/tui"
+	"github.com/rodneyxr/neutrino/src/pkg/helm/introspect"
+	"github.com/rodneyxr/neutrino/src/pkg/tui"
 	"github.com/spf13/cobra"
 	"github.com/zarf-dev/zarf/src/pkg/logger"
 	"github.com/zarf-dev/zarf/src/pkg/message"

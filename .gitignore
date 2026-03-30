@@ -34,3 +34,6 @@ go.work.sum
 # .idea/
 # .vscode/
 *.code-workspace
+
+# Debug binaries
+__debug_bin*

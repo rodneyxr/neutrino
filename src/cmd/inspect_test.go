@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rodneyxr/neutrino/pkg/helm/introspect"
+	"github.com/rodneyxr/neutrino/src/pkg/helm/introspect"
 
 	"github.com/stretchr/testify/assert"
 )
