@@ -374,3 +374,25 @@ func FormatDefaultValue(val interface{}) string {
 	}
 	return result
 }
+
+// mergeMaps recursively merges two maps. Dest prevails over src for matching keys if both are primitives.
+// If both are maps, they are merged.
+func mergeMaps(dest, src map[string]interface{}) map[string]interface{} {
+	if dest == nil {
+		dest = make(map[string]interface{})
+	}
+	for k, v := range src {
+		if destVal, ok := dest[k]; ok {
+			if destMap, okDest := destVal.(map[string]interface{}); okDest {
+				if srcMap, okSrc := v.(map[string]interface{}); okSrc {
+					dest[k] = mergeMaps(destMap, srcMap)
+					continue
+				}
+			}
+		}
+		// If both aren't maps or dest doesn't have it, overwrite dest with src
+		dest[k] = v
+	}
+	return dest
+}
+

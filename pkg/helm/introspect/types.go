@@ -16,6 +16,8 @@ type ChartSource struct {
 	Version string
 	// RepoName is the repository name for classic Helm repos.
 	RepoName string
+	// ValuesFiles contains custom values files to load (e.g. from a zarf package)
+	ValuesFiles []string
 }
 
 // ValueUsageLocation describes where a value usage was found in a template.
