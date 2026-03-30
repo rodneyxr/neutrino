@@ -25,7 +25,7 @@ func TestNeutrinoE2E(t *testing.T) {
 		// 	Version: "6.11.1",
 		// }
 		src := introspect.ChartSource{
-			LocalPath: "../../src/test/packages/podinfo-6.11.1.tgz",
+			LocalPath: "../../test/packages/podinfo-6.11.1.tgz",
 		}
 		res, err := introspect.IntrospectHelmValues(ctx, src, opts)
 		require.NoError(t, err)
@@ -49,7 +49,7 @@ func TestNeutrinoE2E(t *testing.T) {
 			NoCache:          true,
 		}
 		wd, _ := os.Getwd()
-		packagePath := filepath.Join(filepath.Dir(filepath.Dir(wd)), "src", "test", "packages", "00-podinfo")
+		packagePath := filepath.Join(filepath.Dir(filepath.Dir(wd)), "test", "packages", "00-podinfo")
 
 		report, err := introspect.InspectZarfPackage(ctx, packagePath, "", "", opts)
 		require.NoError(t, err)
@@ -70,7 +70,7 @@ func TestNeutrinoE2E(t *testing.T) {
 			NoCache:          true,
 		}
 		wd, _ := os.Getwd()
-		bundlePath := filepath.Join(filepath.Dir(filepath.Dir(wd)), "src", "test", "bundles", "00-podinfo")
+		bundlePath := filepath.Join(filepath.Dir(filepath.Dir(wd)), "test", "bundles", "00-podinfo")
 
 		report, err := introspect.InspectUDSBundle(ctx, bundlePath, "", "", opts)
 		require.NoError(t, err)
@@ -90,7 +90,7 @@ func TestNeutrinoE2E(t *testing.T) {
 			NoCache:          true,
 		}
 		wd, _ := os.Getwd()
-		packagePath := filepath.Join(filepath.Dir(filepath.Dir(wd)), "src", "test", "packages", "01-helm-functions")
+		packagePath := filepath.Join(filepath.Dir(filepath.Dir(wd)), "test", "packages", "01-helm-functions")
 
 		report, err := introspect.InspectZarfPackage(ctx, packagePath, "", "", opts)
 		require.NoError(t, err)
