@@ -107,7 +107,8 @@ neutrino inspect ./charts/podinfo -o json > introspection.json
 **3. Inspect an OCI chart:**
 
 ```bash
-neutrino inspect oci://ghcr.io/stefanprodan/charts/podinfo --version 6.4.0
+neutrino inspect oci://ghcr.io/stefanprodan/charts/podinfo --version 6.11.1
+neutrino inspect oci://ghcr.io/stefanprodan/charts/podinfo:6.11.1
 ```
 
 **4. Inspect a Zarf package:**
@@ -119,13 +120,13 @@ neutrino inspect ./zarf-package-podinfo-amd64-0.0.1.tar.zst
 **5. Inspect an OCI Zarf package (specific architecture):**
 
 ```bash
-neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/core-base:0.62.0-upstream -a amd64
+neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/core-base:1.0.0-upstream -a amd64
 ```
 
 **6. Inspect a UDS Bundle:**
 
 ```bash
-neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/core:0.62.0-upstream
+neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/bundles/k3d-core-demo:1.0.0
 ```
 
 ---

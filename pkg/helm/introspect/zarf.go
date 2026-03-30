@@ -141,20 +141,18 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 		compTarPath := filepath.Join(cacheDir, layout.ComponentsDir, component.Name+".tar")
 
 		var chartsBaseDir string
-		if !isDirectory {
-			if _, err := os.Stat(compTarPath); err == nil {
-				compExtractDir := filepath.Join(cacheDir, "extracted-components", component.Name)
-				os.MkdirAll(compExtractDir, 0755)
-				err = archive.Decompress(ctx, compTarPath, compExtractDir, archive.DecompressOpts{})
-				if err == nil {
-					// Check for charts at root of extraction or inside a component-named directory
-					chartsBaseDir = filepath.Join(compExtractDir, "charts")
-					if _, err := os.Stat(chartsBaseDir); err != nil {
-						chartsBaseDir = filepath.Join(compExtractDir, component.Name, "charts")
-					}
-				} else {
-					return nil, fmt.Errorf("failed to extract component %s: %w", component.Name, err)
+		if _, err := os.Stat(compTarPath); err == nil {
+			compExtractDir := filepath.Join(cacheDir, "extracted-components", component.Name)
+			os.MkdirAll(compExtractDir, 0755)
+			err = archive.Decompress(ctx, compTarPath, compExtractDir, archive.DecompressOpts{})
+			if err == nil {
+				// Check for charts at root of extraction or inside a component-named directory
+				chartsBaseDir = filepath.Join(compExtractDir, "charts")
+				if _, err := os.Stat(chartsBaseDir); err != nil {
+					chartsBaseDir = filepath.Join(compExtractDir, component.Name, "charts")
 				}
+			} else {
+				return nil, fmt.Errorf("failed to extract component %s: %w", component.Name, err)
 			}
 		}
 
