@@ -74,12 +74,11 @@ neutrino inspect [PACKAGE_SOURCE] [flags]
 `[PACKAGE_SOURCE]` can be:
 
 - A local directory path: `./charts/podinfo`
-- A local archive: `./podinfo-6.4.0.tgz`
+- A local archive: `./podinfo-6.11.1.tgz`
 - An OCI URL: `oci://ghcr.io/stefanprodan/charts/podinfo`
-- An HTTP(S) URL: `https://example.com/charts/podinfo-6.4.0.tgz`
+- An HTTP(S) URL: `https://example.com/charts/podinfo-6.11.1.tgz`
 - A Zarf package: `./zarf-package-app-amd64-0.0.1.tar.zst`
-- A UDS Bundle:
-  `oci://ghcr.io/defenseunicorns/packages/uds/core:0.62.0-upstream`
+- A UDS Bundle: `oci://ghcr.io/defenseunicorns/packages/uds/core:1.0.0-upstream`
 
 #### Flags
 
@@ -192,13 +191,13 @@ When using `-o json`, the output provides a machine-readable schema:
 ## 📖 Documentation
 
 Neutrino comes with a comprehensive documentation site built with MkDocs. This
-site covers technical deep-dives into package handling, caching mechanisms,
-Helm introspection, and known edge cases.
+site covers technical deep-dives into package handling, caching mechanisms, Helm
+introspection, and known edge cases.
 
 ### Serving Docs Locally
 
-To view the documentation site locally, ensure you have `mkdocs` installed
-(via Homebrew is recommended) and run:
+To view the documentation site locally, ensure you have `mkdocs` installed (via
+Homebrew is recommended) and run:
 
 ```bash
 # Install mkdocs
@@ -244,10 +243,43 @@ neutrino/
       (`oci://...`).
 - [x] **Zarf Package Inspection**: Analyze `zarf.yaml` to map Zarf variables to
       Helm values.
-- [ ] **Interactive Mode**: TUI for exploring values and generating
+- [x] **Interactive Mode**: TUI for exploring values and generating
       `values.yaml` files interactively.
+- [ ] **UDS Bundle Inspection**: Analyze UDS bundles to map UDS variables to
+      Helm values.
 - [ ] **Linter Integration**: Warn about values documented in `values.yaml` but
       never used in templates.
+
+---
+
+## 🧪 Testing
+
+Neutrino includes a comprehensive test suite, including local unit tests and
+End-to-End (E2E) regression tests.
+
+### Local Tests
+
+Standard tests check core logic and local file introspection using lightweight
+test assets found in `src/test/packages`. These run quickly and do not require
+internet access.
+
+```bash
+go test ./...
+```
+
+### Full Regression (OCI) Tests
+
+A subset of the E2E suite verifies Neutrino against real-world, multi-gigabyte
+OCI artifacts (including large UDS bundles and Zarf init packages).
+
+**Note:** These tests are gated behind the `e2e` build tag because they require
+significant bandwidth and time to download external OCI layers.
+
+To run the full regression suite:
+
+```bash
+go test -v ./src/test/e2e/... -tags e2e
+```
 
 ---
 

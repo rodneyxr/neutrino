@@ -34,7 +34,7 @@ const (
 
 type DisplayItem struct {
 	introspect.ValueUsage
-	Component  string
+	Component    string
 	IsZarfVar    bool
 	IsPkgVar     bool
 	PkgVarDesc   string
