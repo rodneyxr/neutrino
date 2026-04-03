@@ -206,25 +206,38 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 			existingPaths[v.Path] = true
 		}
 
-		// Snapshot current values to iterate over
-		discovered := make([]ValueUsage, len(result.Values))
-		copy(discovered, result.Values)
+		// Collect all paths to expand: both the discovered paths and their parent prefixes.
+		// For example, if we discovered "global.proxy.tracer", we also want to expand
+		// "global.proxy" and "global" so that sibling values like "global.proxy.resources"
+		// are also discovered from values.yaml.
+		pathsToExpand := make(map[string]string) // path -> chart name
+		for _, v := range result.Values {
+			pathsToExpand[v.Path] = v.Chart
+			// Also add all parent prefixes
+			parts := strings.Split(v.Path, ".")
+			for i := 1; i < len(parts); i++ {
+				parent := strings.Join(parts[:i], ".")
+				if _, exists := pathsToExpand[parent]; !exists {
+					pathsToExpand[parent] = v.Chart
+				}
+			}
+		}
 
-		for _, v := range discovered {
+		for path, chart := range pathsToExpand {
 			// Find value in values.yaml
-			val := GetValue(c.Values, v.Path)
+			val := GetValue(c.Values, path)
 			if val == nil {
 				continue
 			}
 
 			// Flatten and find new paths
-			subPaths := FlattenToPaths(v.Path, val)
+			subPaths := FlattenToPaths(path, val)
 			for _, sub := range subPaths {
 				if !existingPaths[sub] {
 					// Add inferred value
 					newVal := ValueUsage{
 						Path:      sub,
-						Chart:     v.Chart,
+						Chart:     chart,
 						Wildcard:  false,
 						Locations: []ValueUsageLocation{},
 					}
@@ -373,8 +386,13 @@ func analyzeTemplate(chartName string, t *common.File, result *IntrospectResult)
 	}
 
 	w := newWalker(chartName, t.Name, string(t.Data))
-	if parsed.Tree != nil && parsed.Tree.Root != nil {
-		w.walk(parsed.Tree.Root)
+
+	// Walk all templates in the parsed set, including named templates from {{define}} blocks.
+	// Only walking parsed.Tree.Root would miss values referenced inside define blocks.
+	for _, assoc := range parsed.Templates() {
+		if assoc.Tree != nil && assoc.Tree.Root != nil {
+			w.walk(assoc.Tree.Root)
+		}
 	}
 
 	for _, v := range w.Results {
@@ -382,7 +400,7 @@ func analyzeTemplate(chartName string, t *common.File, result *IntrospectResult)
 	}
 
 	// Scan for Zarf variables in the template
-	zarfVars := FindZarfVariables(t.Data, filepath.Join("templates", t.Name))
+	zarfVars := FindZarfVariables(t.Data, t.Name)
 	for name, locs := range zarfVars {
 		mergeZarfVars(result, name, locs)
 	}

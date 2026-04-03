@@ -93,6 +93,12 @@ func ParseValuesLocations(content []byte) (map[string]ValueUsageLocation, error)
 		case *ast.MappingNode:
 			for _, value := range n.Values {
 				key := value.Key.String()
+				// Skip keys containing dots: they can't be expressed as valid Helm .Values
+				// dot-notation path segments (e.g. Kubernetes label/annotation keys like
+				// "istio.io/dataplane-mode" or "inject.istio.io/templates").
+				if strings.Contains(key, ".") {
+					continue
+				}
 				currentPath := key
 				if prefix != "" {
 					currentPath = prefix + "." + key
@@ -202,6 +208,13 @@ func FlattenToPaths(prefix string, value interface{}) []string {
 
 	if m, ok := value.(map[string]interface{}); ok {
 		for k, v := range m {
+			// Skip keys containing dots: they can't be expressed as valid Helm .Values
+			// dot-notation path segments (e.g. Kubernetes label/annotation keys like
+			// "istio.io/dataplane-mode" or "zarf.dev/agent").
+			if strings.Contains(k, ".") {
+				continue
+			}
+
 			newPath := k
 			if prefix != "" {
 				newPath = prefix + "." + k

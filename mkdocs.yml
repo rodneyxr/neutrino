@@ -1,17 +1,61 @@
 site_name: Neutrino
-site_description: An advanced introspection and management tool for Zarf, UDS dependencies, and Helm charts.
-repo_url: https://github.com/rodneyxr/neutrino
-repo_name: rodneyxr/neutrino
+site_description: Static analysis and introspection for Helm Charts, Zarf Packages, and UDS Bundles.
+repo_url: https://github.com/defenseunicorns-dashdays/2026-03-uds-bundle-provenance
+repo_name: defenseunicorns-dashdays/neutrino
 
 theme:
-  name: mkdocs
+  name: material
+  palette:
+    - scheme: slate
+      primary: deep purple
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: deep purple
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+    - search.suggest
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
 
 nav:
-  - General Overview: index.md
-  - Architecture & Mechanics: 
+  - Overview: index.md
+  - Getting Started: getting-started.md
+  - CLI Reference: cli-reference.md
+  - Architecture:
       - Package Handling: package-handling.md
       - Helm Introspection: helm-introspection.md
-  - Core Systems:
-      - Caching Mechanism: caching.md
-  - Reference:
-      - Edge Cases & Workarounds: edge-cases.md
+      - AST Walker: ast-walker.md
+      - Caching: caching.md
+  - Interactive TUI: tui.md
+  - Edge Cases & Workarounds: edge-cases.md
+  - Roadmap: roadmap.md

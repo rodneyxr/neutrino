@@ -3,7 +3,7 @@ package helpers
 import (
 	"testing"
 
-	"github.com/rodneyxr/neutrino/src/pkg/helm/introspect"
+	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -54,4 +54,56 @@ func RequireZarfVarsExist(t *testing.T, report *introspect.ZarfPackageIntrospect
 		}
 		assert.Truef(t, found, "Expected to find Zarf variable %s", expected)
 	}
+}
+
+// RequireUDSOverrideValues checks that all specified paths exist as UDS override values in the report.
+func RequireUDSOverrideValues(t *testing.T, report *introspect.ZarfPackageIntrospection, paths []string) {
+	t.Helper()
+	for _, expected := range paths {
+		found := false
+		for _, ov := range report.UDSOverrideValues {
+			if ov.Path == expected {
+				found = true
+				break
+			}
+		}
+		assert.Truef(t, found, "Expected to find UDS override value with path %s", expected)
+	}
+}
+
+// RequireUDSOverrideVariables checks that all specified variable names exist as UDS override variables in the report.
+func RequireUDSOverrideVariables(t *testing.T, report *introspect.ZarfPackageIntrospection, names []string) {
+	t.Helper()
+	for _, expected := range names {
+		found := false
+		for _, ov := range report.UDSOverrideVariables {
+			if ov.Name == expected {
+				found = true
+				break
+			}
+		}
+		assert.Truef(t, found, "Expected to find UDS override variable %s", expected)
+	}
+}
+
+// RequireUDSOverrideValueOnComponent checks that a specific UDS override value exists on a component result.
+func RequireUDSOverrideValueOnComponent(t *testing.T, result *introspect.IntrospectResult, path string) {
+	t.Helper()
+	for _, ov := range result.UDSOverrideValues {
+		if ov.Path == path {
+			return
+		}
+	}
+	t.Errorf("Expected to find UDS override value with path '%s' on component %s", path, result.ChartName)
+}
+
+// RequireUDSOverrideVariableOnComponent checks that a specific UDS override variable exists on a component result.
+func RequireUDSOverrideVariableOnComponent(t *testing.T, result *introspect.IntrospectResult, name string) {
+	t.Helper()
+	for _, ov := range result.UDSOverrideVariables {
+		if ov.Name == name {
+			return
+		}
+	}
+	t.Errorf("Expected to find UDS override variable '%s' on component %s", name, result.ChartName)
 }

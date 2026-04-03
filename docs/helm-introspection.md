@@ -1,31 +1,71 @@
 # Helm Introspection
 
-Neutrino doesn't just parse `values.yaml` files inside a Helm chart to discover configuration options. Modern charts heavily rely on conditionally defining `.Values` access dynamically within `templates/` using complex Sprig templating.
+Neutrino doesn't just parse `values.yaml` files inside a Helm chart to discover configuration options. Modern charts heavily rely on dynamically accessing `.Values` within `templates/` using complex Go templating, Sprig functions, and control flow.
 
-If an introspection tool only reports what is defined in `values.yaml`, it misses crucial override functionality embedded deep in `deployment.yaml` hooks and custom Sprig routines. 
+If an introspection tool only reports what is defined in `values.yaml`, it misses crucial override functionality embedded deep in deployments, hooks, and custom Sprig routines.
 
 Neutrino bypasses this limitation with its custom **Template Walker**.
 
-## The Template Walker
+## The Introspection Pipeline
 
-When Neutrino successfully fetches and decompresses a Helm Chart, it merges any Zarf-provided configuration files on top of the default `values.yaml`. Instead of stopping there, the analysis engine looks closely at the resulting templates.
+When Neutrino loads a Helm chart, it runs through a multi-stage analysis:
 
-### 1. Pseudo-Execution via Sprig Substitution
-Neutrino uses a synthetic rendering pass utilizing `Masterminds/sprig` augmented with core Helm directives (like `include`, `tpl`, `toYaml`).
-This ensures Neutrino doesn't crash on standard Helm operations while attempting to parse AST blocks.
+### 1. Template Parsing via Sprig Substitution
 
-### 2. AST Value Discovery Traversal
-Instead of compiling the rendered template string, Neutrino parses the template's AST (Abstract Syntax Tree), simulating an execution walk.
-During this walk, Neutrino spots any invocation of `.Values`.
+Neutrino uses a synthetic rendering pass. It registers all standard Helm and Sprig functions (`include`, `tpl`, `toYaml`, `toJson`, `lookup`, and the full Sprig library) as no-op stubs. This ensures every template file parses into a valid AST without requiring:
+
+- A live Kubernetes cluster
+- A full rendering context
+- Actual secret or ConfigMap data
+
+!!! note
+    The mock functions return zero-values. Neutrino never actually renders template output — it only needs a valid parse tree.
+
+### 2. AST Value Discovery
+
+Instead of compiling the rendered template string, Neutrino parses the template's **Abstract Syntax Tree (AST)** and walks it node by node. During this traversal, it identifies every reference to `.Values`:
 
 ```go
 {{ .Values.image.repository }}
 ```
-Here, neutino captures `image.repository`, tying its occurrence directly to the line and column in `deployment.yaml`. 
 
-### 3. Nested Discovery and Alias Mapping
-For Subcharts, discovering configuration keys can be complex since paths are implicitly prefixed by the Chart's dependency name or alias. 
-Neutrino intercepts these dependency boundaries, prefixes discovered values with the alias names detected in `Chart.yaml`, and maps their default values perfectly back to the main chart's `values.yaml` hierarchy.
+This produces the discovered path `image.repository`, tied directly to the source file, line, and column.
 
-### 4. Zarf Variable Extraction
-Alongside Helm introspection, the parser recursively looks for standard Zarf injection syntaxes (e.g. `###ZARF_VAR_...###`) inside templates. It maps them up to the variables defined globally within the host `zarf.yaml`.
+The walker handles complex cases including:
+
+- **Nested field access**: `.Values.service.ports.http.port`
+- **Variable assignments**: `$svc := .Values.service` → later `$svc.port` resolves to `service.port`
+- **Dynamic paths via `range`**: `{{ range .Values.ingress.hosts }}` → `ingress.hosts.*.host`
+- **Context rebinding via `with`**: `{{ with .Values.persistence }}` → `.enabled` resolves to `persistence.enabled`
+- **`index` function calls**: `{{ index .Values "some-key" }}` → `some-key`
+
+See [AST Walker](ast-walker.md) for the full technical details of the traversal algorithm.
+
+### 3. Values File Merging
+
+Neutrino loads the chart's `values.yaml` and merges any overrides provided by the upstream package (e.g. a Zarf package may supply custom values files). The merged values tree is used to:
+
+- **Extract default values** for every discovered path.
+- **Infer nested paths** from `values.yaml` keys that weren't directly referenced in templates (unless `--no-values` is set).
+
+### 4. Subchart Discovery
+
+For charts with dependencies, Neutrino:
+
+1. Reads `Chart.yaml` to identify all declared dependencies (with their aliases).
+2. Recursively loads each subchart from `charts/`.
+3. Walks each subchart's templates independently.
+4. Prefixes discovered value paths with the dependency alias (e.g. for a dependency aliased `redis`, the path `master.replicas` becomes `redis.master.replicas`).
+
+### 5. Zarf Variable Extraction
+
+Alongside Helm value introspection, the parser scans all template content for Zarf injection markers:
+
+```
+###ZARF_VAR_DOMAIN###
+```
+
+These are matched against the variables defined in the host `zarf.yaml`. Each marker is recorded with its source location, and mapped to the variable's default value and description from the Zarf package definition.
+
+!!! info
+    Zarf variables are displayed separately from Helm values in both the table output and the TUI, making it easy to distinguish between Helm-level and Zarf-level configuration.
