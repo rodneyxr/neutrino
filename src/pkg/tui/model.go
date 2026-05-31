@@ -75,17 +75,19 @@ type Model struct {
 	udsOverrideVariables []introspect.UDSOverrideVariableWithContext
 
 	// State
-	viewMode        ViewMode
-	inputMode       InputMode
-	cursor          int
-	detailCursor    int // For scrolling in detail view
-	detailItems     []DetailItem
-	viewportOffset  int
-	windowHeight    int
-	windowWidth     int
-	consolidateMode bool
-	showZarfSummary bool
-	showUDSSummary  bool
+	viewMode            ViewMode
+	inputMode           InputMode
+	cursor              int
+	detailCursor        int  // Navigable item cursor in detail view
+	detailScrollOffset  int  // Line offset for viewport scrolling in detail view
+	detailValueExpanded bool // Whether the default value block is expanded in detail view
+	detailItems         []DetailItem
+	viewportOffset      int
+	windowHeight        int
+	windowWidth         int
+	consolidateMode     bool
+	showZarfSummary     bool
+	showUDSSummary      bool
 
 	// Inputs
 	filterInput      textinput.Model
@@ -504,11 +506,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.viewMode == ViewModeList {
 					m.cursor = 0
 					m.viewportOffset = 0
+				} else if m.viewMode == ViewModeDetail {
+					m.detailScrollOffset = 0
 				}
 			case "G":
 				if m.viewMode == ViewModeList {
 					m.cursor = len(m.filteredValues) - 1
 					m.ensureCursorVisible()
+				} else if m.viewMode == ViewModeDetail {
+					m.detailScrollOffset = 999999 // clamped to maxOffset in detailView
+				}
+			case "v":
+				if m.viewMode == ViewModeDetail {
+					m.detailValueExpanded = !m.detailValueExpanded
 				}
 			case "/":
 				if m.viewMode == ViewModeList {
@@ -535,6 +545,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if !m.filteredValues[m.cursor].IsEmptyState {
 						m.viewMode = ViewModeDetail
 						m.detailCursor = 0
+						m.detailScrollOffset = 0
+						m.detailValueExpanded = false
 						m.buildDetailItems()
 					}
 				} else if m.viewMode == ViewModeDetail {
@@ -547,6 +559,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							if di.RefIndex >= 0 && di.RefIndex < len(m.filteredValues) {
 								m.cursor = di.RefIndex
 								m.detailCursor = 0
+								m.detailScrollOffset = 0
+								m.detailValueExpanded = false
 								m.buildDetailItems()
 								m.ensureCursorVisible()
 							}
@@ -608,6 +622,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.cursor = newCursor
 					m.ensureCursorVisible()
+				} else if m.viewMode == ViewModeDetail {
+					m.detailScrollOffset++
 				}
 			case "K":
 				if m.viewMode == ViewModeList {
@@ -617,6 +633,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.cursor = newCursor
 					m.ensureCursorVisible()
+				} else if m.viewMode == ViewModeDetail {
+					if m.detailScrollOffset > 0 {
+						m.detailScrollOffset--
+					}
 				}
 			case "n":
 				if m.viewMode == ViewModeList {
@@ -859,6 +879,23 @@ func (m *Model) ensureCursorVisible() {
 			break
 		}
 	}
+}
+
+// renderValueBlock renders a labeled value block, collapsed to a single preview line
+// (with a hint to expand) unless expanded is true.
+func renderValueBlock(label, valStr string, expanded bool) string {
+	lines := strings.Split(valStr, "\n")
+	if len(lines) <= 1 {
+		// Single-line value — always show inline, no toggle needed.
+		return headerStyle.Render(label) + "\n" + codeStyle.Render(valStr) + "\n"
+	}
+	if expanded {
+		return headerStyle.Render(label) + helpStyle.Render(" (v to collapse)") + "\n" + codeStyle.Render(valStr) + "\n"
+	}
+	// Collapsed: show first line with count hint.
+	moreLines := len(lines) - 1
+	return headerStyle.Render(label) + "\n" +
+		codeStyle.Render(lines[0]) + helpStyle.Render(fmt.Sprintf(" ... +%d lines (v to expand)", moreLines)) + "\n"
 }
 
 func (m Model) View() string {
@@ -1251,6 +1288,7 @@ func (m Model) detailView() string {
 	}
 	v := m.filteredValues[m.cursor]
 
+	// --- Header section ---
 	label := "Value:"
 	if v.IsZarfVar {
 		label = "Zarf Variable:"
@@ -1276,54 +1314,7 @@ func (m Model) detailView() string {
 	}
 	s += "\n"
 
-	if v.IsUDSOverrideValue {
-		s += headerStyle.Render("Override Value:") + "\n"
-		valBytes, _ := yaml.Marshal(v.OverrideValue)
-		valStr := strings.TrimSpace(string(valBytes))
-		if valStr == "" || valStr == "null" {
-			valStr = "-"
-		}
-		s += codeStyle.Render(valStr) + "\n\n"
-
-		s += headerStyle.Render("Original Default:") + "\n"
-		origBytes, _ := yaml.Marshal(v.OriginalDefault)
-		origStr := strings.TrimSpace(string(origBytes))
-		if origStr == "" || origStr == "{}" || origStr == "[]" || origStr == "null" {
-			origStr = "-"
-		}
-		s += codeStyle.Render(origStr) + "\n\n"
-	} else if v.IsUDSOverrideVar {
-		s += headerStyle.Render("Default:") + "\n"
-		valBytes, _ := yaml.Marshal(v.DefaultValue)
-		valStr := strings.TrimSpace(string(valBytes))
-		if valStr == "" || valStr == "{}" || valStr == "[]" || valStr == "null" {
-			valStr = "-"
-		}
-		s += codeStyle.Render(valStr) + "\n\n"
-
-		s += headerStyle.Render("Original Default:") + "\n"
-		origBytes, _ := yaml.Marshal(v.OriginalDefault)
-		origStr := strings.TrimSpace(string(origBytes))
-		if origStr == "" || origStr == "{}" || origStr == "[]" || origStr == "null" {
-			origStr = "-"
-		}
-		s += codeStyle.Render(origStr) + "\n\n"
-	} else {
-		s += headerStyle.Render("Default:") + "\n"
-		valBytes, _ := yaml.Marshal(v.DefaultValue)
-		valStr := strings.TrimSpace(string(valBytes))
-		if valStr == "" || valStr == "{}" || valStr == "[]" || valStr == "null" {
-			valStr = "-"
-		} else {
-			valStr = strings.ReplaceAll(valStr, ".0,", ",")
-			valStr = strings.ReplaceAll(valStr, ".0}", "}")
-			valStr = strings.ReplaceAll(valStr, ".0]", "]")
-			valStr = strings.TrimSuffix(valStr, ".0")
-		}
-		s += codeStyle.Render(valStr) + "\n\n"
-	}
-
-	// Render the unified detail items list (locations + cross-references)
+	// --- Locations / cross-references (shown first so they are immediately visible) ---
 	hasLocations := false
 	hasCrossRefs := false
 	for _, di := range m.detailItems {
@@ -1374,7 +1365,6 @@ func (m Model) detailView() string {
 				s += "  " + locStr + "\n"
 			}
 		} else {
-			// Cross-reference item
 			if i == m.detailCursor {
 				s += selectedItemStyle.Render("> "+di.Label) + "\n"
 			} else {
@@ -1387,7 +1377,51 @@ func (m Model) detailView() string {
 		s += helpStyle.Render("(no template locations found)") + "\n"
 	}
 
-	// Show UDS snippet for Helm values (how to create an override in uds-bundle.yaml)
+	// --- Default / override value (collapsible, below locations) ---
+	s += "\n"
+	if v.IsUDSOverrideValue {
+		valBytes, _ := yaml.Marshal(v.OverrideValue)
+		valStr := strings.TrimSpace(string(valBytes))
+		if valStr == "" || valStr == "null" {
+			valStr = "-"
+		}
+		s += renderValueBlock("Override Value:", valStr, m.detailValueExpanded)
+
+		origBytes, _ := yaml.Marshal(v.OriginalDefault)
+		origStr := strings.TrimSpace(string(origBytes))
+		if origStr == "" || origStr == "{}" || origStr == "[]" || origStr == "null" {
+			origStr = "-"
+		}
+		s += renderValueBlock("Original Default:", origStr, m.detailValueExpanded)
+	} else if v.IsUDSOverrideVar {
+		valBytes, _ := yaml.Marshal(v.DefaultValue)
+		valStr := strings.TrimSpace(string(valBytes))
+		if valStr == "" || valStr == "{}" || valStr == "[]" || valStr == "null" {
+			valStr = "-"
+		}
+		s += renderValueBlock("Default:", valStr, m.detailValueExpanded)
+
+		origBytes, _ := yaml.Marshal(v.OriginalDefault)
+		origStr := strings.TrimSpace(string(origBytes))
+		if origStr == "" || origStr == "{}" || origStr == "[]" || origStr == "null" {
+			origStr = "-"
+		}
+		s += renderValueBlock("Original Default:", origStr, m.detailValueExpanded)
+	} else {
+		valBytes, _ := yaml.Marshal(v.DefaultValue)
+		valStr := strings.TrimSpace(string(valBytes))
+		if valStr == "" || valStr == "{}" || valStr == "[]" || valStr == "null" {
+			valStr = "-"
+		} else {
+			valStr = strings.ReplaceAll(valStr, ".0,", ",")
+			valStr = strings.ReplaceAll(valStr, ".0}", "}")
+			valStr = strings.ReplaceAll(valStr, ".0]", "]")
+			valStr = strings.TrimSuffix(valStr, ".0")
+		}
+		s += renderValueBlock("Default:", valStr, m.detailValueExpanded)
+	}
+
+	// --- Snippets ---
 	if !v.IsZarfVar && !v.IsUDSOverrideValue && !v.IsUDSOverrideVar && !v.IsPkgVar && !v.IsEmptyState {
 		compKey := v.Component
 		snippet := generateBundleSnippet(compKey, v.Path, v.DefaultValue)
@@ -1397,7 +1431,6 @@ func (m Model) detailView() string {
 		}
 	}
 
-	// Show uds-config.yaml snippet for UDS override variables
 	if v.IsUDSOverrideVar {
 		compKey := v.Component
 		if v.IsSummaryItem {
@@ -1410,8 +1443,45 @@ func (m Model) detailView() string {
 		}
 	}
 
-	s += "\n" + helpStyle.Render("open/jump (enter) • back (esc)")
-	return docStyle.Render(s)
+	// --- Viewport clipping ---
+	viewHeight := m.windowHeight - 2
+	if viewHeight < 1 {
+		viewHeight = m.windowHeight
+	}
+
+	lines := strings.Split(s, "\n")
+	totalLines := len(lines)
+
+	if totalLines <= viewHeight {
+		m.detailScrollOffset = 0
+	} else {
+		maxOffset := totalLines - viewHeight
+		if m.detailScrollOffset > maxOffset {
+			m.detailScrollOffset = maxOffset
+		}
+		if m.detailScrollOffset < 0 {
+			m.detailScrollOffset = 0
+		}
+	}
+
+	end := m.detailScrollOffset + viewHeight
+	if end > totalLines {
+		end = totalLines
+	}
+
+	clipped := strings.Join(lines[m.detailScrollOffset:end], "\n")
+
+	scrollHint := ""
+	if totalLines > viewHeight {
+		scrollPct := 0
+		if totalLines-viewHeight > 0 {
+			scrollPct = m.detailScrollOffset * 100 / (totalLines - viewHeight)
+		}
+		scrollHint = helpStyle.Render(fmt.Sprintf(" scroll (J/K • g/G) %d%%", scrollPct)) + "  "
+	}
+
+	help := scrollHint + helpStyle.Render("expand value (v) • open/jump (enter) • back (esc)")
+	return docStyle.Render(clipped) + "\n" + help
 }
 
 // parseComponentKey splits a component key into its parts.
