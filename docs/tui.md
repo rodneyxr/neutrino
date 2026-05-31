@@ -52,7 +52,7 @@ Press `Enter` on a **location** entry to open the file in your editor. Press `En
 
 #### UDS Authoring Snippets
 
-When inspecting a UDS bundle, the detail view also displays ready-to-copy YAML snippets to help you author bundle and config files:
+When inspecting a UDS bundle, the detail view also displays ready-to-copy YAML snippets to help you author bundle and config files. When inspecting a Zarf package or standalone Helm chart, press `b` in the detail view to toggle bundle authoring mode and show the same `uds-bundle.yaml` snippet with placeholders for the bundle/package context you have not created yet.
 
 **For Helm values** — a `uds-bundle.yaml` snippet is shown at the bottom of the detail view with the full YAML path pre-filled so you know exactly where to place it:
 
@@ -98,7 +98,7 @@ The package name and variable name are taken directly from the bundle definition
 | `PgDn` | Move cursor down one page |
 | `PgUp` | Move cursor up one page |
 | `n` | Jump to the first row of the **next** component |
-| `b` | Jump to the first row of the **previous** component |
+| `b` | Jump to the first row of the **previous** component in list view; toggle bundle authoring mode in detail view |
 | `Enter` | Open detail view / open file in editor / jump to cross-reference |
 | `Esc` | Back to list view / clear filter |
 

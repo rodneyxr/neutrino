@@ -42,7 +42,7 @@ kind: DaemonSet
 
 	var found *ValueUsage
 	for i := range result.Values {
-		if result.Values[i].Chart == "child" && result.Values[i].Path == "hostRootFsMount.enabled" {
+		if result.Values[i].Chart == "child" && result.Values[i].Path == "child.hostRootFsMount.enabled" {
 			found = &result.Values[i]
 			break
 		}

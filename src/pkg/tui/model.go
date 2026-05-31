@@ -81,6 +81,7 @@ type Model struct {
 	detailCursor        int  // Navigable item cursor in detail view
 	detailScrollOffset  int  // Line offset for viewport scrolling in detail view
 	detailValueExpanded bool // Whether the default value block is expanded in detail view
+	detailBundleMode    bool // Whether to show bundle authoring snippets outside UDS bundle context
 	detailItems         []DetailItem
 	viewportOffset      int
 	windowHeight        int
@@ -547,6 +548,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.detailCursor = 0
 						m.detailScrollOffset = 0
 						m.detailValueExpanded = false
+						m.detailBundleMode = false
 						m.buildDetailItems()
 					}
 				} else if m.viewMode == ViewModeDetail {
@@ -561,6 +563,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								m.detailCursor = 0
 								m.detailScrollOffset = 0
 								m.detailValueExpanded = false
+								m.detailBundleMode = false
 								m.buildDetailItems()
 								m.ensureCursorVisible()
 							}
@@ -652,7 +655,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.ensureCursorVisible()
 				}
 			case "b":
-				if m.viewMode == ViewModeList {
+				if m.viewMode == ViewModeDetail {
+					m.detailBundleMode = !m.detailBundleMode
+				} else if m.viewMode == ViewModeList {
 					if len(m.filteredValues) == 0 {
 						break
 					}
@@ -1300,6 +1305,9 @@ func (m Model) detailView() string {
 
 	s := headerStyle.Render(label) + " " + v.Path + "\n"
 	s += headerStyle.Render("Component:") + " " + v.Component + "\n"
+	if m.detailBundleMode {
+		s += headerStyle.Render("Mode:") + " Bundle authoring\n"
+	}
 	if v.Chart != "" && v.Chart != v.Component {
 		s += headerStyle.Render("Chart:") + " " + v.Chart + "\n"
 	}
@@ -1423,11 +1431,12 @@ func (m Model) detailView() string {
 
 	// --- Snippets ---
 	if !v.IsZarfVar && !v.IsUDSOverrideValue && !v.IsUDSOverrideVar && !v.IsPkgVar && !v.IsEmptyState {
-		compKey := v.Component
-		snippet := generateBundleSnippet(compKey, v.Path, v.DefaultValue)
+		snippet := m.generateBundleSnippetForItem(v)
 		if snippet != "" {
 			s += "\n" + snippetLabelStyle.Render("UDS Bundle Override Snippet:") + "\n"
 			s += snippetStyle.Render(snippet) + "\n"
+		} else {
+			s += "\n" + helpStyle.Render("bundle mode (b) shows a uds-bundle.yaml authoring snippet") + "\n"
 		}
 	}
 
@@ -1480,7 +1489,7 @@ func (m Model) detailView() string {
 		scrollHint = helpStyle.Render(fmt.Sprintf(" scroll (J/K • g/G) %d%%", scrollPct)) + "  "
 	}
 
-	help := scrollHint + helpStyle.Render("expand value (v) • open/jump (enter) • back (esc)")
+	help := scrollHint + helpStyle.Render("expand value (v) • bundle mode (b) • open/jump (enter) • back (esc)")
 	return docStyle.Render(clipped) + "\n" + help
 }
 
@@ -1514,6 +1523,35 @@ func generateBundleSnippet(componentKey, helmPath string, defaultValue interface
 		// Not a UDS bundle context (Zarf or plain Helm)
 		return ""
 	}
+	return generateBundleSnippetWithParts(pkgName, componentName, chartName, helmPath, defaultValue)
+}
+
+func (m Model) generateBundleSnippetForItem(v DisplayItem) string {
+	pkgName, componentName, chartName := parseComponentKey(v.Component)
+	if pkgName == "" {
+		if !m.detailBundleMode {
+			return ""
+		}
+		pkgName = "<package-name>"
+		if componentName == "" {
+			componentName = "<component-name>"
+		}
+		if chartName == "" {
+			chartName = v.Chart
+			if chartName == "" {
+				if res := m.components[v.Component]; res != nil {
+					chartName = res.ChartName
+				}
+			}
+			if chartName == "" {
+				chartName = "<chart-name>"
+			}
+		}
+	}
+	return generateBundleSnippetWithParts(pkgName, componentName, chartName, v.Path, v.DefaultValue)
+}
+
+func generateBundleSnippetWithParts(pkgName, componentName, chartName, helmPath string, defaultValue interface{}) string {
 	varName := helmPathToVarName(helmPath)
 	defaultStr := "null"
 	if defaultValue != nil {
