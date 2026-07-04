@@ -172,125 +172,169 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 		result.RemoteSource = c.Metadata.Home
 	}
 
-	l.Info(fmt.Sprintf("Analyzing chart templates for %s...", c.Metadata.Name))
-	analyzeStart := time.Now()
-	analyzeChart(c, result, opts, "", "")
-
-	// Try to parse values.yaml for locations
-	var valuesIdx map[string]ValueUsageLocation
-	for _, f := range c.Raw {
-		if f.Name == "values.yaml" {
-			result.ValuesFiles = append(result.ValuesFiles, "values.yaml")
-			var err error
-			valuesIdx, err = ParseValuesLocations(f.Data)
+	// Attempt to load from analysis cache before doing expensive template analysis.
+	// The cache key is based on the chart source path + options, since the chart
+	// is already loaded (templates + merged values) at this point.
+	var analysisKey string
+	var cached *IntrospectResult
+	if !opts.NoCache {
+		var keyErr error
+		analysisKey, keyErr = computeAnalysisKey(src.LocalPath, opts.NoValues, src.ValuesFiles...)
+		if keyErr == nil {
+			cached, err = loadAnalysisCache(analysisKey)
 			if err != nil {
-				l.Warn(fmt.Sprintf("Failed to parse values.yaml for locations: %s", err))
+				l.Warn(fmt.Sprintf("Failed to load analysis cache: %s", err))
+				err = nil // continue with fresh analysis
 			}
-
-			// Detect Zarf variables in values.yaml
-			zarfVars := FindZarfVariables(f.Data, "values.yaml")
-			for name, locs := range zarfVars {
-				mergeZarfVars(result, name, locs)
+			if cached != nil {
+				l.Debug("Using cached analysis result")
+				// Merge in the metadata we've already computed
+				cached.ChartName = c.Metadata.Name
+				cached.ChartVersion = c.Metadata.Version
+				cached.Source = src.LocalPath
+				cached.RemoteSource = result.RemoteSource
+				cached.ValuesFiles = result.ValuesFiles
+				// Use cached values but re-merge values.yaml locations + zarf vars
+				// since those don't change with chart content
+				result.Values = cached.Values
+				result.ZarfVars = cached.ZarfVars
 			}
-			break
 		}
 	}
 
-	// Infer nested values from values.yaml if requested
-	if !opts.NoValues {
-		l.Debug("Inferring nested paths from values.yaml...")
+	if cached == nil {
+		l.Info(fmt.Sprintf("Analyzing chart templates for %s...", c.Metadata.Name))
+		analyzeStart := time.Now()
+		analyzeChart(c, result, opts, "", "")
 
-		// Track existing paths to avoid duplicates
-		existingPaths := make(map[string]bool)
-		for _, v := range result.Values {
-			existingPaths[v.Path] = true
-		}
-
-		// Collect all paths to expand: both the discovered paths and their parent prefixes.
-		// For example, if we discovered "global.proxy.tracer", we also want to expand
-		// "global.proxy" and "global" so that sibling values like "global.proxy.resources"
-		// are also discovered from values.yaml.
-		pathsToExpand := make(map[string]string) // path -> chart name
-		for _, v := range result.Values {
-			pathsToExpand[v.Path] = v.Chart
-			// Also add all parent prefixes
-			parts := strings.Split(v.Path, ".")
-			for i := 1; i < len(parts); i++ {
-				parent := strings.Join(parts[:i], ".")
-				if _, exists := pathsToExpand[parent]; !exists {
-					pathsToExpand[parent] = v.Chart
+		// Try to parse values.yaml for locations
+		var valuesIdx map[string]ValueUsageLocation
+		for _, f := range c.Raw {
+			if f.Name == "values.yaml" {
+				result.ValuesFiles = append(result.ValuesFiles, "values.yaml")
+				var err error
+				valuesIdx, err = ParseValuesLocations(f.Data)
+				if err != nil {
+					l.Warn(fmt.Sprintf("Failed to parse values.yaml for locations: %s", err))
 				}
+
+				// Detect Zarf variables in values.yaml
+				zarfVars := FindZarfVariables(f.Data, "values.yaml")
+				for name, locs := range zarfVars {
+					mergeZarfVars(result, name, locs)
+				}
+				break
 			}
 		}
 
-		for path, chart := range pathsToExpand {
-			// Find value in values.yaml
-			val := GetValue(c.Values, path)
-			if val == nil {
-				continue
+		// Infer nested values from values.yaml if requested
+		if !opts.NoValues {
+			l.Debug("Inferring nested paths from values.yaml...")
+
+			// Track existing paths to avoid duplicates
+			existingPaths := make(map[string]bool)
+			for _, v := range result.Values {
+				existingPaths[v.Path] = true
 			}
 
-			// Flatten and find new paths
-			subPaths := FlattenToPaths(path, val)
-			for _, sub := range subPaths {
-				if !existingPaths[sub] {
-					// Add inferred value
-					newVal := ValueUsage{
-						Path:      sub,
-						Chart:     chart,
-						Wildcard:  false,
-						Locations: []ValueUsageLocation{},
+			// Collect all paths to expand: both the discovered paths and their parent prefixes.
+			// For example, if we discovered "global.proxy.tracer", we also want to expand
+			// "global.proxy" and "global" so that sibling values like "global.proxy.resources"
+			// are also discovered from values.yaml.
+			pathsToExpand := make(map[string]string) // path -> chart name
+			for _, v := range result.Values {
+				pathsToExpand[v.Path] = v.Chart
+				// Also add all parent prefixes
+				parts := strings.Split(v.Path, ".")
+				for i := 1; i < len(parts); i++ {
+					parent := strings.Join(parts[:i], ".")
+					if _, exists := pathsToExpand[parent]; !exists {
+						pathsToExpand[parent] = v.Chart
 					}
+				}
+			}
 
-					// Add location if available
-					if loc, ok := valuesIdx[sub]; ok {
-						newVal.Locations = append(newVal.Locations, loc)
+			for path, chart := range pathsToExpand {
+				// Find value in values.yaml
+				val := GetValue(c.Values, path)
+				if val == nil {
+					continue
+				}
+
+				// Flatten and find new paths
+				subPaths := FlattenToPaths(path, val)
+				for _, sub := range subPaths {
+					if !existingPaths[sub] {
+						// Add inferred value
+						newVal := ValueUsage{
+							Path:      sub,
+							Chart:     chart,
+							Wildcard:  false,
+							Locations: []ValueUsageLocation{},
+						}
+
+						// Add location if available
+						if loc, ok := valuesIdx[sub]; ok {
+							newVal.Locations = append(newVal.Locations, loc)
+						}
+
+						result.Values = append(result.Values, newVal)
+						existingPaths[sub] = true
 					}
-
-					result.Values = append(result.Values, newVal)
-					existingPaths[sub] = true
 				}
 			}
 		}
-	}
 
-	// Build lookup maps for direct dependencies. Parent chart values may override
-	// dependency defaults under the dependency name or alias, while the dependency
-	// chart still carries its own values.yaml defaults.
-	chartValues := map[string]map[string]interface{}{
-		c.Metadata.Name: c.Values,
-	}
-	chartValuePrefixes := map[string]string{
-		c.Metadata.Name: "",
-	}
-	collectChartValues(c, "", chartValues, chartValuePrefixes)
+		// Build lookup maps for direct dependencies. Parent chart values may override
+		// dependency defaults under the dependency name or alias, while the dependency
+		// chart still carries its own values.yaml defaults.
+		chartValues := map[string]map[string]interface{}{
+			c.Metadata.Name: c.Values,
+		}
+		chartValuePrefixes := map[string]string{
+			c.Metadata.Name: "",
+		}
+		collectChartValues(c, "", chartValues, chartValuePrefixes)
 
-	// Populate default values
-	for i, v := range result.Values {
-		var val interface{}
+		// Populate default values
+		for i, v := range result.Values {
+			var val interface{}
 
-		if v.Chart == c.Metadata.Name {
-			// Root chart values live directly at the discovered path.
-			val = GetValue(c.Values, v.Path)
-		} else {
-			// Dependency values are reported using their parent-chart override path.
-			// Fall back to the dependency chart's own values.yaml using the local
-			// subchart path when the parent does not provide an override.
-			val = GetValue(c.Values, v.Path)
-			if val == nil {
-				localPath := v.Path
-				if prefix := chartValuePrefixes[v.Chart]; prefix != "" {
-					localPath = strings.TrimPrefix(v.Path, prefix+".")
+			if v.Chart == c.Metadata.Name {
+				// Root chart values live directly at the discovered path.
+				val = GetValue(c.Values, v.Path)
+			} else {
+				// Dependency values are reported using their parent-chart override path.
+				// Fall back to the dependency chart's own values.yaml using the local
+				// subchart path when the parent does not provide an override.
+				val = GetValue(c.Values, v.Path)
+				if val == nil {
+					localPath := v.Path
+					if prefix := chartValuePrefixes[v.Chart]; prefix != "" {
+						localPath = strings.TrimPrefix(v.Path, prefix+".")
+					}
+					val = GetValue(chartValues[v.Chart], localPath)
 				}
-				val = GetValue(chartValues[v.Chart], localPath)
 			}
+
+			result.Values[i].DefaultValue = val
 		}
 
-		result.Values[i].DefaultValue = val
+		l.Debug(fmt.Sprintf("Analysis took %s", time.Since(analyzeStart)))
+
+		// Save to analysis cache
+		if !opts.NoCache {
+			if analysisKey != "" {
+				if saveErr := saveAnalysisCache(analysisKey, result); saveErr != nil {
+					l.Warn(fmt.Sprintf("Failed to save analysis cache: %s", saveErr))
+				}
+			}
+		}
+	} else {
+		// Cached path: populate default values from cached result
+		// (defaults were already computed in the cached result)
+		result.Values = cached.Values
 	}
-
-	l.Debug(fmt.Sprintf("Analysis took %s", time.Since(analyzeStart)))
-
 	return result, nil
 }
 

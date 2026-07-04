@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/defenseunicorns/pkg/oci"
@@ -149,6 +151,154 @@ func getCacheDir(category string, url string, version string) (string, error) {
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
 	return filepath.Join(cacheBase, hash), nil
+}
+
+// analysisCacheDir returns the directory for storing cached analysis results.
+func analysisCacheDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get user home dir: %w", err)
+	}
+	dir := filepath.Join(home, ".cache", "neutrino", "analysis")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create analysis cache dir: %w", err)
+	}
+	return dir, nil
+}
+
+// computeAnalysisKey generates a content-based hash for a chart directory.
+// It hashes sorted file paths + contents of all files under the chart root,
+// plus the NoValues option string so different options produce different keys.
+func computeAnalysisKey(chartDir string, noValues bool, valuesFiles ...string) (string, error) {
+	hasher := sha256.New()
+
+	// Hash NoValues option
+	hasher.Write([]byte(fmt.Sprintf("noValues=%v", noValues)))
+
+	// Walk all files in the chart directory, sorted for determinism
+	err := filepath.Walk(chartDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(chartDir, path)
+		if rel == "." {
+			return nil
+		}
+		// Hash file path for ordering
+		hasher.Write([]byte(rel))
+		hasher.Write([]byte{0})
+		if info.Mode().IsRegular() {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			hasher.Write(data)
+			hasher.Write([]byte{0})
+		}
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to compute analysis key: %w", err)
+	}
+
+	// Hash additional values files for determinism
+	for _, vf := range valuesFiles {
+		hasher.Write([]byte("valuesFile:"))
+		hasher.Write([]byte(vf))
+		hasher.Write([]byte{0})
+		if data, err := os.ReadFile(vf); err == nil {
+			hasher.Write(data)
+			hasher.Write([]byte{0})
+		}
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// computeAnalysisKeyFromContents hashes template and values content directly,
+// for use when we don't have a local chart directory (e.g., remote charts
+// where we already have an expanded directory in the download cache).
+func computeAnalysisKeyFromContents(templateNames []string, templateContents map[string][]byte, valuesContent []byte, additionalValuesContent map[string][]byte, noValues bool) string {
+	hasher := sha256.New()
+	hasher.Write([]byte(fmt.Sprintf("noValues=%v", noValues)))
+
+	// Sort template names for determinism
+	sorted := make([]string, 0, len(templateContents))
+	for n := range templateContents {
+		sorted = append(sorted, n)
+	}
+	sort.Strings(sorted)
+
+	for _, name := range sorted {
+		hasher.Write([]byte(name))
+		hasher.Write([]byte{0})
+		hasher.Write(templateContents[name])
+		hasher.Write([]byte{0})
+	}
+
+	if valuesContent != nil {
+		hasher.Write([]byte("values.yaml"))
+		hasher.Write([]byte{0})
+		hasher.Write(valuesContent)
+		hasher.Write([]byte{0})
+	}
+
+	// Sort additional values files
+	addSorted := make([]string, 0, len(additionalValuesContent))
+	for n := range additionalValuesContent {
+		addSorted = append(addSorted, n)
+	}
+	sort.Strings(addSorted)
+
+	for _, name := range addSorted {
+		hasher.Write([]byte(name))
+		hasher.Write([]byte{0})
+		hasher.Write(additionalValuesContent[name])
+		hasher.Write([]byte{0})
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+// saveAnalysisCache stores an analysis result to disk.
+func saveAnalysisCache(hash string, result *IntrospectResult) error {
+	cacheDir, err := analysisCacheDir()
+	if err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("failed to marshal analysis result: %w", err)
+	}
+
+	cachePath := filepath.Join(cacheDir, hash+".json")
+	return os.WriteFile(cachePath, data, 0644)
+}
+
+// loadAnalysisCache retrieves a cached analysis result from disk.
+// Returns nil, nil if not found or on error.
+func loadAnalysisCache(hash string) (*IntrospectResult, error) {
+	cacheDir, err := analysisCacheDir()
+	if err != nil {
+		return nil, err
+	}
+
+	cachePath := filepath.Join(cacheDir, hash+".json")
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read analysis cache: %w", err)
+	}
+
+	var result IntrospectResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal analysis cache: %w", err)
+	}
+
+	return &result, nil
 }
 
 // GetValue looks up a value in a map using dot notation.

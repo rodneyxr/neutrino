@@ -3,7 +3,7 @@ package introspect
 import (
 	"encoding/json"
 	"fmt"
-
+	"strings"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 )
 
@@ -53,6 +53,44 @@ func (l ValueUsageLocation) MarshalYAML() (interface{}, error) {
 		Kind:     l.Kind,
 		Location: fmt.Sprintf("%s:%d:%d", l.File, l.Line, l.Column),
 	}, nil
+}
+
+func (l *ValueUsageLocation) UnmarshalJSON(data []byte) error {
+	// The cache stores locations using the same serialized format as MarshalJSON,
+	// which uses an alias with "kind" and "location":"file:line:col" fields.
+	type Alias struct {
+		Kind     string `json:"kind"`
+		Location string `json:"location"`
+	}
+	var a Alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	l.Kind = a.Kind
+	if a.Location != "" {
+		// Parse "file:line:col" — line and col are integers at the end,
+		// so split from the right to handle filenames that might contain colons.
+		loc := a.Location
+		last := strings.LastIndex(loc, ":")
+		if last > 0 {
+			colStr := loc[last+1:]
+			var col int
+			if _, err := fmt.Sscanf(colStr, "%d", &col); err == nil {
+				l.Column = col
+				loc = loc[:last]
+			}
+		}
+		prev := strings.LastIndex(loc, ":")
+		if prev > 0 {
+			lineStr := loc[prev+1:]
+			var line int
+			if _, err := fmt.Sscanf(lineStr, "%d", &line); err == nil {
+				l.Line = line
+				l.File = loc[:prev]
+			}
+		}
+	}
+	return nil
 }
 
 // ValueUsage represents a discovered usage of a value in the templates.
