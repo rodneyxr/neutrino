@@ -31,11 +31,31 @@ type UDSBundle struct {
 }
 
 type UDSPackage struct {
-	Name       string                 `yaml:"name"`
-	Repository string                 `yaml:"repository,omitempty"`
-	Path       string                 `yaml:"path,omitempty"`
-	Ref        string                 `yaml:"ref"`
-	Overrides  map[string]interface{} `yaml:"overrides,omitempty"`
+	Name       string                                 `yaml:"name"`
+	Repository string                                 `yaml:"repository,omitempty"`
+	Path       string                                 `yaml:"path,omitempty"`
+	Ref        string                                 `yaml:"ref"`
+	Overrides  map[string]map[string]UDSChartOverride `yaml:"overrides,omitempty"`
+}
+
+// UDSChartOverride represents the overrides for a specific chart within a component.
+type UDSChartOverride struct {
+	Values    []UDSBundleValue    `yaml:"values,omitempty"`
+	Variables []UDSBundleVariable `yaml:"variables,omitempty"`
+}
+
+// UDSBundleValue represents a hard-coded value override in a uds-bundle.yaml.
+type UDSBundleValue struct {
+	Path  string      `yaml:"path"`
+	Value interface{} `yaml:"value"`
+}
+
+// UDSBundleVariable represents a variable exposed in a uds-bundle.yaml.
+type UDSBundleVariable struct {
+	Name        string      `yaml:"name"`
+	Description string      `yaml:"description,omitempty"`
+	Path        string      `yaml:"path"`
+	Default     interface{} `yaml:"default,omitempty"`
 }
 
 const UDSBundleMediaType = "application/vnd.uds.config.v1+json"
@@ -205,6 +225,8 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 	results := make(map[string]*IntrospectResult)
 	var componentOrder []string
 	var allVariables []v1alpha1.InteractiveVariable
+	var allOverrideValues []UDSOverrideValueWithContext
+	var allOverrideVariables []UDSOverrideVariableWithContext
 
 	for _, pkg := range bundle.Packages {
 		pkgName := pkg.Name
@@ -431,13 +453,81 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 			v.Name = fmt.Sprintf("%s.%s", pkgName, v.Name)
 			allVariables = append(allVariables, v)
 		}
+
+		// Process UDS bundle overrides for this package
+		for componentName, charts := range pkg.Overrides {
+			for chartName, chartOverride := range charts {
+				// Find the matching IntrospectResult by component/chart key
+				resultKey := fmt.Sprintf("%s/%s/%s", pkgName, componentName, chartName)
+				result := results[resultKey]
+
+				overrideCtx := UDSOverrideContext{
+					PackageName:   pkgName,
+					ComponentName: componentName,
+					ChartName:     chartName,
+				}
+
+				// Process hard-coded values
+				for _, bv := range chartOverride.Values {
+					ov := UDSOverrideValue{
+						Path:  bv.Path,
+						Value: bv.Value,
+					}
+					// Cross-reference with chart values for original default
+					if result != nil {
+						ov.OriginalDefault = lookupOriginalDefault(result, bv.Path)
+					}
+					if result != nil {
+						result.UDSOverrideValues = append(result.UDSOverrideValues, ov)
+					}
+					allOverrideValues = append(allOverrideValues, UDSOverrideValueWithContext{
+						UDSOverrideContext: overrideCtx,
+						UDSOverrideValue:   ov,
+					})
+				}
+
+				// Process exposed variables
+				for _, bvar := range chartOverride.Variables {
+					ov := UDSOverrideVariable{
+						Name:        bvar.Name,
+						Description: bvar.Description,
+						Path:        bvar.Path,
+						Default:     bvar.Default,
+					}
+					// Cross-reference with chart values for original default
+					if result != nil {
+						ov.OriginalDefault = lookupOriginalDefault(result, bvar.Path)
+					}
+					if result != nil {
+						result.UDSOverrideVariables = append(result.UDSOverrideVariables, ov)
+					}
+					allOverrideVariables = append(allOverrideVariables, UDSOverrideVariableWithContext{
+						UDSOverrideContext:  overrideCtx,
+						UDSOverrideVariable: ov,
+					})
+				}
+			}
+		}
 	}
 
 	return &ZarfPackageIntrospection{
-		ComponentOrder: componentOrder,
-		ChartResults:   results,
-		Variables:      allVariables,
+		ComponentOrder:       componentOrder,
+		ChartResults:         results,
+		Variables:            allVariables,
+		UDSOverrideValues:    allOverrideValues,
+		UDSOverrideVariables: allOverrideVariables,
 	}, nil
+}
+
+// lookupOriginalDefault searches the introspection result's discovered values
+// to find the original default value for a given Helm values path.
+func lookupOriginalDefault(result *IntrospectResult, path string) interface{} {
+	for _, v := range result.Values {
+		if v.Path == path {
+			return v.DefaultValue
+		}
+	}
+	return nil
 }
 
 func findUdsBundleLayerDigest(layoutDir string) (string, error) {

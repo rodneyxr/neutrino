@@ -38,9 +38,11 @@ func PullZarfPackage(ctx context.Context, source string, version string, arch st
 
 // ZarfPackageIntrospection contains the results of introspecting a Zarf package.
 type ZarfPackageIntrospection struct {
-	ComponentOrder []string
-	ChartResults   map[string]*IntrospectResult
-	Variables      []v1alpha1.InteractiveVariable
+	ComponentOrder       []string
+	ChartResults         map[string]*IntrospectResult
+	Variables            []v1alpha1.InteractiveVariable
+	UDSOverrideValues    []UDSOverrideValueWithContext
+	UDSOverrideVariables []UDSOverrideVariableWithContext
 }
 
 // InspectZarfPackage analyzes a Zarf package to find Helm values.

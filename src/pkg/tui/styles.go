@@ -20,6 +20,14 @@ var (
 	kindStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#C678DD"))
 	headerStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Bold(true).Underline(true)
 	zarfVarStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#D19A66")).Bold(true)
+	// UDS override styles
+	udsOverrideValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#61AFEF")).Bold(true)
+	udsOverrideVarStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#C678DD")).Bold(true)
 	// Table styles
 	tableHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ABB2BF")).Bold(true).Underline(true)
+	// Cross-reference link style
+	crossRefStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379")).Italic(true)
+	// Snippet style for copyable YAML snippets
+	snippetStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#56B6C2"))
+	snippetLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379")).Bold(true)
 )

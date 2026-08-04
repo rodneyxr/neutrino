@@ -1,6 +1,6 @@
 package main
 
-import "github.com/rodneyxr/neutrino/src/cmd"
+import "github.com/defenseunicorns-dashdays/neutrino/src/cmd"
 
 func main() {
 	cmd.Execute()

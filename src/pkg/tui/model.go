@@ -10,8 +10,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
 	"github.com/goccy/go-yaml"
-	"github.com/rodneyxr/neutrino/src/pkg/helm/introspect"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 )
 
@@ -32,31 +32,63 @@ const (
 	InputModeChartSelect
 )
 
+// DetailItemKind distinguishes navigable items in the detail view.
+type DetailItemKind int
+
+const (
+	DetailItemLocation DetailItemKind = iota
+	DetailItemCrossRef
+)
+
+// DetailItem represents a single navigable row in the detail view.
+type DetailItem struct {
+	Kind     DetailItemKind
+	Location introspect.ValueUsageLocation // valid when Kind == DetailItemLocation
+	RefIndex int                           // index into filteredValues for cross-ref jumps
+	Label    string                        // rendered label for cross-ref items
+}
+
 type DisplayItem struct {
 	introspect.ValueUsage
-	Component    string
-	IsZarfVar    bool
-	IsPkgVar     bool
-	PkgVarDesc   string
-	IsEmptyState bool
+	Component          string
+	IsZarfVar          bool
+	IsPkgVar           bool
+	PkgVarDesc         string
+	IsEmptyState       bool
+	IsUDSOverrideValue bool
+	IsUDSOverrideVar   bool
+	IsSummaryItem      bool        // true for top-level UDS summary items
+	OverrideValue      interface{} // The value being set (for override values)
+	OriginalDefault    interface{} // The original chart default being overridden
+	UDSVarPath         string      // The Helm path for UDS override variables
+	UDSVarDescription  string      // Description for UDS override variables
+	SummaryComponent   string      // source component for UDS summary items
 }
 
 type Model struct {
 	// Data
-	components     map[string]*introspect.IntrospectResult
-	chartNames     []string
-	currentChart   string
-	filteredValues []DisplayItem
+	components           map[string]*introspect.IntrospectResult
+	chartNames           []string
+	currentChart         string
+	filteredValues       []DisplayItem
+	udsOverrideValues    []introspect.UDSOverrideValueWithContext
+	udsOverrideVariables []introspect.UDSOverrideVariableWithContext
 
 	// State
-	viewMode        ViewMode
-	inputMode       InputMode
-	cursor          int
-	detailCursor    int // For scrolling in detail view
-	viewportOffset  int
-	windowHeight    int
-	windowWidth     int
-	consolidateMode bool
+	viewMode            ViewMode
+	inputMode           InputMode
+	cursor              int
+	detailCursor        int  // Navigable item cursor in detail view
+	detailScrollOffset  int  // Line offset for viewport scrolling in detail view
+	detailValueExpanded bool // Whether the default value block is expanded in detail view
+	detailBundleMode    bool // Whether to show bundle authoring snippets outside UDS bundle context
+	detailItems         []DetailItem
+	viewportOffset      int
+	windowHeight        int
+	windowWidth         int
+	consolidateMode     bool
+	showZarfSummary     bool
+	showUDSSummary      bool
 
 	// Inputs
 	filterInput      textinput.Model
@@ -96,15 +128,17 @@ func NewModel(report introspect.InspectionReport) Model {
 	ci.ShowSuggestions = true
 
 	m := Model{
-		components:      components,
-		chartNames:      charts,
-		currentChart:    currentChart,
-		viewMode:        ViewModeList,
-		inputMode:       InputModeNormal,
-		consolidateMode: true,
-		filterInput:     fi,
-		chartInput:      ci,
-		pkgVariables:    pkgVariables,
+		components:           components,
+		chartNames:           charts,
+		currentChart:         currentChart,
+		viewMode:             ViewModeList,
+		inputMode:            InputModeNormal,
+		consolidateMode:      true,
+		filterInput:          fi,
+		chartInput:           ci,
+		pkgVariables:         pkgVariables,
+		udsOverrideValues:    report.UDSOverrideValues,
+		udsOverrideVariables: report.UDSOverrideVariables,
 	}
 
 	m.updateFilteredValues()
@@ -115,22 +149,68 @@ func (m *Model) updateFilteredValues() {
 	var newValues []DisplayItem
 	filter := m.filterInput.Value()
 
-	// Add package variables unconditionally at the top if matches filter
-	for _, pv := range m.pkgVariables {
-		if filter == "" || strings.Contains(strings.ToLower(pv.Name), strings.ToLower(filter)) {
-			desc := strings.ReplaceAll(pv.Description, "\n", " ")
-			if len(desc) > 60 {
-				desc = desc[:57] + "..."
+	// Add package variables at the top if the Zarf summary toggle is on
+	if m.showZarfSummary {
+		for _, pv := range m.pkgVariables {
+			if filter == "" || strings.Contains(strings.ToLower(pv.Name), strings.ToLower(filter)) {
+				desc := strings.ReplaceAll(pv.Description, "\n", " ")
+				if len(desc) > 60 {
+					desc = desc[:57] + "..."
+				}
+				newValues = append(newValues, DisplayItem{
+					ValueUsage: introspect.ValueUsage{
+						Path:         pv.Name,
+						DefaultValue: pv.Default,
+					},
+					Component:  "Zarf Package Variables",
+					IsPkgVar:   true,
+					PkgVarDesc: desc,
+				})
 			}
-			newValues = append(newValues, DisplayItem{
-				ValueUsage: introspect.ValueUsage{
-					Path:         pv.Name,
-					DefaultValue: pv.Default,
-				},
-				Component:  "Zarf Package Variables",
-				IsPkgVar:   true,
-				PkgVarDesc: desc,
-			})
+		}
+	}
+
+	// Add UDS summary items if the UDS summary toggle is on
+	if m.showUDSSummary {
+		for _, ov := range m.udsOverrideValues {
+			destComponent := fmt.Sprintf("%s/%s/%s", ov.PackageName, ov.ComponentName, ov.ChartName)
+			if filter == "" || strings.Contains(strings.ToLower(ov.Path), strings.ToLower(filter)) {
+				newValues = append(newValues, DisplayItem{
+					ValueUsage: introspect.ValueUsage{
+						Path:         ov.Path,
+						DefaultValue: ov.OriginalDefault,
+					},
+					Component:          "UDS Bundle Overrides",
+					IsUDSOverrideValue: true,
+					IsSummaryItem:      true,
+					OverrideValue:      ov.Value,
+					OriginalDefault:    ov.OriginalDefault,
+					SummaryComponent:   destComponent,
+				})
+			}
+		}
+		for _, ov := range m.udsOverrideVariables {
+			destComponent := fmt.Sprintf("%s/%s/%s", ov.PackageName, ov.ComponentName, ov.ChartName)
+			searchStr := strings.ToLower(ov.Name + " " + ov.Path)
+			if filter == "" || strings.Contains(searchStr, strings.ToLower(filter)) {
+				desc := strings.ReplaceAll(ov.Description, "\n", " ")
+				if len(desc) > 60 {
+					desc = desc[:57] + "..."
+				}
+				newValues = append(newValues, DisplayItem{
+					ValueUsage: introspect.ValueUsage{
+						Path:         ov.Name,
+						DefaultValue: ov.Default,
+					},
+					Component:         "UDS Bundle Overrides",
+					IsUDSOverrideVar:  true,
+					IsSummaryItem:     true,
+					UDSVarPath:        ov.Path,
+					UDSVarDescription: desc,
+					OriginalDefault:   ov.OriginalDefault,
+					SummaryComponent:  destComponent,
+				})
+			}
 		}
 	}
 
@@ -212,6 +292,46 @@ func (m *Model) updateFilteredValues() {
 			}
 		}
 
+		// UDS Override Values (hard-coded, not user-overridable)
+		for _, ov := range res.UDSOverrideValues {
+			if filter == "" || strings.Contains(strings.ToLower(ov.Path), strings.ToLower(filter)) {
+				chartHasItems = true
+				newValues = append(newValues, DisplayItem{
+					ValueUsage: introspect.ValueUsage{
+						Path:         ov.Path,
+						DefaultValue: ov.OriginalDefault,
+					},
+					Component:          name,
+					IsUDSOverrideValue: true,
+					OverrideValue:      ov.Value,
+					OriginalDefault:    ov.OriginalDefault,
+				})
+			}
+		}
+
+		// UDS Override Variables (user-overridable via uds-config.yaml)
+		for _, ov := range res.UDSOverrideVariables {
+			searchStr := strings.ToLower(ov.Name + " " + ov.Path)
+			if filter == "" || strings.Contains(searchStr, strings.ToLower(filter)) {
+				chartHasItems = true
+				desc := strings.ReplaceAll(ov.Description, "\n", " ")
+				if len(desc) > 60 {
+					desc = desc[:57] + "..."
+				}
+				newValues = append(newValues, DisplayItem{
+					ValueUsage: introspect.ValueUsage{
+						Path:         ov.Name,
+						DefaultValue: ov.Default,
+					},
+					Component:         name,
+					IsUDSOverrideVar:  true,
+					UDSVarPath:        ov.Path,
+					UDSVarDescription: desc,
+					OriginalDefault:   ov.OriginalDefault,
+				})
+			}
+		}
+
 		// Inject Empty State Dummy Row if zero items matched
 		if !chartHasItems && filter == "" {
 			newValues = append(newValues, DisplayItem{
@@ -245,14 +365,39 @@ func (m *Model) updateFilteredValues() {
 			return false
 		}
 
+		// UDS Bundle Overrides summary goes after pkg vars but before per-component items
+		isSummaryI := newValues[i].IsSummaryItem
+		isSummaryJ := newValues[j].IsSummaryItem
+		if isSummaryI && !isSummaryJ {
+			return true
+		}
+		if !isSummaryI && isSummaryJ {
+			return false
+		}
+		if isSummaryI && isSummaryJ {
+			// Within summary: values before variables
+			if newValues[i].IsUDSOverrideValue != newValues[j].IsUDSOverrideValue {
+				return newValues[i].IsUDSOverrideValue
+			}
+			return false // preserve insertion order
+		}
+
 		// Group by Component (chronological order)
 		if newValues[i].Component != newValues[j].Component {
 			return compOrderIndex[newValues[i].Component] < compOrderIndex[newValues[j].Component]
 		}
 
-		// Sort Zarf vars first
+		// Sort Zarf vars first, then UDS override values, then UDS override variables, then chart values
 		if newValues[i].IsZarfVar != newValues[j].IsZarfVar {
 			return newValues[i].IsZarfVar // True (Zarf) comes before False
+		}
+
+		if newValues[i].IsUDSOverrideValue != newValues[j].IsUDSOverrideValue {
+			return newValues[i].IsUDSOverrideValue
+		}
+
+		if newValues[i].IsUDSOverrideVar != newValues[j].IsUDSOverrideVar {
+			return newValues[i].IsUDSOverrideVar
 		}
 
 		if newValues[i].Path == newValues[j].Path {
@@ -342,8 +487,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.ensureCursorVisible()
 					}
 				} else if m.viewMode == ViewModeDetail {
-					v := m.filteredValues[m.cursor]
-					if m.detailCursor < len(v.Locations)-1 {
+					if m.detailCursor < len(m.detailItems)-1 {
 						m.detailCursor++
 					}
 				}
@@ -363,11 +507,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.viewMode == ViewModeList {
 					m.cursor = 0
 					m.viewportOffset = 0
+				} else if m.viewMode == ViewModeDetail {
+					m.detailScrollOffset = 0
 				}
 			case "G":
 				if m.viewMode == ViewModeList {
 					m.cursor = len(m.filteredValues) - 1
 					m.ensureCursorVisible()
+				} else if m.viewMode == ViewModeDetail {
+					m.detailScrollOffset = 999999 // clamped to maxOffset in detailView
+				}
+			case "v":
+				if m.viewMode == ViewModeDetail {
+					m.detailValueExpanded = !m.detailValueExpanded
 				}
 			case "/":
 				if m.viewMode == ViewModeList {
@@ -394,13 +546,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if !m.filteredValues[m.cursor].IsEmptyState {
 						m.viewMode = ViewModeDetail
 						m.detailCursor = 0
+						m.detailScrollOffset = 0
+						m.detailValueExpanded = false
+						m.detailBundleMode = false
+						m.buildDetailItems()
 					}
 				} else if m.viewMode == ViewModeDetail {
-					// Open the selected location in detail view
-					v := m.filteredValues[m.cursor]
-					if len(v.Locations) > m.detailCursor {
-						loc := v.Locations[m.detailCursor]
-						return m, openEditor(loc.File, loc.Line, loc.Column)
+					if m.detailCursor < len(m.detailItems) {
+						di := m.detailItems[m.detailCursor]
+						if di.Kind == DetailItemLocation {
+							return m, openEditor(di.Location.File, di.Location.Line, di.Location.Column)
+						} else if di.Kind == DetailItemCrossRef {
+							// Jump to the referenced item's detail view
+							if di.RefIndex >= 0 && di.RefIndex < len(m.filteredValues) {
+								m.cursor = di.RefIndex
+								m.detailCursor = 0
+								m.detailScrollOffset = 0
+								m.detailValueExpanded = false
+								m.detailBundleMode = false
+								m.buildDetailItems()
+								m.ensureCursorVisible()
+							}
+						}
 					}
 				}
 			case "esc":
@@ -423,9 +590,113 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, openEditor(loc.File, loc.Line, loc.Column)
 					}
 				}
+			case "pgup":
+				if m.viewMode == ViewModeList {
+					maxLines := m.windowHeight - 5
+					if maxLines < 1 {
+						maxLines = 10
+					}
+					newCursor := m.cursor - maxLines
+					if newCursor < 0 {
+						newCursor = 0
+					}
+					m.cursor = newCursor
+					m.viewportOffset = newCursor
+					m.ensureCursorVisible()
+				}
+			case "pgdown":
+				if m.viewMode == ViewModeList {
+					maxLines := m.windowHeight - 5
+					if maxLines < 1 {
+						maxLines = 10
+					}
+					newCursor := m.cursor + maxLines
+					if newCursor >= len(m.filteredValues) {
+						newCursor = len(m.filteredValues) - 1
+					}
+					m.cursor = newCursor
+					m.ensureCursorVisible()
+				}
+			case "J":
+				if m.viewMode == ViewModeList {
+					newCursor := m.cursor + 5
+					if newCursor >= len(m.filteredValues) {
+						newCursor = len(m.filteredValues) - 1
+					}
+					m.cursor = newCursor
+					m.ensureCursorVisible()
+				} else if m.viewMode == ViewModeDetail {
+					m.detailScrollOffset++
+				}
+			case "K":
+				if m.viewMode == ViewModeList {
+					newCursor := m.cursor - 5
+					if newCursor < 0 {
+						newCursor = 0
+					}
+					m.cursor = newCursor
+					m.ensureCursorVisible()
+				} else if m.viewMode == ViewModeDetail {
+					if m.detailScrollOffset > 0 {
+						m.detailScrollOffset--
+					}
+				}
+			case "n":
+				if m.viewMode == ViewModeList {
+					currentComponent := m.filteredValues[m.cursor].Component
+					for i := m.cursor + 1; i < len(m.filteredValues); i++ {
+						if m.filteredValues[i].Component != currentComponent {
+							m.cursor = i
+							m.ensureCursorVisible()
+							break
+						}
+					}
+					m.viewportOffset = m.cursor
+					m.ensureCursorVisible()
+				}
+			case "b":
+				if m.viewMode == ViewModeDetail {
+					m.detailBundleMode = !m.detailBundleMode
+				} else if m.viewMode == ViewModeList {
+					if len(m.filteredValues) == 0 {
+						break
+					}
+
+					currentComponent := m.filteredValues[m.cursor].Component
+					// Find the first index of the current component
+					startIdx := m.cursor
+					for startIdx > 0 && m.filteredValues[startIdx-1].Component == currentComponent {
+						startIdx--
+					}
+
+					// If already at the very first component, stay at top
+					if startIdx == 0 {
+						m.cursor = 0
+					} else {
+						// previous component is at startIdx-1; find its first index
+						prevIdx := startIdx - 1
+						prevComp := m.filteredValues[prevIdx].Component
+						for prevIdx > 0 && m.filteredValues[prevIdx-1].Component == prevComp {
+							prevIdx--
+						}
+						m.cursor = prevIdx
+					}
+					m.viewportOffset = m.cursor
+					m.ensureCursorVisible()
+				}
 			case "c": // Toggle consolidate
 				m.consolidateMode = !m.consolidateMode
 				m.updateFilteredValues()
+			case "Z": // Toggle Zarf package variable summary
+				m.showZarfSummary = !m.showZarfSummary
+				m.updateFilteredValues()
+				m.cursor = 0
+				m.viewportOffset = 0
+			case "U": // Toggle UDS override summary
+				m.showUDSSummary = !m.showUDSSummary
+				m.updateFilteredValues()
+				m.cursor = 0
+				m.viewportOffset = 0
 			}
 
 		case InputModeFilter:
@@ -552,7 +823,7 @@ func (m *Model) ensureCursorVisible() {
 	// Iterate from viewportOffset to cursor to count lines
 	lines := 0
 	lastComponent := ""
-	lastIsZarfVar := false // Need to track this for Zarf vs Chart Values headers
+	lastSectionType := 0 // Track section type for header transitions
 
 	// Initialize lastComponent correctly based on context BEFORE viewportOffset?
 	// This is tricky. If we just start counting from viewportOffset, we might miss context that caused a header.
@@ -571,7 +842,7 @@ func (m *Model) ensureCursorVisible() {
 		// Need to see previous item to determine if we are at start of section
 		if m.viewportOffset > 0 {
 			lastComponent = m.filteredValues[m.viewportOffset-1].Component
-			lastIsZarfVar = m.filteredValues[m.viewportOffset-1].IsZarfVar
+			lastSectionType = sectionTypeOf(m.filteredValues[m.viewportOffset-1])
 		}
 
 		for i := m.viewportOffset; i <= m.cursor; i++ {
@@ -586,14 +857,15 @@ func (m *Model) ensureCursorVisible() {
 				itemLines += 1
 
 				lastComponent = v.Component
-				lastIsZarfVar = v.IsZarfVar
+				lastSectionType = sectionTypeOf(v)
 			} else {
-				// Same component. Check if we switched from Zarf to Values
-				if lastIsZarfVar && !v.IsZarfVar {
-					// We need a header for "Chart Values"
-					itemLines += 1
+				// Same component. Check if section type changed
+				curSection := sectionTypeOf(v)
+				if curSection != lastSectionType {
+					// Newline + header for new section
+					itemLines += 2
+					lastSectionType = curSection
 				}
-				lastIsZarfVar = v.IsZarfVar
 			}
 
 			// Are we at the very top (and just rendered a header implicit)?
@@ -612,6 +884,23 @@ func (m *Model) ensureCursorVisible() {
 			break
 		}
 	}
+}
+
+// renderValueBlock renders a labeled value block, collapsed to a single preview line
+// (with a hint to expand) unless expanded is true.
+func renderValueBlock(label, valStr string, expanded bool) string {
+	lines := strings.Split(valStr, "\n")
+	if len(lines) <= 1 {
+		// Single-line value — always show inline, no toggle needed.
+		return headerStyle.Render(label) + "\n" + codeStyle.Render(valStr) + "\n"
+	}
+	if expanded {
+		return headerStyle.Render(label) + helpStyle.Render(" (v to collapse)") + "\n" + codeStyle.Render(valStr) + "\n"
+	}
+	// Collapsed: show first line with count hint.
+	moreLines := len(lines) - 1
+	return headerStyle.Render(label) + "\n" +
+		codeStyle.Render(lines[0]) + helpStyle.Render(fmt.Sprintf(" ... +%d lines (v to expand)", moreLines)) + "\n"
 }
 
 func (m Model) View() string {
@@ -669,12 +958,12 @@ func (m Model) View() string {
 
 	// We'll iterate from start and stop when linesUsed >= maxLines
 	lastComponent := ""
-	lastIsZarfVar := false
+	lastSectionType := 0 // 0=unknown, 1=pkgVar, 2=zarfVar, 3=udsOverrideValue, 4=udsOverrideVar, 5=chartValue
 
 	if start > 0 {
 		// Initialize context from previous item
 		lastComponent = m.filteredValues[start-1].Component
-		lastIsZarfVar = m.filteredValues[start-1].IsZarfVar
+		lastSectionType = sectionTypeOf(m.filteredValues[start-1])
 	}
 
 	for i := start; i < len(m.filteredValues); i++ {
@@ -695,27 +984,16 @@ func (m Model) View() string {
 			itemStr += chartFilterStyle.Render(fmt.Sprintf("%s--- %s%s ---", sepPrefix, v.Component, versionStr)) + "\n"
 
 			// Render Header dependent on first item type
-			if v.IsPkgVar {
-				headerStr := fmt.Sprintf("    %-50s %-20s %s", "VARIABLE", "DEFAULT", "DESCRIPTION")
-				itemStr += tableHeaderStyle.Render(headerStr) + "\n"
-			} else if v.IsZarfVar {
-				headerStr := fmt.Sprintf("    %-50s %-20s %-10s %s", "ZARF VARIABLE", "DEFAULT", "TYPE", "LOCATION")
-				itemStr += tableHeaderStyle.Render(headerStr) + "\n"
-			} else {
-				headerStr := fmt.Sprintf("    %-50s %-20s %-10s %s", "PATH", "DEFAULT", "TYPE", "LOCATION")
-				itemStr += tableHeaderStyle.Render(headerStr) + "\n"
-			}
+			itemStr += sectionHeader(v) + "\n"
 
 			lastComponent = v.Component
-			lastIsZarfVar = v.IsZarfVar
+			lastSectionType = sectionTypeOf(v)
 		} else {
-			// Same Component, check if we switched from Zarf to Values
-			if lastIsZarfVar && !v.IsZarfVar && !v.IsPkgVar {
-				// Transition from Zarf -> Values
-				// Render Values Header
-				headerStr := fmt.Sprintf("\n    %-50s %-20s %-10s %s", "PATH", "DEFAULT", "TYPE", "LOCATION")
-				itemStr += tableHeaderStyle.Render(headerStr) + "\n"
-				lastIsZarfVar = v.IsZarfVar
+			// Same Component, check if section type changed
+			curSection := sectionTypeOf(v)
+			if curSection != lastSectionType {
+				itemStr += "\n" + sectionHeader(v) + "\n"
+				lastSectionType = curSection
 			}
 		}
 
@@ -755,6 +1033,8 @@ func (m Model) View() string {
 			typeCol = "-"
 		} else if v.IsZarfVar {
 			typeCol = "variable"
+		} else if v.IsUDSOverrideValue || v.IsUDSOverrideVar {
+			typeCol = "override"
 		} else if len(v.Locations) > 0 {
 			typeCol = "field"
 		}
@@ -790,6 +1070,55 @@ func (m Model) View() string {
 		var line string
 		if v.IsPkgVar {
 			line = fmt.Sprintf("%-50s %-20s %s", pathCol, defCol, helpStyle.Render(v.PkgVarDesc))
+		} else if v.IsSummaryItem && v.IsUDSOverrideValue {
+			valCol := formatDefaultValue(v.OverrideValue)
+			if len(valCol) > 18 {
+				valCol = valCol[:17] + "…"
+			}
+			origCol := formatDefaultValue(v.OriginalDefault)
+			if origCol == "-" {
+				origCol = ""
+			}
+			if len(origCol) > 18 {
+				origCol = origCol[:17] + "…"
+			}
+			compCol := v.SummaryComponent
+			if len(compCol) > 30 {
+				compCol = compCol[:29] + "…"
+			}
+			line = fmt.Sprintf("%-50s %-20s %-20s %s", pathCol, valCol, origCol, helpStyle.Render(compCol))
+		} else if v.IsSummaryItem && v.IsUDSOverrideVar {
+			udsPathCol := v.UDSVarPath
+			if len(udsPathCol) > 28 {
+				udsPathCol = udsPathCol[:27] + "…"
+			}
+			compCol := v.SummaryComponent
+			if len(compCol) > 18 {
+				compCol = compCol[:17] + "…"
+			}
+			descCol := v.UDSVarDescription
+			line = fmt.Sprintf("%-50s %-30s %-20s %s", pathCol, udsPathCol, compCol, helpStyle.Render(descCol))
+		} else if v.IsUDSOverrideValue {
+			valCol := formatDefaultValue(v.OverrideValue)
+			if len(valCol) > 18 {
+				valCol = valCol[:17] + "…"
+			}
+			origCol := formatDefaultValue(v.OriginalDefault)
+			if origCol == "-" {
+				origCol = ""
+			}
+			if len(origCol) > 18 {
+				origCol = origCol[:17] + "…"
+			}
+			line = fmt.Sprintf("%-50s %-20s %s", pathCol, valCol, origCol)
+		} else if v.IsUDSOverrideVar {
+			udsPathCol := v.UDSVarPath
+			if len(udsPathCol) > 28 {
+				udsPathCol = udsPathCol[:27] + "…"
+			}
+			descCol := v.UDSVarDescription
+			// Match widths with UDS Override Path columns (50,20)
+			line = fmt.Sprintf("%-50s %-30s %s", pathCol, udsPathCol, helpStyle.Render(descCol))
 		} else if v.IsEmptyState {
 			line = fmt.Sprintf("%-50s %-20s %-10s %s", pathCol, "", typeCol, "")
 		} else {
@@ -801,6 +1130,10 @@ func (m Model) View() string {
 		} else {
 			if v.IsPkgVar || v.IsZarfVar {
 				itemStr += itemStyle.Render(zarfVarStyle.Render(line)) + "\n"
+			} else if v.IsUDSOverrideValue {
+				itemStr += itemStyle.Render(udsOverrideValueStyle.Render(line)) + "\n"
+			} else if v.IsUDSOverrideVar {
+				itemStr += itemStyle.Render(udsOverrideVarStyle.Render(line)) + "\n"
 			} else if v.IsEmptyState {
 				// Gray out identical to description format
 				itemStr += itemStyle.Render(helpStyle.Render(line)) + "\n"
@@ -835,11 +1168,123 @@ func (m Model) View() string {
 		}
 
 		// Help
-		help := "filter (/) • chart (:) • details (enter) • quit (q)"
+		help := "filter (/) • components (:) • details (enter) • jump (n/b) • zarf vars (Z) • uds vars (U) • quit (q)"
 		s += helpStyle.Render(help)
 	}
 
 	return docStyle.Render(s)
+}
+
+// findCrossRefs finds UDS overrides/variables that target a given Helm path within a component,
+// and template locations where a path is used. Returns detail items for cross-reference display.
+func (m Model) findOverridesForPath(component, path string) []DetailItem {
+	var items []DetailItem
+	res := m.components[component]
+	if res == nil {
+		return items
+	}
+	for _, ov := range res.UDSOverrideValues {
+		if ov.Path == path {
+			// Find matching DisplayItem in filteredValues
+			for idx, di := range m.filteredValues {
+				if di.IsUDSOverrideValue && !di.IsSummaryItem && di.Component == component && di.Path == path {
+					items = append(items, DetailItem{
+						Kind:     DetailItemCrossRef,
+						RefIndex: idx,
+						Label:    fmt.Sprintf("→ UDS Override Value: %s = %s", ov.Path, formatDefaultValue(ov.Value)),
+					})
+					break
+				}
+			}
+		}
+	}
+	for _, ov := range res.UDSOverrideVariables {
+		if ov.Path == path {
+			for idx, di := range m.filteredValues {
+				if di.IsUDSOverrideVar && !di.IsSummaryItem && di.Component == component && di.UDSVarPath == path {
+					if di.Path == ov.Name {
+						items = append(items, DetailItem{
+							Kind:     DetailItemCrossRef,
+							RefIndex: idx,
+							Label:    fmt.Sprintf("→ UDS Variable: %s → %s", ov.Name, ov.Path),
+						})
+						break
+					}
+				}
+			}
+		}
+	}
+	return items
+}
+
+// findLocationsForOverridePath finds the Helm value template locations for a given path in a component.
+func (m Model) findLocationsForOverridePath(component, path string) []DetailItem {
+	var items []DetailItem
+	res := m.components[component]
+	if res == nil {
+		return items
+	}
+	for _, v := range res.Values {
+		if v.Path == path {
+			for _, loc := range v.Locations {
+				items = append(items, DetailItem{
+					Kind:     DetailItemLocation,
+					Location: loc,
+				})
+			}
+			// Also add a cross-ref link to the value item itself
+			for idx, di := range m.filteredValues {
+				if !di.IsZarfVar && !di.IsUDSOverrideValue && !di.IsUDSOverrideVar && !di.IsPkgVar && !di.IsSummaryItem && di.Component == component && di.Path == path {
+					items = append(items, DetailItem{
+						Kind:     DetailItemCrossRef,
+						RefIndex: idx,
+						Label:    fmt.Sprintf("→ Helm Value: %s (%d locations)", path, len(v.Locations)),
+					})
+					break
+				}
+			}
+			break
+		}
+	}
+	return items
+}
+
+// buildDetailItems constructs the unified navigable list for the detail view of the current item.
+func (m *Model) buildDetailItems() {
+	if len(m.filteredValues) == 0 {
+		m.detailItems = nil
+		return
+	}
+	v := m.filteredValues[m.cursor]
+	var items []DetailItem
+
+	if v.IsUDSOverrideValue || v.IsUDSOverrideVar {
+		// For UDS overrides, show template locations where the overridden path is used
+		targetPath := v.Path
+		if v.IsUDSOverrideVar {
+			targetPath = v.UDSVarPath
+		}
+		targetComponent := v.Component
+		if v.IsSummaryItem {
+			targetComponent = v.SummaryComponent
+		}
+		items = append(items, m.findLocationsForOverridePath(targetComponent, targetPath)...)
+	} else if v.IsPkgVar {
+		// No cross-refs for package variables currently
+	} else {
+		// Regular Helm value or Zarf var: show locations, then cross-refs to UDS overrides
+		for _, loc := range v.Locations {
+			items = append(items, DetailItem{
+				Kind:     DetailItemLocation,
+				Location: loc,
+			})
+		}
+		if !v.IsZarfVar {
+			items = append(items, m.findOverridesForPath(v.Component, v.Path)...)
+		}
+	}
+
+	m.detailItems = items
 }
 
 func (m Model) detailView() string {
@@ -848,55 +1293,298 @@ func (m Model) detailView() string {
 	}
 	v := m.filteredValues[m.cursor]
 
+	// --- Header section ---
 	label := "Value:"
 	if v.IsZarfVar {
 		label = "Zarf Variable:"
+	} else if v.IsUDSOverrideValue {
+		label = "UDS Override Value:"
+	} else if v.IsUDSOverrideVar {
+		label = "UDS Override Variable:"
 	}
 
 	s := headerStyle.Render(label) + " " + v.Path + "\n"
 	s += headerStyle.Render("Component:") + " " + v.Component + "\n"
+	if m.detailBundleMode {
+		s += headerStyle.Render("Mode:") + " Bundle authoring\n"
+	}
 	if v.Chart != "" && v.Chart != v.Component {
 		s += headerStyle.Render("Chart:") + " " + v.Chart + "\n"
 	}
+	if v.IsSummaryItem && v.SummaryComponent != "" {
+		s += headerStyle.Render("Target Component:") + " " + v.SummaryComponent + "\n"
+	}
+	if v.IsUDSOverrideVar && v.UDSVarPath != "" {
+		s += headerStyle.Render("Helm Path:") + " " + v.UDSVarPath + "\n"
+	}
+	if v.IsUDSOverrideVar && v.UDSVarDescription != "" {
+		s += headerStyle.Render("Description:") + " " + v.UDSVarDescription + "\n"
+	}
 	s += "\n"
 
-	s += headerStyle.Render("Default:") + "\n"
-	valBytes, _ := yaml.Marshal(v.DefaultValue)
-	valStr := strings.TrimSpace(string(valBytes))
-	if valStr == "" || valStr == "{}" || valStr == "[]" || valStr == "null" {
-		valStr = "-"
-	} else {
-		// Remove .0 from integers for consistency with table view
-		valStr = strings.ReplaceAll(valStr, ".0,", ",")
-		valStr = strings.ReplaceAll(valStr, ".0}", "}")
-		valStr = strings.ReplaceAll(valStr, ".0]", "]")
-		valStr = strings.TrimSuffix(valStr, ".0")
+	// --- Locations / cross-references (shown first so they are immediately visible) ---
+	hasLocations := false
+	hasCrossRefs := false
+	for _, di := range m.detailItems {
+		if di.Kind == DetailItemLocation {
+			hasLocations = true
+		} else {
+			hasCrossRefs = true
+		}
 	}
-	s += codeStyle.Render(valStr) + "\n\n"
 
-	s += headerStyle.Render("Locations:") + "\n"
-	for i, loc := range v.Locations {
-		file := loc.File
-		if res, ok := m.components[v.Component]; ok && res.Source != "" {
-			if rel, err := filepath.Rel(res.Source, file); err == nil {
-				file = rel
+	if hasLocations {
+		if v.IsUDSOverrideValue || v.IsUDSOverrideVar {
+			s += headerStyle.Render("Affected Template Locations:") + "\n"
+		} else {
+			s += headerStyle.Render("Locations:") + "\n"
+		}
+	}
+
+	lastKind := DetailItemLocation
+	for i, di := range m.detailItems {
+		if di.Kind == DetailItemCrossRef && lastKind == DetailItemLocation && hasLocations {
+			if v.IsUDSOverrideValue || v.IsUDSOverrideVar {
+				s += "\n" + headerStyle.Render("Related Values:") + "\n"
+			} else {
+				s += "\n" + headerStyle.Render("Overrides:") + "\n"
 			}
 		}
+		lastKind = di.Kind
 
-		locStr := fmt.Sprintf("%s %s",
-			kindStyle.Render(fmt.Sprintf("[%s]", loc.Kind)),
-			locationStyle.Render(fmt.Sprintf("%s:%d:%d", file, loc.Line, loc.Column)),
-		)
-
-		if i == m.detailCursor {
-			s += selectedItemStyle.Render("> "+locStr) + "\n"
+		if di.Kind == DetailItemLocation {
+			file := di.Location.File
+			compKey := v.Component
+			if v.IsSummaryItem {
+				compKey = v.SummaryComponent
+			}
+			if res, ok := m.components[compKey]; ok && res.Source != "" {
+				if rel, err := filepath.Rel(res.Source, file); err == nil {
+					file = rel
+				}
+			}
+			locStr := fmt.Sprintf("%s %s",
+				kindStyle.Render(fmt.Sprintf("[%s]", di.Location.Kind)),
+				locationStyle.Render(fmt.Sprintf("%s:%d:%d", file, di.Location.Line, di.Location.Column)),
+			)
+			if i == m.detailCursor {
+				s += selectedItemStyle.Render("> "+locStr) + "\n"
+			} else {
+				s += "  " + locStr + "\n"
+			}
 		} else {
-			s += "  " + locStr + "\n"
+			if i == m.detailCursor {
+				s += selectedItemStyle.Render("> "+di.Label) + "\n"
+			} else {
+				s += "  " + crossRefStyle.Render(di.Label) + "\n"
+			}
 		}
 	}
 
-	s += "\n" + helpStyle.Render("open (enter) • back (esc)")
-	return docStyle.Render(s)
+	if !hasCrossRefs && !hasLocations && !v.IsPkgVar {
+		s += helpStyle.Render("(no template locations found)") + "\n"
+	}
+
+	// --- Default / override value (collapsible, below locations) ---
+	s += "\n"
+	if v.IsUDSOverrideValue {
+		valBytes, _ := yaml.Marshal(v.OverrideValue)
+		valStr := strings.TrimSpace(string(valBytes))
+		if valStr == "" || valStr == "null" {
+			valStr = "-"
+		}
+		s += renderValueBlock("Override Value:", valStr, m.detailValueExpanded)
+
+		origBytes, _ := yaml.Marshal(v.OriginalDefault)
+		origStr := strings.TrimSpace(string(origBytes))
+		if origStr == "" || origStr == "{}" || origStr == "[]" || origStr == "null" {
+			origStr = "-"
+		}
+		s += renderValueBlock("Original Default:", origStr, m.detailValueExpanded)
+	} else if v.IsUDSOverrideVar {
+		valBytes, _ := yaml.Marshal(v.DefaultValue)
+		valStr := strings.TrimSpace(string(valBytes))
+		if valStr == "" || valStr == "{}" || valStr == "[]" || valStr == "null" {
+			valStr = "-"
+		}
+		s += renderValueBlock("Default:", valStr, m.detailValueExpanded)
+
+		origBytes, _ := yaml.Marshal(v.OriginalDefault)
+		origStr := strings.TrimSpace(string(origBytes))
+		if origStr == "" || origStr == "{}" || origStr == "[]" || origStr == "null" {
+			origStr = "-"
+		}
+		s += renderValueBlock("Original Default:", origStr, m.detailValueExpanded)
+	} else {
+		valBytes, _ := yaml.Marshal(v.DefaultValue)
+		valStr := strings.TrimSpace(string(valBytes))
+		if valStr == "" || valStr == "{}" || valStr == "[]" || valStr == "null" {
+			valStr = "-"
+		} else {
+			valStr = strings.ReplaceAll(valStr, ".0,", ",")
+			valStr = strings.ReplaceAll(valStr, ".0}", "}")
+			valStr = strings.ReplaceAll(valStr, ".0]", "]")
+			valStr = strings.TrimSuffix(valStr, ".0")
+		}
+		s += renderValueBlock("Default:", valStr, m.detailValueExpanded)
+	}
+
+	// --- Snippets ---
+	if !v.IsZarfVar && !v.IsUDSOverrideValue && !v.IsUDSOverrideVar && !v.IsPkgVar && !v.IsEmptyState {
+		snippet := m.generateBundleSnippetForItem(v)
+		if snippet != "" {
+			s += "\n" + snippetLabelStyle.Render("UDS Bundle Override Snippet:") + "\n"
+			s += snippetStyle.Render(snippet) + "\n"
+		} else {
+			s += "\n" + helpStyle.Render("bundle mode (b) shows a uds-bundle.yaml authoring snippet") + "\n"
+		}
+	}
+
+	if v.IsUDSOverrideVar {
+		compKey := v.Component
+		if v.IsSummaryItem {
+			compKey = v.SummaryComponent
+		}
+		snippet := generateConfigSnippet(compKey, v.Path)
+		if snippet != "" {
+			s += "\n" + snippetLabelStyle.Render("UDS Config Snippet:") + "\n"
+			s += snippetStyle.Render(snippet) + "\n"
+		}
+	}
+
+	// --- Viewport clipping ---
+	viewHeight := m.windowHeight - 2
+	if viewHeight < 1 {
+		viewHeight = m.windowHeight
+	}
+
+	lines := strings.Split(s, "\n")
+	totalLines := len(lines)
+
+	if totalLines <= viewHeight {
+		m.detailScrollOffset = 0
+	} else {
+		maxOffset := totalLines - viewHeight
+		if m.detailScrollOffset > maxOffset {
+			m.detailScrollOffset = maxOffset
+		}
+		if m.detailScrollOffset < 0 {
+			m.detailScrollOffset = 0
+		}
+	}
+
+	end := m.detailScrollOffset + viewHeight
+	if end > totalLines {
+		end = totalLines
+	}
+
+	clipped := strings.Join(lines[m.detailScrollOffset:end], "\n")
+
+	scrollHint := ""
+	if totalLines > viewHeight {
+		scrollPct := 0
+		if totalLines-viewHeight > 0 {
+			scrollPct = m.detailScrollOffset * 100 / (totalLines - viewHeight)
+		}
+		scrollHint = helpStyle.Render(fmt.Sprintf(" scroll (J/K • g/G) %d%%", scrollPct)) + "  "
+	}
+
+	help := scrollHint + helpStyle.Render("expand value (v) • bundle mode (b) • open/jump (enter) • back (esc)")
+	return docStyle.Render(clipped) + "\n" + help
+}
+
+// parseComponentKey splits a component key into its parts.
+// UDS keys are "pkg/component/chart" (3 parts), Zarf keys are "component/chart" (2 parts).
+func parseComponentKey(key string) (pkgName, componentName, chartName string) {
+	parts := strings.Split(key, "/")
+	switch len(parts) {
+	case 3:
+		return parts[0], parts[1], parts[2]
+	case 2:
+		return "", parts[0], parts[1]
+	default:
+		return "", "", key
+	}
+}
+
+// helmPathToVarName converts a Helm values path like "global.proxy.resources.requests.memory"
+// to an uppercase variable name like "GLOBAL_PROXY_RESOURCES_REQUESTS_MEMORY".
+func helmPathToVarName(path string) string {
+	name := strings.ReplaceAll(path, ".", "_")
+	name = strings.ReplaceAll(name, "-", "_")
+	return strings.ToUpper(name)
+}
+
+// generateBundleSnippet generates a uds-bundle.yaml snippet showing how to create
+// a UDS override variable for a given Helm value path.
+func generateBundleSnippet(componentKey, helmPath string, defaultValue interface{}) string {
+	pkgName, componentName, chartName := parseComponentKey(componentKey)
+	if pkgName == "" {
+		// Not a UDS bundle context (Zarf or plain Helm)
+		return ""
+	}
+	return generateBundleSnippetWithParts(pkgName, componentName, chartName, helmPath, defaultValue)
+}
+
+func (m Model) generateBundleSnippetForItem(v DisplayItem) string {
+	pkgName, componentName, chartName := parseComponentKey(v.Component)
+	if pkgName == "" {
+		if !m.detailBundleMode {
+			return ""
+		}
+		pkgName = "<package-name>"
+		if componentName == "" {
+			componentName = "<component-name>"
+		}
+		if chartName == "" {
+			chartName = v.Chart
+			if chartName == "" {
+				if res := m.components[v.Component]; res != nil {
+					chartName = res.ChartName
+				}
+			}
+			if chartName == "" {
+				chartName = "<chart-name>"
+			}
+		}
+	}
+	return generateBundleSnippetWithParts(pkgName, componentName, chartName, v.Path, v.DefaultValue)
+}
+
+func generateBundleSnippetWithParts(pkgName, componentName, chartName, helmPath string, defaultValue interface{}) string {
+	varName := helmPathToVarName(helmPath)
+	defaultStr := "null"
+	if defaultValue != nil {
+		b, _ := yaml.MarshalWithOptions(defaultValue, yaml.Flow(true))
+		defaultStr = strings.TrimSpace(string(b))
+		if defaultStr == "" {
+			defaultStr = "null"
+		}
+	}
+	return fmt.Sprintf(`# uds-bundle.yaml
+packages:
+  - name: %s
+    overrides:
+      %s:
+        %s:
+          variables:
+            - name: <prefix>_%s
+              path: %s
+              description: "<description>"
+              default: %s`, pkgName, componentName, chartName, varName, helmPath, defaultStr)
+}
+
+// generateConfigSnippet generates a uds-config.yaml snippet showing how to set
+// a UDS override variable value.
+func generateConfigSnippet(componentKey, varName string) string {
+	pkgName, _, _ := parseComponentKey(componentKey)
+	if pkgName == "" {
+		return ""
+	}
+	return fmt.Sprintf(`# uds-config.yaml
+variables:
+  %s:
+    %s: <value>`, pkgName, varName)
 }
 
 func openEditor(filename string, line, col int) tea.Cmd {
@@ -953,4 +1641,51 @@ func formatDefaultValue(val interface{}) string {
 		return str[:29] + "..."
 	}
 	return str
+}
+
+// sectionTypeOf returns the section type of a DisplayItem for header transition tracking.
+// 1=pkgVar, 2=zarfVar, 3=udsOverrideValue, 4=udsOverrideVar, 5=chartValue,
+// 6=udsSummaryValue, 7=udsSummaryVar
+func sectionTypeOf(v DisplayItem) int {
+	if v.IsPkgVar {
+		return 1
+	}
+	if v.IsSummaryItem && v.IsUDSOverrideValue {
+		return 6
+	}
+	if v.IsSummaryItem && v.IsUDSOverrideVar {
+		return 7
+	}
+	if v.IsZarfVar {
+		return 2
+	}
+	if v.IsUDSOverrideValue {
+		return 3
+	}
+	if v.IsUDSOverrideVar {
+		return 4
+	}
+	return 5
+}
+
+// sectionHeader builds the table header string for a given DisplayItem type.
+func sectionHeader(v DisplayItem) string {
+	var headerStr string
+	switch {
+	case v.IsPkgVar:
+		headerStr = fmt.Sprintf("    %-50s %-20s %s", "VARIABLE", "DEFAULT", "DESCRIPTION")
+	case v.IsSummaryItem && v.IsUDSOverrideValue:
+		headerStr = fmt.Sprintf("    %-50s %-20s %-20s %s", "UDS OVERRIDE PATH", "VALUE", "ORIGINAL DEFAULT", "COMPONENT")
+	case v.IsSummaryItem && v.IsUDSOverrideVar:
+		headerStr = fmt.Sprintf("    %-50s %-30s %-20s %s", "UDS VARIABLE", "PATH", "COMPONENT", "DESCRIPTION")
+	case v.IsZarfVar:
+		headerStr = fmt.Sprintf("    %-50s %-20s %-10s %s", "ZARF VARIABLE", "DEFAULT", "TYPE", "LOCATION")
+	case v.IsUDSOverrideValue:
+		headerStr = fmt.Sprintf("    %-50s %-20s %s", "UDS OVERRIDE PATH", "VALUE", "ORIGINAL DEFAULT")
+	case v.IsUDSOverrideVar:
+		headerStr = fmt.Sprintf("    %-50s %-30s %s", "UDS VARIABLE", "PATH", "DESCRIPTION")
+	default:
+		headerStr = fmt.Sprintf("    %-50s %-20s %-10s %s", "PATH", "DEFAULT", "TYPE", "LOCATION")
+	}
+	return tableHeaderStyle.Render(headerStr)
 }

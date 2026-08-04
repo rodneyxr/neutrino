@@ -6,8 +6,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rodneyxr/neutrino/src/pkg/helm/introspect"
-	"github.com/rodneyxr/neutrino/src/test/helpers"
+	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
+	"github.com/defenseunicorns-dashdays/neutrino/src/test/helpers"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,7 +40,7 @@ func TestRegressionOCI(t *testing.T) {
 			"ingress.enabled",
 			// "ingress.hosts.*.host", // TODO: test wildcard support
 			"podDisruptionBudget",
-			"probes.liveness.failureThreshold",``
+			"probes.liveness.failureThreshold",
 			"redis.enabled",
 			"securityContext",
 			"tls.certPath",

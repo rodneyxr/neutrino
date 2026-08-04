@@ -1,4 +1,4 @@
-module github.com/rodneyxr/neutrino
+module github.com/defenseunicorns-dashdays/neutrino
 
 go 1.25.7
 

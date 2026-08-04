@@ -10,9 +10,9 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
+	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/tui"
 	"github.com/goccy/go-yaml"
-	"github.com/rodneyxr/neutrino/src/pkg/helm/introspect"
-	"github.com/rodneyxr/neutrino/src/pkg/tui"
 	"github.com/spf13/cobra"
 	"github.com/zarf-dev/zarf/src/pkg/logger"
 	"github.com/zarf-dev/zarf/src/pkg/message"
@@ -111,6 +111,8 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 
 				report.Variables = bundleInspection.Variables
 				report.ComponentOrder = bundleInspection.ComponentOrder
+				report.UDSOverrideValues = bundleInspection.UDSOverrideValues
+				report.UDSOverrideVariables = bundleInspection.UDSOverrideVariables
 
 				keys := bundleInspection.ComponentOrder
 
@@ -236,6 +238,43 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 							v.Name,
 							v.Default,
 							v.Description,
+						})
+					}
+					message.TableWithWriter(out, header, data)
+					fmt.Fprintln(out, "")
+				}
+
+				// UDS Bundle Override Summary
+				if len(report.UDSOverrideValues) > 0 {
+					fmt.Fprintln(out, "\n=== UDS Bundle Override Values ===")
+					header := []string{"Package", "Component/Chart", "Path", "Value", "Original Default"}
+					var data [][]string
+					for _, ov := range report.UDSOverrideValues {
+						data = append(data, []string{
+							ov.PackageName,
+							fmt.Sprintf("%s/%s", ov.ComponentName, ov.ChartName),
+							ov.Path,
+							introspect.FormatDefaultValue(ov.Value),
+							introspect.FormatDefaultValue(ov.OriginalDefault),
+						})
+					}
+					message.TableWithWriter(out, header, data)
+					fmt.Fprintln(out, "")
+				}
+
+				if len(report.UDSOverrideVariables) > 0 {
+					fmt.Fprintln(out, "\n=== UDS Bundle Override Variables ===")
+					header := []string{"Package", "Component/Chart", "Variable", "Path", "Default", "Original Default", "Description"}
+					var data [][]string
+					for _, ov := range report.UDSOverrideVariables {
+						data = append(data, []string{
+							ov.PackageName,
+							fmt.Sprintf("%s/%s", ov.ComponentName, ov.ChartName),
+							ov.Name,
+							ov.Path,
+							introspect.FormatDefaultValue(ov.Default),
+							introspect.FormatDefaultValue(ov.OriginalDefault),
+							ov.Description,
 						})
 					}
 					message.TableWithWriter(out, header, data)
@@ -396,6 +435,38 @@ func printIntrospectResult(out io.Writer, result *introspect.IntrospectResult, f
 			fmt.Fprintln(out, "\nNo values discovered.")
 		} else {
 			message.TableWithWriter(out, header, data)
+		}
+
+		// UDS Override Values (per-component)
+		if len(result.UDSOverrideValues) > 0 {
+			fmt.Fprintln(out, "\nUDS Override Values:")
+			ovHeader := []string{"Path", "Value", "Original Default"}
+			var ovData [][]string
+			for _, ov := range result.UDSOverrideValues {
+				ovData = append(ovData, []string{
+					ov.Path,
+					introspect.FormatDefaultValue(ov.Value),
+					introspect.FormatDefaultValue(ov.OriginalDefault),
+				})
+			}
+			message.TableWithWriter(out, ovHeader, ovData)
+		}
+
+		// UDS Override Variables (per-component)
+		if len(result.UDSOverrideVariables) > 0 {
+			fmt.Fprintln(out, "\nUDS Override Variables:")
+			ovHeader := []string{"Variable", "Path", "Default", "Original Default", "Description"}
+			var ovData [][]string
+			for _, ov := range result.UDSOverrideVariables {
+				ovData = append(ovData, []string{
+					ov.Name,
+					ov.Path,
+					introspect.FormatDefaultValue(ov.Default),
+					introspect.FormatDefaultValue(ov.OriginalDefault),
+					ov.Description,
+				})
+			}
+			message.TableWithWriter(out, ovHeader, ovData)
 		}
 
 		return nil

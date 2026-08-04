@@ -3,6 +3,7 @@ package introspect
 import (
 	"encoding/json"
 	"fmt"
+
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 )
 
@@ -78,6 +79,32 @@ type ZarfVariableUsage struct {
 	Locations []ValueUsageLocation `json:"locations"`
 }
 
+// UDSOverrideValue represents a hard-coded value override from a uds-bundle.yaml.
+// These are set directly and are NOT overridable via uds-config.yaml.
+type UDSOverrideValue struct {
+	// Path is the Helm values path being overridden (e.g., "tls.supportTLSV1_2").
+	Path string `json:"path"`
+	// Value is the value being set.
+	Value interface{} `json:"value"`
+	// OriginalDefault is the original default from the chart's values.yaml, if found.
+	OriginalDefault interface{} `json:"originalDefault,omitempty" yaml:"originalDefault,omitempty"`
+}
+
+// UDSOverrideVariable represents a variable exposed via a uds-bundle.yaml that can be
+// overridden by the user via uds-config.yaml.
+type UDSOverrideVariable struct {
+	// Name is the variable name (e.g., "ISTIO_REQUESTS_MEMORY").
+	Name string `json:"name"`
+	// Description is the human-readable description of the variable.
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	// Path is the Helm values path this variable maps to (e.g., "global.proxy.resources.requests.memory").
+	Path string `json:"path"`
+	// Default is the default value for this variable if set in the bundle.
+	Default interface{} `json:"default,omitempty" yaml:"default,omitempty"`
+	// OriginalDefault is the original default from the chart's values.yaml, if found.
+	OriginalDefault interface{} `json:"originalDefault,omitempty" yaml:"originalDefault,omitempty"`
+}
+
 // IntrospectResult contains the full analysis result for a chart.
 type IntrospectResult struct {
 	// ChartName is the name of the root chart.
@@ -94,6 +121,10 @@ type IntrospectResult struct {
 	RemoteSource string `json:"remoteSource,omitempty"`
 	// ZarfVars is the list of discovered Zarf variables.
 	ZarfVars []ZarfVariableUsage `json:"zarfVars,omitempty"`
+	// UDSOverrideValues contains hard-coded value overrides from uds-bundle.yaml.
+	UDSOverrideValues []UDSOverrideValue `json:"udsOverrideValues,omitempty" yaml:"udsOverrideValues,omitempty"`
+	// UDSOverrideVariables contains variables exposed via uds-bundle.yaml overrides.
+	UDSOverrideVariables []UDSOverrideVariable `json:"udsOverrideVariables,omitempty" yaml:"udsOverrideVariables,omitempty"`
 }
 
 // IntrospectOptions configures the introspection process.
@@ -108,9 +139,30 @@ type IntrospectOptions struct {
 	NoValues bool
 }
 
+// UDSOverrideContext wraps an override value or variable with its package/component/chart context.
+type UDSOverrideContext struct {
+	PackageName   string `json:"packageName" yaml:"packageName"`
+	ComponentName string `json:"componentName" yaml:"componentName"`
+	ChartName     string `json:"chartName" yaml:"chartName"`
+}
+
+// UDSOverrideValueWithContext pairs an override value with its source context.
+type UDSOverrideValueWithContext struct {
+	UDSOverrideContext `json:",inline" yaml:",inline"`
+	UDSOverrideValue   `json:",inline" yaml:",inline"`
+}
+
+// UDSOverrideVariableWithContext pairs an override variable with its source context.
+type UDSOverrideVariableWithContext struct {
+	UDSOverrideContext  `json:",inline" yaml:",inline"`
+	UDSOverrideVariable `json:",inline" yaml:",inline"`
+}
+
 // InspectionReport is the unified output structure for purely Helm, Zarf, and UDS introspection.
 type InspectionReport struct {
-	Variables      []v1alpha1.InteractiveVariable `json:"variables,omitempty" yaml:"variables,omitempty"`
-	Components     map[string]*IntrospectResult   `json:"components" yaml:"components"`
-	ComponentOrder []string                       `json:"-" yaml:"-"`
+	Variables            []v1alpha1.InteractiveVariable   `json:"variables,omitempty" yaml:"variables,omitempty"`
+	Components           map[string]*IntrospectResult     `json:"components" yaml:"components"`
+	ComponentOrder       []string                         `json:"-" yaml:"-"`
+	UDSOverrideValues    []UDSOverrideValueWithContext    `json:"udsOverrideValues,omitempty" yaml:"udsOverrideValues,omitempty"`
+	UDSOverrideVariables []UDSOverrideVariableWithContext `json:"udsOverrideVariables,omitempty" yaml:"udsOverrideVariables,omitempty"`
 }

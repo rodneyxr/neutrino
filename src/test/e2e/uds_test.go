@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rodneyxr/neutrino/src/pkg/helm/introspect"
-	"github.com/rodneyxr/neutrino/src/test/helpers"
+	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
+	"github.com/defenseunicorns-dashdays/neutrino/src/test/helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
