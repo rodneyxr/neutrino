@@ -228,9 +228,6 @@ func (r *packageReader) fetchVerified(ctx context.Context, descriptor ocispec.De
 			if verifyErr := verifyDescriptorBytes(descriptor, contents); verifyErr == nil {
 				return contents, nil
 			}
-			if removeErr := os.Remove(cachePath); removeErr != nil && !os.IsNotExist(removeErr) {
-				return nil, fmt.Errorf("failed to discard invalid cached descriptor %q: %w", title, removeErr)
-			}
 		} else if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("failed to read cached descriptor %q: %w", title, err)
 		}
