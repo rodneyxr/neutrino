@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,9 +24,11 @@ import (
 )
 
 type fakePackageRemote struct {
-	root    packageRoot
-	blobs   map[digest.Digest][]byte
-	fetched []string
+	root      packageRoot
+	blobs     map[digest.Digest][]byte
+	fetched   []string
+	fetchedMu sync.Mutex
+	fetchGate func(ocispec.Descriptor)
 }
 
 func (f *fakePackageRemote) Resolve(context.Context, ocispec.Platform) (packageRoot, error) {
@@ -32,8 +36,57 @@ func (f *fakePackageRemote) Resolve(context.Context, ocispec.Platform) (packageR
 }
 
 func (f *fakePackageRemote) Fetch(_ context.Context, descriptor ocispec.Descriptor) ([]byte, error) {
+	if f.fetchGate != nil {
+		f.fetchGate(descriptor)
+	}
+	f.fetchedMu.Lock()
+	defer f.fetchedMu.Unlock()
 	f.fetched = append(f.fetched, descriptor.Annotations[ocispec.AnnotationTitle])
 	return f.blobs[descriptor.Digest], nil
+}
+
+type packageReaderFixture struct {
+	remote              *fakePackageRemote
+	zarfYAML            []byte
+	component           []byte
+	zarfDescriptor      ocispec.Descriptor
+	componentDescriptor ocispec.Descriptor
+}
+
+func newPackageReaderFixture(t *testing.T) packageReaderFixture {
+	t.Helper()
+	zarfYAML := []byte(`kind: ZarfPackageConfig
+metadata:
+  name: example
+  version: 1.0.0
+components:
+  - name: apps
+    charts:
+      - name: alpha
+        version: 1.0.0
+`)
+	component := tarArchive(t, map[string][]byte{"charts/alpha-1.0.0.tgz": []byte("chart")})
+	zarfDescriptor := packageDescriptor("zarf.yaml", zarfYAML)
+	componentDescriptor := packageDescriptor("components/apps.tar", component)
+	return packageReaderFixture{
+		remote: &fakePackageRemote{
+			root: packageRoot{
+				Descriptor: ocispec.Descriptor{Digest: digest.FromString("root")},
+				Manifest: ocispec.Manifest{
+					Config: ocispec.Descriptor{MediaType: zarfConfigMediaType},
+					Layers: []ocispec.Descriptor{zarfDescriptor, componentDescriptor},
+				},
+			},
+			blobs: map[digest.Digest][]byte{
+				zarfDescriptor.Digest:      zarfYAML,
+				componentDescriptor.Digest: component,
+			},
+		},
+		zarfYAML:            zarfYAML,
+		component:           component,
+		zarfDescriptor:      zarfDescriptor,
+		componentDescriptor: componentDescriptor,
+	}
 }
 
 func TestPackageReaderSelectsEveryChartComponentWithoutImages(t *testing.T) {
@@ -247,32 +300,10 @@ components:
 }
 
 func TestPackageReaderCachesOnlyVerifiedDescriptorBytes(t *testing.T) {
-	zarfYAML := []byte(`kind: ZarfPackageConfig
-metadata:
-  name: example
-  version: 1.0.0
-components:
-  - name: apps
-    charts:
-      - name: alpha
-        version: 1.0.0
-`)
-	component := tarArchive(t, map[string][]byte{"charts/alpha-1.0.0.tgz": []byte("chart")})
-	zarfDescriptor := packageDescriptor("zarf.yaml", zarfYAML)
-	componentDescriptor := packageDescriptor("components/apps.tar", component)
-	remote := &fakePackageRemote{
-		root: packageRoot{
-			Descriptor: ocispec.Descriptor{Digest: digest.FromString("root")},
-			Manifest: ocispec.Manifest{
-				Config: ocispec.Descriptor{MediaType: zarfConfigMediaType},
-				Layers: []ocispec.Descriptor{zarfDescriptor, componentDescriptor},
-			},
-		},
-		blobs: map[digest.Digest][]byte{
-			zarfDescriptor.Digest:      zarfYAML,
-			componentDescriptor.Digest: component,
-		},
-	}
+	fixture := newPackageReaderFixture(t)
+	remote := fixture.remote
+	zarfYAML := fixture.zarfYAML
+	zarfDescriptor := fixture.zarfDescriptor
 	cacheDir := t.TempDir()
 	platform := ocispec.Platform{OS: "multi", Architecture: "amd64"}
 
@@ -288,6 +319,73 @@ components:
 	_, err = newPackageReader(remote, platform, cacheDir, true).Read(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, []string{"zarf.yaml", "components/apps.tar"}, remote.fetched, "--no-cache must refresh the Package Snapshot bytes")
+
+	remote.fetched = nil
+	corruptedZarfYAML := append([]byte(nil), zarfYAML...)
+	corruptedZarfYAML[0] ^= 0xff
+	remote.blobs[zarfDescriptor.Digest] = corruptedZarfYAML
+	_, err = newPackageReader(remote, platform, cacheDir, true).Read(context.Background())
+	require.ErrorContains(t, err, "digest-invalid selected descriptor")
+	assert.Equal(t, []string{"zarf.yaml"}, remote.fetched)
+
+	cachePath := filepath.Join(cacheDir, string(zarfDescriptor.Digest.Algorithm()), zarfDescriptor.Digest.Encoded())
+	cachedZarfYAML, err := os.ReadFile(cachePath)
+	require.NoError(t, err)
+	assert.Equal(t, zarfYAML, cachedZarfYAML, "--no-cache must not delete shared cached bytes before a verified refresh")
+}
+
+func TestPackageReaderDoesNotPublishUnverifiedDescriptorBytes(t *testing.T) {
+	fixture := newPackageReaderFixture(t)
+	remote := fixture.remote
+	component := fixture.component
+	componentDescriptor := fixture.componentDescriptor
+	corruptedComponent := append([]byte(nil), component...)
+	corruptedComponent[0] ^= 0xff
+	remote.blobs[componentDescriptor.Digest] = corruptedComponent
+	cacheDir := t.TempDir()
+
+	_, err := newPackageReader(remote, ocispec.Platform{OS: "multi", Architecture: "amd64"}, cacheDir, false).Read(context.Background())
+	require.ErrorContains(t, err, "digest-invalid selected descriptor")
+
+	componentCachePath := filepath.Join(cacheDir, string(componentDescriptor.Digest.Algorithm()), componentDescriptor.Digest.Encoded())
+	_, err = os.Stat(componentCachePath)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestPackageReaderPublishesVerifiedDescriptorBytesAtomically(t *testing.T) {
+	fixture := newPackageReaderFixture(t)
+	remote := fixture.remote
+	zarfDescriptor := fixture.zarfDescriptor
+	zarfFetches := sync.WaitGroup{}
+	zarfFetches.Add(2)
+	releaseFetches := make(chan struct{})
+	remote.fetchGate = func(descriptor ocispec.Descriptor) {
+		if descriptor.Digest == zarfDescriptor.Digest {
+			zarfFetches.Done()
+			<-releaseFetches
+		}
+	}
+	cacheDir := t.TempDir()
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, err := newPackageReader(remote, ocispec.Platform{OS: "multi", Architecture: "amd64"}, cacheDir, false).Read(context.Background())
+			errs <- err
+		}()
+	}
+	zarfFetches.Wait()
+	close(releaseFetches)
+	for range 2 {
+		require.NoError(t, <-errs)
+	}
+
+	for descriptor, expected := range remote.blobs {
+		cachePath := filepath.Join(cacheDir, string(descriptor.Algorithm()), descriptor.Encoded())
+		actual, err := os.ReadFile(cachePath)
+		require.NoError(t, err)
+		assert.Equal(t, expected, actual)
+		require.NoError(t, verifyDescriptorBytes(ocispec.Descriptor{Digest: descriptor, Size: int64(len(expected))}, actual))
+	}
 }
 
 func TestPackageReaderReportsAvailablePlatformsWithoutFallback(t *testing.T) {
