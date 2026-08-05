@@ -6,35 +6,13 @@ import (
 	"os"
 	"path/filepath"
 
+	pkgoci "github.com/defenseunicorns/pkg/oci"
 	"github.com/goccy/go-yaml"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	"github.com/zarf-dev/zarf/src/config"
 	"github.com/zarf-dev/zarf/src/pkg/archive"
-	"github.com/zarf-dev/zarf/src/pkg/packager"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 )
-
-func PullZarfPackage(ctx context.Context, source string, version string, arch string, destDir string) (string, error) {
-
-	// Determine cache path
-	cachePath, err := config.GetAbsHomePath(config.ZarfDefaultCachePath)
-	if err != nil {
-		// Fallback to temp or just log? simpler to error out or use raw defaults if expansion fails (unlikely)
-		return "", fmt.Errorf("failed to get absolute home path: %w", err)
-	}
-
-	pullOpts := packager.PullOptions{
-		CachePath:    cachePath,
-		Architecture: arch,
-	}
-
-	pkgPath, err := packager.Pull(ctx, source, destDir, pullOpts)
-	if err != nil {
-		return "", fmt.Errorf("failed to pull zarf package: %w", err)
-	}
-
-	return pkgPath, nil
-}
 
 // ZarfPackageIntrospection contains the results of introspecting a Zarf package.
 type ZarfPackageIntrospection struct {
@@ -47,6 +25,10 @@ type ZarfPackageIntrospection struct {
 
 // InspectZarfPackage analyzes a Zarf package to find Helm values.
 func InspectZarfPackage(ctx context.Context, path string, version string, arch string, opts IntrospectOptions) (*ZarfPackageIntrospection, error) {
+	if IsRemote(path) {
+		return inspectRemoteZarfPackage(ctx, path, arch, opts)
+	}
+
 	var cacheDir string
 	var alreadyExtracted bool
 
@@ -100,24 +82,7 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 			os.MkdirAll(cacheDir, 0755)
 		}
 
-		// Pull if remote
-		localTarPath := path
-		if IsRemote(path) {
-			tmpDir, err := os.MkdirTemp("", "neutrino-zarf-pull-*")
-			if err != nil {
-				return nil, fmt.Errorf("failed to create temp dir: %w", err)
-			}
-			defer os.RemoveAll(tmpDir)
-
-			pulledPath, err := PullZarfPackage(ctx, path, version, arch, tmpDir)
-			if err != nil {
-				return nil, err
-			}
-			localTarPath = pulledPath
-		}
-
-		// Extract to cacheDir
-		err := archive.Decompress(context.TODO(), localTarPath, cacheDir, archive.DecompressOpts{})
+		err := archive.Decompress(ctx, path, cacheDir, archive.DecompressOpts{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to extract zarf package: %w", err)
 		}
@@ -224,7 +189,14 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 
 			// Gather Zarf managed values files
 			var valuesFiles []string
-			for i, vf := range chart.ValuesFiles {
+			managedValuesCount := len(chart.ValuesFiles) + len(chart.TemplatedValuesFiles)
+			for i := range managedValuesCount {
+				var vf string
+				if i < len(chart.ValuesFiles) {
+					vf = chart.ValuesFiles[i]
+				} else {
+					vf = chart.TemplatedValuesFiles[i-len(chart.ValuesFiles)]
+				}
 				var found bool
 				if valuesBaseDir != "" {
 					vfPath := filepath.Join(valuesBaseDir, fmt.Sprintf("%s-%s-%d", chart.Name, chart.Version, i))
@@ -269,4 +241,27 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 		ChartResults:   results,
 		Variables:      pkg.Variables,
 	}, nil
+}
+
+func inspectRemoteZarfPackage(ctx context.Context, source string, arch string, opts IntrospectOptions) (*ZarfPackageIntrospection, error) {
+	blobCacheDir, err := getCacheDir("package-blobs", "verified", "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine package reader cache: %w", err)
+	}
+	platform := pkgoci.PlatformForArch(config.GetArch(arch))
+	reader := newPackageReader(newRegistryPackageRemote(source), platform, blobCacheDir, opts.NoCache)
+	view, err := reader.Read(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read remote Zarf package: %w", err)
+	}
+
+	viewDir, err := os.MkdirTemp("", "neutrino-package-view-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create package view: %w", err)
+	}
+	defer os.RemoveAll(viewDir)
+	if err := view.materialize(viewDir); err != nil {
+		return nil, err
+	}
+	return InspectZarfPackage(ctx, viewDir, "", arch, opts)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -274,17 +275,9 @@ func IsZarfPackage(ctx context.Context, source string, arch string) (bool, error
 			return isZarf, nil
 		}
 		l.Debug(fmt.Sprintf("IsZarfPackage: failed with target arch %s: %s", targetArch, err))
-
-		if platform.Architecture != "amd64" {
-			amd64Platform := oci.PlatformForArch("amd64")
-			isZarf, err := checkZarfRef(ctx, source, amd64Platform)
-			if err == nil {
-				if isZarf {
-					return true, nil
-				}
-				return false, nil
-			}
-			l.Debug(fmt.Sprintf("IsZarfPackage: fallback arch (amd64) check failed: %s", err))
+		var mismatch *platformMismatchError
+		if errors.As(err, &mismatch) {
+			return false, err
 		}
 		return false, nil
 	}
@@ -349,18 +342,11 @@ func checkUDSRef(ctx context.Context, source string, platform ocispec.Platform) 
 }
 
 func checkZarfRef(ctx context.Context, source string, platform ocispec.Platform) (bool, error) {
-	remote, err := oci.NewOrasRemote(source, platform)
+	root, err := newRegistryPackageRemote(source).Resolve(ctx, platform)
 	if err != nil {
 		return false, err
 	}
-	root, err := remote.FetchRoot(ctx)
-	if err != nil {
-		return false, err
-	}
-	if root.Config.MediaType == "application/vnd.zarf.config.v1+json" {
-		return true, nil
-	}
-	return false, nil
+	return root.Manifest.Config.MediaType == zarfConfigMediaType, nil
 }
 
 // IsRemote determines if a source string is a remote URL.
