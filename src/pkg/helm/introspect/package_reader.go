@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -42,6 +43,19 @@ type packageView struct {
 	Files    map[string][]byte
 }
 
+type resolvedPackageRemote struct {
+	root  packageRoot
+	fetch func(context.Context, ocispec.Descriptor) ([]byte, error)
+}
+
+func (r resolvedPackageRemote) Resolve(context.Context, ocispec.Platform) (packageRoot, error) {
+	return r.root, nil
+}
+
+func (r resolvedPackageRemote) Fetch(ctx context.Context, descriptor ocispec.Descriptor) ([]byte, error) {
+	return r.fetch(ctx, descriptor)
+}
+
 func (v *packageView) materialize(root string) error {
 	for title, contents := range v.Files {
 		cleanTitle := path.Clean(title)
@@ -73,6 +87,53 @@ func newPackageReader(remote packageRemote, platform ocispec.Platform, cacheDir 
 		cacheDir: cacheDir,
 		noCache:  noCache,
 	}
+}
+
+func (r *packageReader) ReadFile(ctx context.Context, configMediaType string, title string) (*packageView, error) {
+	root, err := r.remote.Resolve(ctx, r.platform)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve package root: %w", err)
+	}
+	if root.Manifest.Config.MediaType != configMediaType {
+		return nil, fmt.Errorf("unsupported package root config media type %q", root.Manifest.Config.MediaType)
+	}
+	var selected ocispec.Descriptor
+	for _, descriptor := range root.Manifest.Layers {
+		if descriptor.Annotations[ocispec.AnnotationTitle] != title {
+			continue
+		}
+		if selected.Digest != "" {
+			return nil, fmt.Errorf("unsupported package layout: duplicate descriptor title %q", title)
+		}
+		selected = descriptor
+	}
+	if selected.Digest == "" {
+		return nil, fmt.Errorf("incomplete package layout: missing selected descriptor %q", title)
+	}
+	contents, err := r.fetchVerified(ctx, selected)
+	if err != nil {
+		return nil, err
+	}
+	return &packageView{
+		Snapshot: packageSnapshot{RootDigest: root.Descriptor.Digest, Descriptors: []ocispec.Descriptor{selected}},
+		Files:    map[string][]byte{title: contents},
+	}, nil
+}
+
+func (r *packageReader) ReadEmbedded(ctx context.Context, descriptor ocispec.Descriptor) (*packageView, error) {
+	contents, err := r.fetchVerified(ctx, descriptor)
+	if err != nil {
+		return nil, err
+	}
+	var manifest ocispec.Manifest
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		return nil, fmt.Errorf("failed to parse selected embedded package manifest %q: %w", descriptor.Digest, err)
+	}
+	embedded := newPackageReader(resolvedPackageRemote{
+		root:  packageRoot{Descriptor: descriptor, Manifest: manifest},
+		fetch: r.remote.Fetch,
+	}, r.platform, r.cacheDir, r.noCache)
+	return embedded.Read(ctx)
 }
 
 func (r *packageReader) Read(ctx context.Context) (*packageView, error) {
