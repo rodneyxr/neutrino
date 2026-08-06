@@ -469,6 +469,8 @@ func TestPackageReaderReportsAvailablePlatformsWithoutFallback(t *testing.T) {
 }
 
 func TestInspectRemoteZarfPackagePreservesAllChartsWithoutFetchingImages(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	alphaChart := chartArchive(t, "alpha", []byte("replicaCount: 1\nimageTag: default\n"))
 	betaChart := chartArchive(t, "beta", []byte("enabled: true\n"))
 	managedValues := []byte("replicaCount: 3\n")
@@ -589,6 +591,9 @@ components:
 	require.Len(t, report.Variables, 1)
 	assert.Equal(t, "IMAGE_TAG", report.Variables[0].Name)
 	assert.Equal(t, "stable", report.Variables[0].Default)
+	require.DirExists(t, alpha.Source, "source files must remain available after remote inspection")
+	require.FileExists(t, filepath.Join(alpha.Source, "values.yaml"))
+	require.FileExists(t, filepath.Join(alpha.Source, "templates", "deployment.yaml"))
 
 	requestedMu.Lock()
 	defer requestedMu.Unlock()
@@ -735,6 +740,10 @@ packages:
 	assert.Equal(t, uint64(3), report.UDSOverrideValues[0].OriginalDefault)
 	require.Equal(t, []string{"apps/apps/alpha"}, report.ComponentOrder)
 	require.NotNil(t, report.ChartResults["apps/apps/alpha"])
+	alpha := report.ChartResults["apps/apps/alpha"]
+	require.DirExists(t, alpha.Source, "source files must remain available after remote inspection")
+	require.FileExists(t, filepath.Join(alpha.Source, "values.yaml"))
+	require.FileExists(t, filepath.Join(alpha.Source, "templates", "deployment.yaml"))
 	require.Len(t, report.UDSOverrideValues, 1)
 	assert.Equal(t, uint64(5), report.UDSOverrideValues[0].Value)
 

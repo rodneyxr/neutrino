@@ -255,11 +255,10 @@ func inspectRemoteZarfPackage(ctx context.Context, source string, arch string, o
 		return nil, fmt.Errorf("failed to read remote Zarf package: %w", err)
 	}
 
-	viewDir, err := os.MkdirTemp("", "neutrino-package-view-*")
+	viewDir, err := getPackageViewDir(source, view.Snapshot.RootDigest.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create package view: %w", err)
 	}
-	defer os.RemoveAll(viewDir)
 	if err := view.materialize(viewDir); err != nil {
 		return nil, err
 	}

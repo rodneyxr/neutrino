@@ -152,6 +152,20 @@ func getCacheDir(category string, url string, version string) (string, error) {
 	return filepath.Join(cacheBase, hash), nil
 }
 
+// getPackageViewDir returns the persistent materialization directory for a
+// digest-pinned remote Package View. Source locations in an inspection result
+// must remain readable after inspection returns so the TUI can open them.
+func getPackageViewDir(source, snapshot string) (string, error) {
+	viewDir, err := getCacheDir("package-views", source, snapshot)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(viewDir, 0o755); err != nil {
+		return "", fmt.Errorf("failed to create package view directory: %w", err)
+	}
+	return viewDir, nil
+}
+
 // GetValue looks up a value in a map using dot notation.
 // It supports fallback keys (e.g. _internal_defaults_do_not_set) if the direct path is not found.
 func GetValue(values map[string]interface{}, path string) interface{} {
