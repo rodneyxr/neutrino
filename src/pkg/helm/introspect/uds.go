@@ -141,11 +141,10 @@ func inspectRemoteUDSBundle(ctx context.Context, source string, version string, 
 		return nil, fmt.Errorf("failed to parse uds-bundle.yaml: %w", err)
 	}
 
-	viewRoot, err := os.MkdirTemp("", "neutrino-uds-package-views-*")
+	viewRoot, err := getPackageViewDir(source, root.Descriptor.Digest.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create UDS Package View directory: %w", err)
 	}
-	defer os.RemoveAll(viewRoot)
 
 	for index := range bundle.Packages {
 		pkg := &bundle.Packages[index]
