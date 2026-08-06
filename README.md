@@ -170,34 +170,6 @@ neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/core-base:1.0.0-upst
 neutrino inspect oci://ghcr.io/zarf-dev/packages/init:v0.74.0 -i
 ```
 
----
-
-## :gear: CI Integration
-
-Neutrino provides a GitHub Actions workflow for automated package change
-analysis on pull requests.
-
-- Automatic `neutrino diff` on PRs that modify package files
-- Sticky PR comments with markdown diff tables and Mermaid diagrams
-- Renovate and Dependabot PR detection with annotated context
-- Optional CI gate mode (`--fail-on-warnings`) to block on airgap risks
-
-Add the reusable workflow to your repository:
-
-```yaml
-jobs:
-  diff:
-    uses: defenseunicorns-dashdays/2026-03-uds-bundle-provenance/.github/workflows/neutrino-diff.yaml@main
-    permissions:
-      contents: read
-      pull-requests: write
-```
-
-See the [CI Integration Guide](docs/ci-integration.md) for setup instructions
-and configuration options.
-
----
-
 ## 📊 Understanding the Output
 
 Neutrino classifies value usage into specific categories to help you understand
