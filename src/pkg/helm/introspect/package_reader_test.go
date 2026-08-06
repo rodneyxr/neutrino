@@ -232,6 +232,24 @@ components:
 	}
 }
 
+func TestPackageReaderRejectsDuplicateControlPlaneFile(t *testing.T) {
+	contents := []byte("kind: UDSBundle\n")
+	descriptor := packageDescriptor(UDSBundleFile, contents)
+	reader := newPackageReader(&fakePackageRemote{
+		root: packageRoot{
+			Descriptor: ocispec.Descriptor{Digest: digest.FromString("root")},
+			Manifest: ocispec.Manifest{
+				Config: ocispec.Descriptor{MediaType: UDSBundleMediaType},
+				Layers: []ocispec.Descriptor{descriptor, descriptor},
+			},
+		},
+		blobs: map[digest.Digest][]byte{descriptor.Digest: contents},
+	}, ocispec.Platform{OS: "linux", Architecture: "amd64"}, t.TempDir(), true)
+
+	_, err := reader.ReadFile(context.Background(), UDSBundleMediaType, UDSBundleFile)
+	require.ErrorContains(t, err, `duplicate descriptor title "uds-bundle.yaml"`)
+}
+
 func TestPackageReaderRejectsIncompleteComponentContents(t *testing.T) {
 	zarfYAML := []byte(`kind: ZarfPackageConfig
 metadata:
@@ -577,6 +595,181 @@ components:
 	assert.Contains(t, requested, "zarf.yaml")
 	assert.Contains(t, requested, "components/apps.tar")
 	assert.NotContains(t, requested, "images/blobs/sha256/image")
+}
+
+func TestInspectRemoteUDSBundleUsesPackageViewsWithoutFetchingImages(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	alphaChart := chartArchive(t, "alpha", []byte("replicaCount: 1\n"))
+	component := tarArchive(t, map[string][]byte{
+		"charts/alpha-1.0.0.tgz": alphaChart,
+		"values/alpha-1.0.0-0":   []byte("replicaCount: 3\n"),
+	})
+	zarfYAML := []byte(`kind: ZarfPackageConfig
+metadata:
+  name: apps
+  version: 1.0.0
+variables:
+  - name: IMAGE_TAG
+    default: stable
+components:
+  - name: apps
+    charts:
+      - name: alpha
+        valuesFiles:
+          - alpha-values.yaml
+        version: 1.0.0
+`)
+	imageBlob := bytes.Repeat([]byte("image"), 1024)
+	zarfDescriptor := packageDescriptor("zarf.yaml", zarfYAML)
+	componentDescriptor := packageDescriptor("components/apps.tar", component)
+	imageDescriptor := packageDescriptor("images/blobs/sha256/image", imageBlob)
+	packageConfig := []byte(`{}`)
+	packageConfigDescriptor := ocispec.Descriptor{
+		MediaType: zarfConfigMediaType,
+		Digest:    digest.FromBytes(packageConfig),
+		Size:      int64(len(packageConfig)),
+	}
+	packageManifest := ocispec.Manifest{
+		Versioned: specs.Versioned{SchemaVersion: 2},
+		MediaType: ocispec.MediaTypeImageManifest,
+		Config:    packageConfigDescriptor,
+		Layers:    []ocispec.Descriptor{zarfDescriptor, componentDescriptor, imageDescriptor},
+	}
+	packageManifestBytes, err := json.Marshal(packageManifest)
+	require.NoError(t, err)
+	packageManifestDescriptor := packageDescriptor("packages/apps", packageManifestBytes)
+	bundleYAML := []byte(`kind: UDSBundle
+metadata:
+  name: example
+  version: 1.0.0
+packages:
+  - name: apps
+    ref: v1@` + packageManifestDescriptor.Digest.String() + `
+    overrides:
+      apps:
+        alpha:
+          values:
+            - path: replicaCount
+              value: 5
+`)
+	bundleDescriptor := packageDescriptor(UDSBundleFile, bundleYAML)
+	bundleConfig := []byte(`{}`)
+	bundleConfigDescriptor := ocispec.Descriptor{
+		MediaType: UDSBundleMediaType,
+		Digest:    digest.FromBytes(bundleConfig),
+		Size:      int64(len(bundleConfig)),
+	}
+	bundleManifest := ocispec.Manifest{
+		Versioned: specs.Versioned{SchemaVersion: 2},
+		MediaType: ocispec.MediaTypeImageManifest,
+		Config:    bundleConfigDescriptor,
+		Layers:    []ocispec.Descriptor{bundleDescriptor, packageManifestDescriptor},
+	}
+	bundleManifestBytes, err := json.Marshal(bundleManifest)
+	require.NoError(t, err)
+	activeManifestBytes := bundleManifestBytes
+	activeManifestDigest := digest.FromBytes(activeManifestBytes)
+	blobs := map[string][]byte{
+		bundleDescriptor.Digest.String():          bundleYAML,
+		packageManifestDescriptor.Digest.String(): packageManifestBytes,
+		zarfDescriptor.Digest.String():            zarfYAML,
+		componentDescriptor.Digest.String():       component,
+		imageDescriptor.Digest.String():           imageBlob,
+	}
+	titles := map[string]string{
+		bundleDescriptor.Digest.String():          UDSBundleFile,
+		packageManifestDescriptor.Digest.String(): "packages/apps",
+		zarfDescriptor.Digest.String():            "zarf.yaml",
+		componentDescriptor.Digest.String():       "components/apps.tar",
+		imageDescriptor.Digest.String():           "images/blobs/sha256/image",
+	}
+	var requestedMu sync.Mutex
+	var manifestMu sync.Mutex
+	var requested []string
+	registry := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v2/":
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(r.URL.Path, "/manifests/"):
+			w.Header().Set("Content-Type", ocispec.MediaTypeImageManifest)
+			manifestMu.Lock()
+			manifestBytes := activeManifestBytes
+			manifestDigest := activeManifestDigest
+			manifestMu.Unlock()
+			w.Header().Set("Content-Type", ocispec.MediaTypeImageManifest)
+			w.Header().Set("Docker-Content-Digest", manifestDigest.String())
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(manifestBytes)
+		case strings.Contains(r.URL.Path, "/blobs/"):
+			digestString := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			if !strings.Contains(digestString, ":") {
+				digestString = "sha256:" + digestString
+			}
+			contents, ok := blobs[digestString]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			requestedMu.Lock()
+			requested = append(requested, titles[digestString])
+			requestedMu.Unlock()
+			w.Header().Set("Content-Length", strconv.Itoa(len(contents)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(contents)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(registry.Close)
+
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = registry.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	source := "oci://" + strings.TrimPrefix(registry.URL, "https://") + "/example/bundle:latest"
+	report, err := InspectUDSBundle(context.Background(), source, "", "amd64", IntrospectOptions{NoCache: true})
+	require.NoError(t, err)
+	require.Len(t, report.Variables, 1)
+	assert.Equal(t, "apps.IMAGE_TAG", report.Variables[0].Name)
+	assert.Equal(t, uint64(3), report.UDSOverrideValues[0].OriginalDefault)
+	require.Equal(t, []string{"apps/apps/alpha"}, report.ComponentOrder)
+	require.NotNil(t, report.ChartResults["apps/apps/alpha"])
+	require.Len(t, report.UDSOverrideValues, 1)
+	assert.Equal(t, uint64(5), report.UDSOverrideValues[0].Value)
+
+	requestedMu.Lock()
+	assert.Contains(t, requested, UDSBundleFile)
+	assert.Contains(t, requested, "packages/apps")
+	assert.Contains(t, requested, "zarf.yaml")
+	assert.Contains(t, requested, "components/apps.tar")
+	assert.NotContains(t, requested, "images/blobs/sha256/image")
+	requestCount := len(requested)
+	requestedMu.Unlock()
+
+	_, err = InspectUDSBundle(context.Background(), source, "", "amd64", IntrospectOptions{})
+	require.NoError(t, err)
+	requestedMu.Lock()
+	assert.Len(t, requested, requestCount)
+	requestedMu.Unlock()
+	missingPackageBundle := []byte(`kind: UDSBundle
+metadata:
+  name: incomplete
+packages:
+  - name: missing
+    ref: v1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	missingPackageDescriptor := packageDescriptor(UDSBundleFile, missingPackageBundle)
+	blobs[missingPackageDescriptor.Digest.String()] = missingPackageBundle
+	titles[missingPackageDescriptor.Digest.String()] = UDSBundleFile
+	incompleteManifest := bundleManifest
+	incompleteManifest.Layers = []ocispec.Descriptor{missingPackageDescriptor}
+	activeManifestBytes, err = json.Marshal(incompleteManifest)
+	require.NoError(t, err)
+	activeManifestDigest = digest.FromBytes(activeManifestBytes)
+
+	_, err = InspectUDSBundle(context.Background(), source, "", "amd64", IntrospectOptions{NoCache: true})
+	require.ErrorContains(t, err, `failed to form Package View for UDS package "missing"`)
 }
 
 func chartArchive(t *testing.T, name string, values []byte) []byte {

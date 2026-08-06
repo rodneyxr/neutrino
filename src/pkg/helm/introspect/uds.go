@@ -120,8 +120,81 @@ func PullUDSBundle(ctx context.Context, source string, version string, arch stri
 	return tmpDir, nil
 }
 
+func inspectRemoteUDSBundle(ctx context.Context, source string, version string, arch string, opts IntrospectOptions) (*ZarfPackageIntrospection, error) {
+	blobCacheDir, err := getCacheDir("package-blobs", "verified", "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine package reader cache: %w", err)
+	}
+	platform := oci.PlatformForArch(config.GetArch(arch))
+	remote := newRegistryPackageRemote(source)
+	root, err := remote.Resolve(ctx, platform)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve remote UDS bundle: %w", err)
+	}
+	reader := newPackageReader(resolvedPackageRemote{root: root, fetch: remote.Fetch}, platform, blobCacheDir, opts.NoCache)
+	controlPlane, err := reader.ReadFile(ctx, UDSBundleMediaType, UDSBundleFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read remote UDS control plane: %w", err)
+	}
+	var bundle UDSBundle
+	if err := yaml.Unmarshal(controlPlane.Files[UDSBundleFile], &bundle); err != nil {
+		return nil, fmt.Errorf("failed to parse uds-bundle.yaml: %w", err)
+	}
+
+	viewRoot, err := os.MkdirTemp("", "neutrino-uds-package-views-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create UDS Package View directory: %w", err)
+	}
+	defer os.RemoveAll(viewRoot)
+
+	for index := range bundle.Packages {
+		pkg := &bundle.Packages[index]
+		parts := strings.Split(pkg.Ref, "@sha256:")
+		if len(parts) != 2 || parts[1] == "" {
+			return nil, fmt.Errorf("failed to form Package View for UDS package %q: invalid embedded package reference %q", pkg.Name, pkg.Ref)
+		}
+		targetDigest := digest.Digest("sha256:" + parts[1])
+		var manifestDescriptor ocispec.Descriptor
+		for _, descriptor := range root.Manifest.Layers {
+			if descriptor.Digest == targetDigest {
+				manifestDescriptor = descriptor
+				break
+			}
+		}
+		if manifestDescriptor.Digest == "" {
+			return nil, fmt.Errorf("failed to form Package View for UDS package %q: embedded package manifest %q is missing", pkg.Name, targetDigest)
+		}
+		view, err := reader.ReadEmbedded(ctx, manifestDescriptor)
+		if err != nil {
+			return nil, fmt.Errorf("failed to form Package View for UDS package %q: %w", pkg.Name, err)
+		}
+		viewPath := filepath.Join(viewRoot, fmt.Sprintf("%d", index))
+		if err := view.materialize(viewPath); err != nil {
+			return nil, fmt.Errorf("failed to materialize Package View for UDS package %q: %w", pkg.Name, err)
+		}
+		pkg.Repository = ""
+		pkg.Path = viewPath
+	}
+
+	bundleBytes, err := yaml.Marshal(bundle)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare remote UDS Bundle Inspection: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(viewRoot, UDSBundleFile), bundleBytes, 0o600); err != nil {
+		return nil, fmt.Errorf("failed to materialize remote UDS control plane: %w", err)
+	}
+	return inspectMaterializedUDSBundle(ctx, viewRoot, version, arch, opts, true)
+}
+
 // InspectUDSBundle analyzes a UDS bundle to find Helm values across all its Zarf packages.
 func InspectUDSBundle(ctx context.Context, path string, version string, arch string, opts IntrospectOptions) (*ZarfPackageIntrospection, error) {
+	if IsRemote(path) {
+		return inspectRemoteUDSBundle(ctx, path, version, arch, opts)
+	}
+	return inspectMaterializedUDSBundle(ctx, path, version, arch, opts, false)
+}
+
+func inspectMaterializedUDSBundle(ctx context.Context, path string, version string, arch string, opts IntrospectOptions, strict bool) (*ZarfPackageIntrospection, error) {
 	l := logger.From(ctx)
 	cacheKey := path
 	if arch != "" {
@@ -140,56 +213,20 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 	_, err = os.Stat(bundleYamlPath)
 	alreadyExtracted := err == nil
 
-	var tmpDir string
-
-	var remoteOci *oci.OrasRemote
-	var remoteRoot *oci.Manifest
-
-	if IsRemote(path) {
-		targetArch := config.GetArch(arch)
-		platform := oci.PlatformForArch(targetArch)
-		if remote, err := oci.NewOrasRemote(path, platform); err == nil {
-			remoteOci = remote
-			if root, err := remoteOci.FetchRoot(ctx); err == nil {
-				remoteRoot = root
-			}
-		}
-	}
-
 	if !alreadyExtracted || opts.NoCache {
 		if opts.NoCache && alreadyExtracted {
 			os.RemoveAll(cacheDir)
 			os.MkdirAll(cacheDir, 0755)
 		}
 
-		if IsRemote(path) {
-			tmpDir, err = PullUDSBundle(ctx, path, version, arch)
-			if err != nil {
-				return nil, err
-			}
-			defer os.RemoveAll(tmpDir)
-
-			// Copy from tmpDir to cacheDir
-			bytes, err := os.ReadFile(filepath.Join(tmpDir, UDSBundleFile))
-			if err != nil {
-				return nil, fmt.Errorf("failed to read pulled bundle yaml: %w", err)
-			}
-			if err := os.WriteFile(bundleYamlPath, bytes, 0644); err != nil {
-				return nil, fmt.Errorf("failed to write bundle yaml to cache: %w", err)
-			}
-
-		} else if stat, err := os.Stat(path); err == nil && stat.IsDir() {
+		if stat, err := os.Stat(path); err == nil && stat.IsDir() {
 			bundleYamlPath = filepath.Join(path, UDSBundleFile)
 			if _, err := os.Stat(bundleYamlPath); err != nil {
 				return nil, fmt.Errorf("uds-bundle.yaml not found in directory: %s", path)
 			}
 
-			// If it's a directory, try treating the bundle as a standard uncompressed layout.
-			// But since we aren't copying the whole directory to cache, we just override bundleYamlPath
-			// and skip extraction. The logic below that parses packages should attempt to lookup local paths relative to this bundle directory.
 			alreadyExtracted = true
 		} else {
-			// Local tar.zst extraction
 			err = archive.Decompress(ctx, path, cacheDir, archive.DecompressOpts{})
 			if err != nil {
 				return nil, fmt.Errorf("failed to extract uds bundle: %w", err)
@@ -199,13 +236,11 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 			if err != nil {
 				return nil, fmt.Errorf("failed to find uds-bundle.yaml layer in local archive: %w", err)
 			}
-
 			blobPath := filepath.Join(cacheDir, "blobs", "sha256", layerDigest)
 			blobBytes, err := os.ReadFile(blobPath)
 			if err != nil {
 				return nil, fmt.Errorf("failed to read uds-bundle.yaml blob: %w", err)
 			}
-
 			if err := os.WriteFile(bundleYamlPath, blobBytes, 0644); err != nil {
 				return nil, fmt.Errorf("failed to write extracted uds-bundle.yaml: %w", err)
 			}
@@ -248,73 +283,7 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 		if len(parts) == 2 {
 			targetLayerDigest := parts[1]
 
-			if IsRemote(path) && remoteOci != nil && remoteRoot != nil {
-				foundTarget := false
-				var targetLayer ocispec.Descriptor
-				for _, layer := range remoteRoot.Layers {
-					if layer.Digest.String() == "sha256:"+targetLayerDigest {
-						targetLayer = layer
-						foundTarget = true
-						break
-					}
-				}
-
-				if foundTarget {
-					pkgCacheDir := filepath.Join(cacheDir, "extracted-packages", pkgName)
-					os.MkdirAll(pkgCacheDir, 0755)
-
-					l.Info(fmt.Sprintf("Pulling remote OCI layers for embedded package %s...", pkgName))
-
-					manifestData, err := remoteOci.FetchLayer(ctx, targetLayer)
-					if err == nil {
-						var pkgManifest struct {
-							Layers []struct {
-								MediaType   string            `json:"mediaType"`
-								Digest      string            `json:"digest"`
-								Size        int64             `json:"size"`
-								Annotations map[string]string `json:"annotations"`
-							} `json:"layers"`
-						}
-						if err := json.Unmarshal(manifestData, &pkgManifest); err != nil {
-							l.Debug(fmt.Sprintf("Failed to decode remote pkg manifest json: %s", err))
-						} else {
-							for _, layer := range pkgManifest.Layers {
-								filename, ok := layer.Annotations["org.opencontainers.image.title"]
-								if !ok || filename == "" || strings.HasPrefix(filename, "images/") {
-									continue
-								}
-
-								dstFile := filepath.Join(pkgCacheDir, filename)
-								os.MkdirAll(filepath.Dir(dstFile), 0755)
-
-								if _, err := os.Stat(dstFile); err == nil {
-									continue
-								}
-
-								desc := ocispec.Descriptor{
-									MediaType:   layer.MediaType,
-									Digest:      digest.Digest(layer.Digest),
-									Size:        layer.Size,
-									Annotations: layer.Annotations,
-								}
-
-								layerData, err := remoteOci.FetchLayer(ctx, desc)
-								if err == nil {
-									os.WriteFile(dstFile, layerData, 0644)
-								} else {
-									l.Warn(fmt.Sprintf("Failed to fetch remote layer blob for %s: %s", filename, err))
-								}
-							}
-							layoutPath = pkgCacheDir
-							l.Debug(fmt.Sprintf("Successfully reconstructed remote uncompressed package layout for %s at %s", pkgName, layoutPath))
-						}
-					} else {
-						l.Debug(fmt.Sprintf("Failed to fetch manifest layer %s: %s", targetLayerDigest, err))
-					}
-				} else {
-					l.Debug(fmt.Sprintf("Target package digest %s not found in remote bundle layers.", targetLayerDigest))
-				}
-			} else if !IsRemote(path) {
+			if !IsRemote(path) {
 				indexBytes, err := os.ReadFile(filepath.Join(cacheDir, "index.json"))
 				if err == nil {
 					var list struct {
@@ -427,14 +396,29 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 				}
 			}
 		} else {
+			if strict {
+				return nil, fmt.Errorf("failed to inspect UDS package %q: no materialized Package View", pkgName)
+			}
 			l.Warn(fmt.Sprintf("Package %s has no repository or path. Skipping.", pkgName))
 			continue
 		}
 
 		pkgInspection, err := InspectZarfPackage(ctx, pkgSource, pkgVersion, arch, opts)
 		if err != nil {
+			if strict {
+				return nil, fmt.Errorf("failed to inspect UDS package %q from its Package View: %w", pkgName, err)
+			}
 			l.Warn(fmt.Sprintf("Failed to introspect package %s: %s", pkgName, err.Error()))
 			continue
+		}
+		if strict {
+			expectedChartCount, err := declaredChartCount(pkgSource)
+			if err != nil {
+				return nil, fmt.Errorf("failed to inspect UDS package %q from its Package View: %w", pkgName, err)
+			}
+			if len(pkgInspection.ComponentOrder) != expectedChartCount {
+				return nil, fmt.Errorf("failed to inspect UDS package %q from its Package View: inspected %d of %d declared charts", pkgName, len(pkgInspection.ComponentOrder), expectedChartCount)
+			}
 		}
 
 		// Prefix component keys with the package name to distinguish them
@@ -511,12 +495,28 @@ func InspectUDSBundle(ctx context.Context, path string, version string, arch str
 	}
 
 	return &ZarfPackageIntrospection{
-		ComponentOrder:       componentOrder,
+		ComponentOrder: componentOrder,
+
 		ChartResults:         results,
 		Variables:            allVariables,
 		UDSOverrideValues:    allOverrideValues,
 		UDSOverrideVariables: allOverrideVariables,
 	}, nil
+}
+func declaredChartCount(packageViewPath string) (int, error) {
+	zarfBytes, err := os.ReadFile(filepath.Join(packageViewPath, "zarf.yaml"))
+	if err != nil {
+		return 0, fmt.Errorf("failed to read zarf.yaml: %w", err)
+	}
+	var pkg v1alpha1.ZarfPackage
+	if err := yaml.Unmarshal(zarfBytes, &pkg); err != nil {
+		return 0, fmt.Errorf("failed to parse zarf.yaml: %w", err)
+	}
+	var count int
+	for _, component := range pkg.Components {
+		count += len(component.Charts)
+	}
+	return count, nil
 }
 
 // lookupOriginalDefault searches the introspection result's discovered values
