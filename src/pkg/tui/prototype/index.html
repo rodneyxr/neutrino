@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Neutrino TUI Redesign Prototype</title>
+  <!-- PROTOTYPE: Three radically different TUI directions, switchable via ?variant=, on a local throwaway route. -->
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080b10;
+      --panel: #0e131b;
+      --panel-2: #131a24;
+      --line: #242e3d;
+      --muted: #8792a5;
+      --text: #e7edf7;
+      --cyan: #59d5e0;
+      --lime: #9ce36c;
+      --amber: #ffca62;
+      --violet: #bda1ff;
+      --red: #ff7b8b;
+      --shadow: 0 24px 80px rgba(0,0,0,.48);
+      font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; min-height: 100%; margin: 0; background: var(--bg); color: var(--text); }
+    body { min-height: 100vh; overflow-x: hidden; }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    .app { min-height: 100vh; padding-bottom: 92px; }
+    .prototype-ribbon {
+      position: fixed; top: 14px; right: 18px; z-index: 30; padding: 6px 9px;
+      border: 1px solid #d89d35; color: #ffd783; background: #231b0d; font-size: 10px;
+      letter-spacing: .1em; text-transform: uppercase; box-shadow: 0 8px 30px #0009;
+    }
+    .switcher {
+      position: fixed; z-index: 50; left: 50%; bottom: 20px; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 4px; padding: 5px; border: 1px solid #415068;
+      border-radius: 999px; background: rgba(8, 11, 16, .94); box-shadow: 0 16px 48px #000c;
+      backdrop-filter: blur(16px);
+    }
+    .switcher button { border: 0; background: transparent; cursor: pointer; }
+    .switcher .arrow { width: 40px; height: 38px; border-radius: 50%; color: #dce6f5; font-size: 18px; }
+    .switcher .arrow:hover { background: #1b2431; }
+    .switcher-label { min-width: 245px; text-align: center; padding: 7px 18px; color: white; }
+    .switcher-label b { color: var(--lime); }
+    .switcher-label small { display: block; margin-top: 2px; color: #7f8ba0; font-size: 9px; letter-spacing: .08em; }
+    .state-toggle {
+      position: fixed; left: 18px; bottom: 20px; z-index: 52; border: 1px solid #344156; border-radius: 8px;
+      background: #101620; padding: 10px 12px; cursor: pointer; color: #9ba8bb; font-size: 11px;
+    }
+    .state-panel {
+      display: none; position: fixed; left: 18px; bottom: 66px; z-index: 51; width: min(440px, calc(100vw - 36px));
+      max-height: 56vh; overflow: auto; padding: 14px; border: 1px solid #344156; border-radius: 10px;
+      background: rgba(10,14,20,.97); box-shadow: var(--shadow); font-size: 11px; color: #a8b5c8;
+    }
+    .state-panel.open { display: block; }
+    .state-panel h3 { color: white; font-size: 11px; text-transform: uppercase; letter-spacing: .12em; margin: 0 0 10px; }
+    .state-panel pre { margin: 0; white-space: pre-wrap; line-height: 1.55; }
+    .kbd { border: 1px solid #3a4658; border-bottom-width: 2px; border-radius: 4px; background: #151c27; padding: 1px 5px; color: #dbe6f5; font-size: 10px; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 7px; border-radius: 999px; border: 1px solid currentColor; font-size: 10px; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 12px currentColor; }
+    .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .subtle { color: var(--muted); }
+    .accent { color: var(--cyan); }
+    .lime { color: var(--lime); }
+    .amber { color: var(--amber); }
+    .violet { color: var(--violet); }
+    .danger { color: var(--red); }
+
+    /* Variant A: dense IDE */
+    .va { min-height: 100vh; background: #090d13; }
+    .va-topbar { height: 52px; display: flex; align-items: center; gap: 18px; padding: 0 18px; border-bottom: 1px solid #202938; background: #0c1119; }
+    .va-brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: -.04em; }
+    .mark { display: grid; place-items: center; width: 27px; height: 27px; border: 1px solid #4c6075; color: var(--cyan); background: #111a24; transform: rotate(45deg); }
+    .mark span { transform: rotate(-45deg); font-size: 12px; }
+    .va-source { flex: 1; color: #8e9aae; font-size: 11px; }
+    .va-stats { display: flex; align-items: center; gap: 14px; font-size: 10px; color: #8290a5; }
+    .va-body { display: grid; grid-template-columns: 230px minmax(480px,1fr) 370px; height: calc(100vh - 52px); }
+    .va-sidebar { border-right: 1px solid #202938; padding: 15px 10px; background: #0b1017; overflow: auto; }
+    .va-section-label { margin: 16px 8px 8px; color: #657286; font-size: 9px; text-transform: uppercase; letter-spacing: .14em; }
+    .va-section-label:first-child { margin-top: 3px; }
+    .component { width: 100%; display: flex; align-items: center; gap: 9px; border: 0; border-radius: 6px; background: transparent; padding: 8px; text-align: left; cursor: pointer; font-size: 11px; color: #aeb9ca; }
+    .component:hover, .component.active { background: #172130; color: white; }
+    .component.active { box-shadow: inset 2px 0 var(--cyan); }
+    .component .count { margin-left: auto; color: #617086; font-size: 9px; }
+    .tree-indent { padding-left: 21px; }
+    .va-main { min-width: 0; background: #0a0f16; display: flex; flex-direction: column; }
+    .va-toolbar { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid #202938; }
+    .search { flex: 1; position: relative; }
+    .search input { width: 100%; height: 34px; border: 1px solid #293649; border-radius: 6px; outline: none; background: #101720; color: white; padding: 0 38px 0 31px; font-size: 11px; }
+    .search input:focus { border-color: #4b8793; box-shadow: 0 0 0 2px #59d5e012; }
+    .search:before { content: "/"; position: absolute; top: 8px; left: 12px; color: var(--cyan); font-weight: bold; }
+    .search .shortcut { position: absolute; top: 8px; right: 9px; color: #69768a; }
+    .tool-button { height: 34px; border: 1px solid #293649; border-radius: 6px; background: #101720; padding: 0 10px; cursor: pointer; color: #aab6c7; font-size: 10px; }
+    .tool-button:hover, .tool-button.active { color: white; border-color: #50617a; background: #182231; }
+    .table-shell { flex: 1; min-height: 0; overflow: auto; }
+    .values-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 11px; }
+    .values-table th { position: sticky; top: 0; z-index: 2; height: 34px; padding: 0 10px; text-align: left; color: #718095; background: #0e141d; border-bottom: 1px solid #263245; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+    .values-table td { height: 36px; padding: 0 10px; border-bottom: 1px solid #151e2a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .values-table tr { cursor: pointer; }
+    .values-table tbody tr:hover { background: #111a25; }
+    .values-table tbody tr.selected { background: linear-gradient(90deg,#17303a,#111b26); box-shadow: inset 2px 0 var(--cyan); }
+    .kind-chip { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 7px; vertical-align: -1px; border: 1px solid currentColor; }
+    .va-status { display: flex; justify-content: space-between; padding: 7px 12px; border-top: 1px solid #202938; color: #69778a; font-size: 9px; }
+    .va-inspector { border-left: 1px solid #202938; background: #0c1119; min-width: 0; overflow: auto; }
+    .inspector-head { padding: 16px; border-bottom: 1px solid #202938; }
+    .inspector-head .eyebrow { color: var(--cyan); font-size: 9px; text-transform: uppercase; letter-spacing: .13em; }
+    .inspector-head h2 { margin: 7px 0 5px; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
+    .inspector-head p { margin: 0; font-size: 10px; color: #748196; }
+    .inspector-section { padding: 14px 16px; border-bottom: 1px solid #1c2532; }
+    .inspector-section h3 { margin: 0 0 10px; color: #69778d; font-size: 9px; text-transform: uppercase; letter-spacing: .12em; }
+    .metric-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .metric { padding: 10px; background: #111822; border: 1px solid #202b3a; border-radius: 6px; }
+    .metric b { display: block; margin-top: 5px; color: white; font-size: 12px; }
+    .location { display: block; width: 100%; margin: 4px 0; border: 0; border-radius: 5px; background: transparent; padding: 7px 8px; text-align: left; color: #9fcbd3; cursor: pointer; font-size: 10px; }
+    .location:hover { background: #141e2a; }
+    .code-block { margin: 0; padding: 11px; border: 1px solid #253246; border-radius: 6px; background: #090e14; color: #c8d2e1; font-size: 10px; line-height: 1.55; white-space: pre-wrap; }
+
+    /* Variant B: search-first command interface */
+    .vb { min-height: 100vh; background: radial-gradient(circle at 50% -10%, #203a46 0, #0b1118 38%, #070a0f 72%); padding: 48px 6vw 120px; }
+    .vb-header { max-width: 1050px; margin: 0 auto 36px; display: flex; align-items: center; justify-content: space-between; }
+    .vb-brand { display: flex; align-items: center; gap: 13px; font-weight: bold; }
+    .vb-header .session { color: #8fa0b7; font-size: 10px; }
+    .vb-stage { max-width: 1050px; margin: 0 auto; }
+    .vb-intro { margin-bottom: 20px; }
+    .vb-intro .overline { color: var(--cyan); font-size: 10px; text-transform: uppercase; letter-spacing: .18em; }
+    .vb-intro h1 { max-width: 800px; margin: 8px 0 6px; font-family: Inter, ui-sans-serif, sans-serif; font-size: clamp(28px,4vw,50px); font-weight: 650; letter-spacing: -.04em; }
+    .vb-intro p { margin: 0; color: #8e9bb0; font-family: Inter, ui-sans-serif, sans-serif; }
+    .command-box { position: relative; border: 1px solid #3b5263; border-radius: 14px; background: rgba(15,23,32,.94); box-shadow: 0 32px 100px #0008, 0 0 0 1px #59d5e00a; overflow: hidden; }
+    .command-input { display: flex; align-items: center; gap: 11px; padding: 17px 18px; border-bottom: 1px solid #2a3746; }
+    .command-input .prompt { color: var(--cyan); font-weight: bold; }
+    .command-input input { flex: 1; border: 0; outline: 0; background: transparent; color: white; font-size: 15px; }
+    .command-input input::placeholder { color: #68768a; }
+    .command-results { display: grid; grid-template-columns: 1fr 310px; min-height: 390px; }
+    .result-list { padding: 8px; }
+    .result-group { padding: 9px 11px 5px; color: #66758a; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
+    .result-card { display: grid; grid-template-columns: 28px minmax(0,1fr) auto; gap: 10px; align-items: center; width: 100%; border: 0; border-radius: 8px; background: transparent; padding: 11px; text-align: left; cursor: pointer; }
+    .result-card:hover, .result-card.selected { background: #182430; }
+    .result-card.selected { box-shadow: inset 2px 0 var(--cyan); }
+    .result-icon { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; background: #20313d; color: var(--cyan); font-size: 10px; }
+    .result-title { display: block; margin-bottom: 4px; color: #e8eef7; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .result-meta { color: #77869b; font-size: 9px; }
+    .result-value { max-width: 145px; color: #b9c5d5; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .peek { border-left: 1px solid #293646; padding: 18px; background: #0e151e; }
+    .peek .type { color: var(--violet); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
+    .peek h3 { margin: 7px 0 14px; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+    .peek-row { margin: 12px 0; }
+    .peek-row label { display: block; margin-bottom: 4px; color: #65758c; font-size: 9px; text-transform: uppercase; }
+    .peek-row div { color: #c2cddd; font-size: 10px; line-height: 1.5; }
+    .command-footer { display: flex; gap: 18px; padding: 10px 15px; border-top: 1px solid #293646; background: #0b1118; color: #738197; font-size: 9px; }
+    .workflows { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-top: 18px; }
+    .workflow { border: 1px solid #293646; border-radius: 10px; background: #0e151eaa; padding: 15px; cursor: pointer; text-align: left; }
+    .workflow:hover { border-color: #486178; background: #121d28; transform: translateY(-1px); }
+    .workflow .number { color: var(--cyan); font-size: 9px; }
+    .workflow h3 { margin: 10px 0 5px; font-size: 11px; }
+    .workflow p { margin: 0; color: #76859a; font-size: 9px; line-height: 1.5; }
+
+    /* Variant C: topology/workbench */
+    .vc { min-height: 100vh; background: #080a0d; }
+    .vc-header { height: 62px; display: flex; align-items: center; padding: 0 22px; border-bottom: 1px solid #292b31; background: #0d0f13; }
+    .vc-brand { display: flex; align-items: center; gap: 11px; font-size: 13px; font-weight: bold; }
+    .vc-tabs { display: flex; height: 100%; margin-left: 42px; }
+    .vc-tab { display: grid; place-items: center; min-width: 120px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #818893; cursor: pointer; font-size: 10px; }
+    .vc-tab.active { color: white; border-color: var(--amber); }
+    .vc-header-actions { display: flex; gap: 8px; margin-left: auto; }
+    .vc-workbench { display: grid; grid-template-columns: minmax(620px,1fr) 360px; height: calc(100vh - 62px); }
+    .map { position: relative; overflow: hidden; min-height: 600px; background-color: #090b0f; background-image: linear-gradient(#272a3026 1px,transparent 1px), linear-gradient(90deg,#272a3026 1px,transparent 1px); background-size: 28px 28px; }
+    .map:after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at 50% 44%,transparent 0,#090b0f 74%); }
+    .map-toolbar { position: absolute; z-index: 4; top: 16px; left: 16px; display: flex; gap: 7px; }
+    .map-title { position: absolute; z-index: 4; left: 20px; bottom: 20px; }
+    .map-title h2 { margin: 0 0 5px; font-family: Inter, ui-sans-serif, sans-serif; font-size: 18px; }
+    .map-title p { margin: 0; color: #727985; font-size: 9px; }
+    .edge { position: absolute; z-index: 1; height: 1px; transform-origin: left center; background: linear-gradient(90deg,#4f5f6c,#a27e42); opacity: .65; }
+    .edge.dashed { background: repeating-linear-gradient(90deg,#6f5f82 0 7px,transparent 7px 13px); }
+    .node { position: absolute; z-index: 3; min-width: 150px; border: 1px solid #343944; border-radius: 8px; background: #11151b; padding: 11px 12px; box-shadow: 0 13px 28px #0009; cursor: pointer; text-align: left; }
+    .node:hover, .node.selected { border-color: #d1a657; background: #171a20; }
+    .node.selected { box-shadow: 0 0 0 2px #d1a65722, 0 18px 45px #000b; }
+    .node .node-type { margin-bottom: 6px; color: #717987; font-size: 8px; text-transform: uppercase; letter-spacing: .12em; }
+    .node .node-name { max-width: 230px; color: #e8e2d8; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .node .node-value { margin-top: 6px; color: var(--amber); font-size: 9px; }
+    .node .port { position: absolute; right: -5px; top: 50%; width: 9px; height: 9px; margin-top: -4px; border: 2px solid #0b0d10; border-radius: 50%; background: #a98349; }
+    .vc-panel { border-left: 1px solid #292b31; background: #0d0f13; overflow: auto; }
+    .vc-panel-head { padding: 18px; border-bottom: 1px solid #292b31; }
+    .vc-panel-head .crumb { color: #777e89; font-size: 9px; }
+    .vc-panel-head h2 { margin: 10px 0 6px; font-size: 15px; overflow-wrap: anywhere; }
+    .vc-panel-head p { margin: 0; color: #818894; font-size: 9px; line-height: 1.55; }
+    .flow-step { position: relative; padding: 15px 17px 15px 43px; border-bottom: 1px solid #23262c; }
+    .flow-step:before { content: attr(data-step); position: absolute; left: 16px; top: 14px; display: grid; place-items: center; width: 17px; height: 17px; border: 1px solid #555d68; border-radius: 50%; color: #afb6c1; font-size: 8px; }
+    .flow-step:after { content: ""; position: absolute; left: 24px; top: 32px; bottom: -1px; width: 1px; background: #343841; }
+    .flow-step:last-child:after { display: none; }
+    .flow-step h3 { margin: 0 0 6px; color: #d8dce4; font-size: 10px; }
+    .flow-step p { margin: 0; color: #7e8693; font-size: 9px; line-height: 1.55; }
+    .flow-code { margin-top: 9px; padding: 8px; border-radius: 5px; background: #090b0e; color: #caa966; font-size: 9px; overflow-wrap: anywhere; }
+    .action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 15px 17px; }
+    .primary-action { border: 1px solid #bb9250; border-radius: 6px; background: #2a2114; padding: 9px; color: #f1c878; cursor: pointer; font-size: 9px; }
+    .secondary-action { border: 1px solid #373c46; border-radius: 6px; background: #14171c; padding: 9px; color: #b0b6c1; cursor: pointer; font-size: 9px; }
+
+    @media (max-width: 1000px) {
+      .va-body { grid-template-columns: 190px 1fr; }
+      .va-inspector { display: none; }
+      .vc-workbench { grid-template-columns: 1fr; }
+      .vc-panel { display: none; }
+      .vb { padding-left: 24px; padding-right: 24px; }
+    }
+    @media (max-width: 720px) {
+      .prototype-ribbon, .state-toggle, .state-panel { display: none; }
+      .va-body { grid-template-columns: 1fr; }
+      .va-sidebar { display: none; }
+      .va-stats { display: none; }
+      .command-results { grid-template-columns: 1fr; }
+      .peek { display: none; }
+      .workflows { grid-template-columns: 1fr; }
+      .vc-tabs { margin-left: 16px; }
+      .vc-tab { min-width: 72px; }
+      .switcher-label { min-width: 190px; padding-inline: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="app"></div>
+  <div class="prototype-ribbon">Throwaway prototype</div>
+  <button class="state-toggle" id="state-toggle" type="button">View prototype state</button>
+  <aside class="state-panel" id="state-panel" aria-label="Prototype state">
+    <h3>Full relevant state</h3>
+    <pre id="state-json"></pre>
+  </aside>
+  <nav class="switcher" aria-label="Prototype variant switcher">
+    <button class="arrow" id="prev" type="button" aria-label="Previous variant">←</button>
+    <button class="switcher-label" id="variant-label" type="button" aria-label="Show variant choices"></button>
+    <button class="arrow" id="next" type="button" aria-label="Next variant">→</button>
+  </nav>
+
+  <script>
+    const variants = [
+      { key: 'A', name: 'Command Center', promise: 'Dense, IDE-like inspection' },
+      { key: 'B', name: 'Intent Search', promise: 'Search-first, guided workflows' },
+      { key: 'C', name: 'Value Topology', promise: 'Trace relationships visually' }
+    ];
+
+    const items = [
+      { path: 'global.proxy.resources.requests.memory', value: '128Mi', original: '64Mi', kind: 'override', component: 'core-base/istio-controlplane/istiod', chart: 'istiod', locations: ['templates/deployment.yaml:148:22', 'templates/gateway.yaml:92:18'], description: 'Memory request applied to the Istio sidecar proxy.' },
+      { path: 'global.proxy.resources.limits.memory', value: '1Gi', original: '512Mi', kind: 'field', component: 'core-base/istio-controlplane/istiod', chart: 'istiod', locations: ['templates/deployment.yaml:151:20'], description: 'Memory limit for sidecar proxy containers.' },
+      { path: 'meshConfig.accessLogFile', value: '/dev/stdout', original: '—', kind: 'variable', component: 'core-base/istio-controlplane/istiod', chart: 'istiod', locations: ['templates/configmap.yaml:33:12'], description: 'Access log output configured through the mesh config.' },
+      { path: 'pilot.autoscaleEnabled', value: 'true', original: 'true', kind: 'field', component: 'core-base/istio-controlplane/istiod', chart: 'istiod', locations: ['templates/deployment.yaml:49:7'], description: 'Enables horizontal autoscaling for istiod.' },
+      { path: 'replicaCount', value: '2', original: '1', kind: 'override', component: 'core-base/monitoring/grafana', chart: 'grafana', locations: ['templates/deployment.yaml:18:13'], description: 'Number of Grafana replicas deployed.' },
+      { path: 'persistence.enabled', value: 'true', original: 'false', kind: 'variable', component: 'core-base/monitoring/grafana', chart: 'grafana', locations: ['templates/pvc.yaml:1:7', 'templates/deployment.yaml:76:9'], description: 'Controls whether Grafana stores state on persistent volume.' },
+      { path: 'admin.existingSecret', value: 'grafana-admin', original: '—', kind: 'field', component: 'core-base/monitoring/grafana', chart: 'grafana', locations: ['templates/deployment.yaml:121:14'], description: 'Kubernetes Secret containing Grafana admin credentials.' },
+      { path: 'server.retention', value: '15d', original: '7d', kind: 'override', component: 'core-base/monitoring/prometheus', chart: 'prometheus', locations: ['templates/statefulset.yaml:66:18'], description: 'Retention window for Prometheus time-series data.' },
+      { path: 'server.resources.requests.cpu', value: '500m', original: '250m', kind: 'variable', component: 'core-base/monitoring/prometheus', chart: 'prometheus', locations: ['templates/statefulset.yaml:103:16'], description: 'CPU request exposed to bundle operators.' }
+    ];
+
+    const state = {
+      variant: 'A',
+      variantName: '',
+      query: '',
+      component: 'All components',
+      selectedPath: items[0].path,
+      selectedKind: items[0].kind,
+      selectedComponent: items[0].component,
+      results: items.length,
+      consolidated: true,
+      zarfSummary: false,
+      udsSummary: true,
+      activeWorkflow: null,
+      lastAction: 'Prototype loaded'
+    };
+
+    const esc = (value) => String(value).replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+    const selectedItem = () => items.find(item => item.path === state.selectedPath && item.component === state.selectedComponent) || items[0];
+    const filteredItems = () => items.filter(item => {
+      const matchesComponent = state.component === 'All components' || item.component === state.component;
+      const haystack = `${item.path} ${item.value} ${item.kind} ${item.component}`.toLowerCase();
+      return matchesComponent && haystack.includes(state.query.toLowerCase());
+    });
+    const shortComponent = component => component.split('/').slice(-2).join('/');
+    const kindColor = kind => ({ override: 'accent', variable: 'violet', field: 'lime' }[kind] || 'subtle');
+
+    function updateState(action) {
+      const item = selectedItem();
+      state.variantName = variants.find(v => v.key === state.variant).name;
+      state.selectedKind = item.kind;
+      state.results = filteredItems().length;
+      if (action) state.lastAction = action;
+      document.getElementById('state-json').textContent = JSON.stringify(state, null, 2);
+    }
+
+    function chooseItem(path, component) {
+      state.selectedPath = path;
+      state.selectedComponent = component;
+      updateState(`Selected ${path}`);
+      render();
+    }
+
+    function setQuery(value) {
+      state.query = value;
+      const filtered = filteredItems();
+      if (filtered.length && !filtered.some(i => i.path === state.selectedPath && i.component === state.selectedComponent)) {
+        state.selectedPath = filtered[0].path;
+        state.selectedComponent = filtered[0].component;
+      }
+      updateState(value ? `Filtered by “${value}”` : 'Cleared filter');
+      render();
+      const input = document.querySelector('[data-search]');
+      if (input) { input.focus(); input.setSelectionRange(value.length, value.length); }
+    }
+    function setQueryInPlace(value) {
+      state.query = value;
+      const matches = new Set(filteredItems().map(item => `${item.component}\u0000${item.path}`));
+      document.querySelectorAll('[data-select-path]').forEach(element => {
+        element.hidden = !matches.has(`${element.dataset.selectComponent}\u0000${element.dataset.selectPath}`);
+      });
+      updateState(value ? `Filtered by “${value}”` : 'Cleared filter');
+    }
+
+    function setComponent(component) {
+      state.component = component;
+      const filtered = filteredItems();
+      if (filtered.length) {
+        state.selectedPath = filtered[0].path;
+        state.selectedComponent = filtered[0].component;
+      }
+      updateState(`Scoped to ${component}`);
+      render();
+    }
+
+    function renderVariantA() {
+      const filtered = filteredItems();
+      const selected = selectedItem();
+      const components = [...new Set(items.map(i => i.component))];
+      const rows = filtered.map(item => `
+        <tr class="${item.path === state.selectedPath && item.component === state.selectedComponent ? 'selected' : ''}" data-select-path="${esc(item.path)}" data-select-component="${esc(item.component)}">
+          <td title="${esc(item.path)}"><span class="kind-chip ${kindColor(item.kind)}"></span>${esc(item.path)}</td>
+          <td>${esc(item.value)}</td><td class="${kindColor(item.kind)}">${esc(item.kind)}</td>
+          <td class="subtle">${esc(item.locations.length > 1 ? `${item.locations.length} locations` : item.locations[0])}</td>
+        </tr>`).join('');
+      return `<main class="va">
+        <header class="va-topbar">
+          <div class="va-brand"><span class="mark"><span>N</span></span> NEUTRINO</div>
+          <div class="va-source truncate">oci://ghcr.io/defenseunicorns/packages/core-base:0.39.2 <span class="lime">verified</span></div>
+          <div class="va-stats"><span>3 charts</span><span>1,284 values</span><span class="pill lime"><span class="dot"></span>snapshot pinned</span></div>
+        </header>
+        <div class="va-body">
+          <aside class="va-sidebar">
+            <div class="va-section-label">Workspace</div>
+            <button class="component ${state.component === 'All components' ? 'active' : ''}" data-component="All components"><span class="accent">◇</span><span>All values</span><span class="count">1,284</span></button>
+            <button class="component"><span class="amber">△</span><span>Package variables</span><span class="count">12</span></button>
+            <button class="component"><span class="violet">↳</span><span>Bundle overrides</span><span class="count">37</span></button>
+            <div class="va-section-label">Components</div>
+            ${components.map(component => `<button class="component tree-indent ${state.component === component ? 'active' : ''}" data-component="${esc(component)}"><span class="subtle">└</span><span class="truncate">${esc(shortComponent(component))}</span><span class="count">${items.filter(i => i.component === component).length}</span></button>`).join('')}
+          </aside>
+          <section class="va-main">
+            <div class="va-toolbar">
+              <label class="search"><input data-search value="${esc(state.query)}" placeholder="Filter values, defaults, types…"><span class="shortcut kbd">/</span></label>
+              <button class="tool-button ${state.consolidated ? 'active' : ''}" data-action="consolidate">Consolidated</button>
+              <button class="tool-button" data-action="reset">Reset</button>
+            </div>
+            <div class="table-shell"><table class="values-table">
+              <thead><tr><th style="width:43%">Value path</th><th style="width:16%">Resolved default</th><th style="width:13%">Type</th><th>Source</th></tr></thead>
+              <tbody>${rows || '<tr><td colspan="4" class="subtle">No matching values. Clear the filter to continue.</td></tr>'}</tbody>
+            </table></div>
+            <footer class="va-status"><span>${filtered.length} shown · ${state.component}</span><span><span class="kbd">↑↓</span> move &nbsp; <span class="kbd">enter</span> inspect &nbsp; <span class="kbd">y</span> editor &nbsp; <span class="kbd">?</span> commands</span></footer>
+          </section>
+          <aside class="va-inspector">
+            <div class="inspector-head"><div class="eyebrow">${esc(selected.kind)} · live inspector</div><h2>${esc(selected.path)}</h2><p>${esc(shortComponent(selected.component))}</p></div>
+            <section class="inspector-section"><h3>Value flow</h3><div class="metric-pair"><div class="metric"><span class="subtle">Chart default</span><b>${esc(selected.original)}</b></div><div class="metric"><span class="subtle">Effective value</span><b class="lime">${esc(selected.value)}</b></div></div></section>
+            <section class="inspector-section"><h3>Template locations</h3>${selected.locations.map((loc, i) => `<button class="location" data-action="open-location">${i === 0 ? '›' : ' '} ${esc(loc)}</button>`).join('')}</section>
+            <section class="inspector-section"><h3>Authoring preview</h3><pre class="code-block">variables:\n  - name: PROXY_MEMORY\n    path: ${esc(selected.path)}\n    default: ${esc(selected.value)}</pre></section>
+          </aside>
+        </div>
+      </main>`;
+    }
+
+    function renderVariantB() {
+      const filtered = filteredItems();
+      const selected = selectedItem();
+      const groups = ['override','variable','field'];
+      const list = groups.map(kind => {
+        const groupItems = filtered.filter(item => item.kind === kind);
+        if (!groupItems.length) return '';
+        return `<div class="result-group">${kind}s · ${groupItems.length}</div>${groupItems.map(item => `
+          <button class="result-card ${item.path === state.selectedPath && item.component === state.selectedComponent ? 'selected' : ''}" data-select-path="${esc(item.path)}" data-select-component="${esc(item.component)}">
+            <span class="result-icon">${kind === 'override' ? 'OV' : kind === 'variable' ? 'VR' : 'VL'}</span>
+            <span><span class="result-title">${esc(item.path)}</span><span class="result-meta">${esc(shortComponent(item.component))} · ${item.locations.length} source${item.locations.length === 1 ? '' : 's'}</span></span>
+            <span class="result-value">${esc(item.value)}</span>
+          </button>`).join('')}`;
+      }).join('');
+      return `<main class="vb">
+        <header class="vb-header"><div class="vb-brand"><span class="mark"><span>N</span></span> NEUTRINO</div><div class="session">core-base:0.39.2 &nbsp;·&nbsp; 1,284 values &nbsp;·&nbsp; <span class="lime">ready</span></div></header>
+        <section class="vb-stage">
+          <div class="vb-intro"><div class="overline">Inspect a package snapshot</div><h1>What do you need to understand?</h1><p>Search paths, ask by intent, or start with a common investigation.</p></div>
+          <div class="command-box">
+            <label class="command-input"><span class="prompt">›</span><input data-search value="${esc(state.query)}" placeholder="Try “memory overrides”, “grafana secrets”, or a value path"><span class="kbd">/</span></label>
+            <div class="command-results">
+              <div class="result-list">${list || '<div class="result-group">No results. Try a broader path or component.</div>'}</div>
+              <aside class="peek"><div class="type">${esc(selected.kind)} preview</div><h3>${esc(selected.path)}</h3><div class="peek-row"><label>Effective value</label><div class="lime">${esc(selected.value)}</div></div><div class="peek-row"><label>Declared by</label><div>${esc(shortComponent(selected.component))}</div></div><div class="peek-row"><label>What it controls</label><div>${esc(selected.description)}</div></div><div class="peek-row"><label>Next action</label><div><span class="kbd">enter</span> trace value &nbsp; <span class="kbd">e</span> open source</div></div></aside>
+            </div>
+            <footer class="command-footer"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">tab</span> refine</span><span><span class="kbd">enter</span> inspect</span><span><span class="kbd">esc</span> clear</span><span style="margin-left:auto">${filtered.length} matches</span></footer>
+          </div>
+          <div class="workflows">
+            <button class="workflow" data-workflow="override"><span class="number">01 / TRACE</span><h3>Why is this value different?</h3><p>Follow chart default → bundle override → effective deployment value.</p></button>
+            <button class="workflow" data-workflow="variable"><span class="number">02 / AUTHOR</span><h3>Expose a configurable value</h3><p>Find a path and generate the exact UDS bundle and config snippets.</p></button>
+            <button class="workflow" data-workflow="memory"><span class="number">03 / AUDIT</span><h3>Review resource settings</h3><p>Collect CPU and memory defaults across every component.</p></button>
+          </div>
+        </section>
+      </main>`;
+    }
+
+    function node(item, x, y, label, type) {
+      return `<button class="node ${item.path === state.selectedPath && item.component === state.selectedComponent ? 'selected' : ''}" style="left:${x}%;top:${y}%" data-select-path="${esc(item.path)}" data-select-component="${esc(item.component)}"><div class="node-type">${esc(type)}</div><div class="node-name">${esc(label)}</div><div class="node-value">${esc(item.value)}</div><span class="port"></span></button>`;
+    }
+
+    function renderVariantC() {
+      const selected = selectedItem();
+      const mapItems = items.slice(0, 6);
+      const positions = [[8,17],[39,9],[66,23],[24,49],[57,53],[38,76]];
+      return `<main class="vc">
+        <header class="vc-header"><div class="vc-brand"><span class="mark"><span>N</span></span> NEUTRINO</div><nav class="vc-tabs"><button class="vc-tab active">Value flow</button><button class="vc-tab">Components</button><button class="vc-tab">Source files</button></nav><div class="vc-header-actions"><button class="tool-button">Fit graph</button><button class="tool-button">Filter</button></div></header>
+        <div class="vc-workbench">
+          <section class="map">
+            <div class="map-toolbar"><button class="tool-button active">All relationships</button><button class="tool-button">Overrides</button><button class="tool-button">Variables</button></div>
+            <div class="edge" style="left:20%;top:25%;width:24%;transform:rotate(-8deg)"></div><div class="edge dashed" style="left:48%;top:18%;width:22%;transform:rotate(20deg)"></div><div class="edge" style="left:18%;top:28%;width:20%;transform:rotate(42deg)"></div><div class="edge" style="left:35%;top:56%;width:25%;transform:rotate(2deg)"></div><div class="edge dashed" style="left:47%;top:64%;width:19%;transform:rotate(-28deg)"></div><div class="edge" style="left:32%;top:59%;width:21%;transform:rotate(55deg)"></div>
+            ${mapItems.map((item, i) => node(item, positions[i][0], positions[i][1], item.path, i < 2 ? 'chart default' : item.kind)).join('')}
+            <div class="map-title"><h2>Value relationship map</h2><p>Select a node to trace where a value starts, changes, and lands. Lines are relationships, not execution order.</p></div>
+          </section>
+          <aside class="vc-panel">
+            <div class="vc-panel-head"><div class="crumb">core-base / ${esc(selected.chart)} / ${esc(selected.kind)}</div><h2>${esc(selected.path)}</h2><p>${esc(selected.description)}</p></div>
+            <div class="flow-step" data-step="1"><h3>Chart declares the default</h3><p>The package-provided values file establishes the starting value.</p><div class="flow-code">values.yaml → ${esc(selected.original)}</div></div>
+            <div class="flow-step" data-step="2"><h3>${selected.kind === 'override' ? 'Bundle changes the value' : 'Template consumes the value'}</h3><p>${selected.kind === 'override' ? 'A UDS bundle override replaces the package default.' : 'No direct bundle override was found for this path.'}</p><div class="flow-code">${esc(selected.component)} → ${esc(selected.value)}</div></div>
+            <div class="flow-step" data-step="3"><h3>Template location</h3><p>${esc(selected.locations[0])}</p><div class="flow-code">effective: ${esc(selected.value)}</div></div>
+            <div class="action-row"><button class="primary-action" data-action="open-location">Open source</button><button class="secondary-action" data-action="copy-path">Copy path</button></div>
+          </aside>
+        </div>
+      </main>`;
+    }
+
+    function render() {
+      const renderer = { A: renderVariantA, B: renderVariantB, C: renderVariantC }[state.variant];
+      document.getElementById('app').innerHTML = renderer();
+      const current = variants.find(v => v.key === state.variant);
+      document.getElementById('variant-label').innerHTML = `<b>${current.key}</b> — ${current.name}<small>${current.promise}</small>`;
+      bindInteractions();
+      updateState();
+    }
+
+    function bindInteractions() {
+      document.querySelectorAll('[data-select-path]').forEach(button => button.addEventListener('click', () => chooseItem(button.dataset.selectPath, button.dataset.selectComponent)));
+      document.querySelectorAll('[data-component]').forEach(button => button.addEventListener('click', () => setComponent(button.dataset.component)));
+      document.querySelectorAll('[data-search]').forEach(input => input.addEventListener('input', event => {
+        setQueryInPlace(event.currentTarget.value);
+      }));
+      document.querySelectorAll('[data-workflow]').forEach(button => button.addEventListener('click', () => {
+        const query = button.dataset.workflow;
+        state.activeWorkflow = query;
+        setQuery(query);
+      }));
+      document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => {
+        const action = button.dataset.action;
+        if (action === 'consolidate') state.consolidated = !state.consolidated;
+        if (action === 'reset') { state.query = ''; state.component = 'All components'; state.activeWorkflow = null; }
+        updateState(action === 'open-location' ? `Would open ${selectedItem().locations[0]} in $EDITOR` : action === 'copy-path' ? `Copied ${state.selectedPath}` : `Changed ${action}`);
+        render();
+      }));
+    }
+
+    function switchVariant(direction) {
+      const currentIndex = variants.findIndex(v => v.key === state.variant);
+      state.variant = variants[(currentIndex + direction + variants.length) % variants.length].key;
+      const url = new URL(window.location.href);
+      url.searchParams.set('variant', state.variant);
+      history.replaceState({}, '', url);
+      updateState(`Switched to variant ${state.variant}`);
+      render();
+    }
+
+    const requested = new URLSearchParams(window.location.search).get('variant');
+    state.variant = variants.some(v => v.key === requested) ? requested : 'A';
+    document.getElementById('prev').addEventListener('click', () => switchVariant(-1));
+    document.getElementById('next').addEventListener('click', () => switchVariant(1));
+    document.getElementById('variant-label').addEventListener('click', () => switchVariant(1));
+    document.getElementById('state-toggle').addEventListener('click', () => document.getElementById('state-panel').classList.toggle('open'));
+    window.addEventListener('keydown', event => {
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) return;
+      if (event.key === 'ArrowLeft') switchVariant(-1);
+      if (event.key === 'ArrowRight') switchVariant(1);
+      if (event.key === '/') { event.preventDefault(); document.querySelector('[data-search]')?.focus(); }
+      if (event.key === 'Escape' && state.query) setQuery('');
+    });
+    render();
+  </script>
+</body>
+</html>
