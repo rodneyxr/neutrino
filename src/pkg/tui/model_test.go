@@ -5,19 +5,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
 )
-
-func TestDetailViewBTogglesBundleMode(t *testing.T) {
-	m := Model{viewMode: ViewModeDetail}
-
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
-	got := updated.(Model)
-
-	if !got.detailBundleMode {
-		t.Fatal("expected b to enable bundle mode in detail view")
-	}
-}
 
 func TestGenerateBundleSnippetRequiresBundleContextByDefault(t *testing.T) {
 	snippet := generateBundleSnippet("component/chart", "image.tag", "1.0.0")
@@ -77,5 +67,481 @@ func TestGenerateBundleSnippetForHelmChartBundleModeUsesChartName(t *testing.T) 
 		if !strings.Contains(snippet, want) {
 			t.Fatalf("expected snippet to contain %q, got:\n%s", want, snippet)
 		}
+	}
+}
+
+func TestGenerateBundleSnippetWithComplexYAMLDefault(t *testing.T) {
+	m := Model{detailBundleMode: true}
+	v := DisplayItem{
+		ValueUsage: introspect.ValueUsage{
+			Path: "resources.limits",
+			DefaultValue: map[string]interface{}{
+				"cpu":    "500m",
+				"memory": "512Mi",
+			},
+		},
+		Component: "pkg/comp/chart",
+	}
+
+	snippet := m.generateBundleSnippetForItem(v)
+	if strings.Contains(snippet, "{") || strings.Contains(snippet, "}") {
+		t.Fatalf("expected block YAML instead of JSON flow formatting, got:\n%s", snippet)
+	}
+	for _, want := range []string{
+		"default:",
+		"  cpu: 500m",
+		"  memory: 512Mi",
+	} {
+		if !strings.Contains(snippet, want) {
+			t.Fatalf("expected snippet to contain %q, got:\n%s", want, snippet)
+		}
+	}
+}
+
+func TestWorkspaceResponsiveLayoutsFitTerminal(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		width       int
+		height      int
+		want        []string
+		doesNotWant []string
+	}{
+		{
+			name:        "wide",
+			width:       132,
+			height:      32,
+			want:        []string{"COMPONENTS", "[FOCUSED] VALUES", "2 panes"},
+			doesNotWant: []string{"DETAILS"},
+		},
+		{
+			name:        "medium",
+			width:       100,
+			height:      28,
+			want:        []string{"COMPONENTS", "[FOCUSED] VALUES", "2 panes"},
+			doesNotWant: []string{"DETAILS"},
+		},
+		{
+			name:        "compact",
+			width:       72,
+			height:      24,
+			want:        []string{"[FOCUSED] VALUES", "single pane"},
+			doesNotWant: []string{"COMPONENTS", "DETAILS"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := testWorkspaceModel()
+			updated, _ := model.Update(tea.WindowSizeMsg{Width: test.width, Height: test.height})
+			view := updated.(Model).View()
+
+			if got := lipgloss.Width(view); got != test.width {
+				t.Fatalf("rendered width %d, want %d", got, test.width)
+			}
+			if got := lipgloss.Height(view); got != test.height {
+				t.Fatalf("rendered height %d, want %d", got, test.height)
+			}
+			for _, want := range test.want {
+				if !strings.Contains(view, want) {
+					t.Errorf("view does not contain %q", want)
+				}
+			}
+			for _, unwanted := range test.doesNotWant {
+				if strings.Contains(view, unwanted) {
+					t.Errorf("view unexpectedly contains %q", unwanted)
+				}
+			}
+		})
+	}
+}
+
+func TestKeyboardFlowOpensAndClosesFullWidthDetails(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 132
+	model.windowHeight = 32
+
+	updated, _ := model.Update(key("enter"))
+	details := updated.(Model)
+	view := details.View()
+	if !strings.Contains(view, "[FOCUSED] DETAILS") {
+		t.Fatalf("enter did not open full-width details:\n%s", view)
+	}
+	if strings.Contains(view, "COMPONENTS") {
+		t.Fatal("details should replace the two-pane workspace")
+	}
+
+	updated, _ = details.Update(key("esc"))
+	workspace := updated.(Model).View()
+	if !strings.Contains(workspace, "[FOCUSED] VALUES") || !strings.Contains(workspace, "COMPONENTS") {
+		t.Fatalf("escape did not restore the two-pane workspace:\n%s", workspace)
+	}
+}
+
+func TestCommandPaletteRunsCopyPathWithoutMouse(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 100
+	model.windowHeight = 28
+
+	updated, _ := model.Update(key(":"))
+	palette := updated.(Model)
+	if view := palette.View(); !strings.Contains(view, "COMMAND PALETTE") || !strings.Contains(view, "Copy value path") {
+		t.Fatalf("command palette does not expose copy action:\n%s", view)
+	}
+
+	filtered := palette
+	for _, char := range "copy" {
+		updated, _ = filtered.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{char}})
+		filtered = updated.(Model)
+	}
+	updated, cmd := filtered.Update(key("enter"))
+	if cmd == nil {
+		t.Fatal("copy command did not emit an OSC 52 command")
+	}
+	if view := updated.(Model).View(); !strings.Contains(view, "Copied global.proxy.resources.requests.memory") {
+		t.Fatalf("copy command did not report the copied path:\n%s", view)
+	}
+}
+
+func TestValuesAreGroupedByComponentAndSection(t *testing.T) {
+	const component = "core-base/istio-controlplane/istiod"
+	model := Model{
+		components:   map[string]*introspect.IntrospectResult{component: {ChartName: "istiod"}},
+		chartNames:   []string{"All Charts", component},
+		currentChart: "All Charts",
+		filteredValues: []DisplayItem{
+			{ValueUsage: introspect.ValueUsage{Path: "IMAGE_TAG"}, Component: component, IsZarfVar: true},
+			{ValueUsage: introspect.ValueUsage{Path: "PROXY_MEMORY"}, Component: component, IsUDSOverrideVar: true, UDSVarPath: "global.proxy.resources.requests.memory"},
+			{ValueUsage: introspect.ValueUsage{Path: "image.repository"}, Component: component},
+		},
+		focusPane:    FocusValues,
+		windowWidth:  110,
+		windowHeight: 30,
+	}
+
+	view := model.View()
+	headings := []string{
+		"istio-controlplane/istiod  /  Zarf variables",
+		"istio-controlplane/istiod  /  UDS variables",
+		"istio-controlplane/istiod  /  Values",
+	}
+	previous := -1
+	for _, heading := range headings {
+		index := strings.Index(view, heading)
+		if index < 0 {
+			t.Fatalf("missing group heading %q:\n%s", heading, view)
+		}
+		if index <= previous {
+			t.Fatalf("group heading %q is out of order:\n%s", heading, view)
+		}
+		previous = index
+	}
+}
+
+func TestLeftColumnExpandsWhenFocused(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 132
+	model.windowHeight = 32
+
+	model.focusPane = FocusValues
+	unfocusedWidth := model.componentWidth(model.windowWidth)
+	if unfocusedWidth != 24 {
+		t.Fatalf("expected unfocused component width 24, got %d", unfocusedWidth)
+	}
+
+	model.focusPane = FocusComponents
+	focusedWidth := model.componentWidth(model.windowWidth)
+	if focusedWidth <= unfocusedWidth {
+		t.Fatalf("expected focused component width to expand beyond %d, got %d", unfocusedWidth, focusedWidth)
+	}
+	if focusedWidth != 50 {
+		t.Fatalf("expected focused component width 50 at 132 columns, got %d", focusedWidth)
+	}
+}
+
+func TestLeftAndRightArrowsNavigatePanes(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 100
+	model.windowHeight = 28
+	model.focusPane = FocusValues
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m := updated.(Model)
+	if m.focusPane != FocusComponents {
+		t.Fatalf("left arrow did not focus Components pane, focus is %v", m.focusPane)
+	}
+	view := m.View()
+	if !strings.Contains(view, "[FOCUSED] COMPONENTS") {
+		t.Fatalf("expected focused components view:\n%s", view)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(Model)
+	if m.focusPane != FocusValues {
+		t.Fatalf("right arrow did not focus Values pane, focus is %v", m.focusPane)
+	}
+	view = m.View()
+	if !strings.Contains(view, "[FOCUSED] VALUES") {
+		t.Fatalf("expected focused values view:\n%s", view)
+	}
+}
+
+func TestSelectedLongPathAutoScrolls(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 72
+	model.windowHeight = 24
+	model.focusPane = FocusValues
+	model.pathScroll = 0
+	model.pathScrollPause = 0
+
+	initial := model.View()
+	if !strings.Contains(initial, "global.proxy") {
+		t.Fatalf("initial path does not show its beginning:\n%s", initial)
+	}
+
+	model.stepPathScroll()
+	if model.pathScroll <= 0 {
+		t.Fatalf("expected pathScroll to advance automatically, got %d", model.pathScroll)
+	}
+
+	scrolled := model.View()
+	if !strings.Contains(scrolled, "‹") {
+		t.Fatalf("view did not render scrolled path with scroll indicator:\n%s", scrolled)
+	}
+}
+
+func TestLineAndComponentNavigation(t *testing.T) {
+	compA := "core-base/istio-controlplane/istiod"
+	compB := "core-base/monitoring/grafana"
+	compC := "core-base/monitoring/prometheus"
+
+	model := Model{
+		components: map[string]*introspect.IntrospectResult{
+			compA: {ChartName: "istiod"},
+			compB: {ChartName: "grafana"},
+			compC: {ChartName: "prometheus"},
+		},
+		chartNames:   []string{"All Charts", compA, compB, compC},
+		currentChart: "All Charts",
+		filteredValues: []DisplayItem{
+			{ValueUsage: introspect.ValueUsage{Path: "a.1"}, Component: compA},
+			{ValueUsage: introspect.ValueUsage{Path: "a.2"}, Component: compA},
+			{ValueUsage: introspect.ValueUsage{Path: "a.3"}, Component: compA},
+			{ValueUsage: introspect.ValueUsage{Path: "b.1"}, Component: compB},
+			{ValueUsage: introspect.ValueUsage{Path: "b.2"}, Component: compB},
+			{ValueUsage: introspect.ValueUsage{Path: "b.3"}, Component: compB},
+			{ValueUsage: introspect.ValueUsage{Path: "b.4"}, Component: compB},
+			{ValueUsage: introspect.ValueUsage{Path: "c.1"}, Component: compC},
+			{ValueUsage: introspect.ValueUsage{Path: "c.2"}, Component: compC},
+			{ValueUsage: introspect.ValueUsage{Path: "c.3"}, Component: compC},
+		},
+		focusPane:    FocusValues,
+		windowWidth:  100,
+		windowHeight: 28,
+	}
+
+	// 1. 'j' moves 1 line down
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m := updated.(Model)
+	if m.cursor != 1 {
+		t.Fatalf("expected cursor 1 after 'j', got %d", m.cursor)
+	}
+
+	// 2. 'k' moves 1 line up
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = updated.(Model)
+	if m.cursor != 0 {
+		t.Fatalf("expected cursor 0 after 'k', got %d", m.cursor)
+	}
+
+	// 3. 'J' jumps 5 lines down
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'J'}})
+	m = updated.(Model)
+	if m.cursor != 5 {
+		t.Fatalf("expected cursor 5 after 'J', got %d", m.cursor)
+	}
+
+	// 4. 'K' jumps 5 lines up
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'K'}})
+	m = updated.(Model)
+	if m.cursor != 0 {
+		t.Fatalf("expected cursor 0 after 'K', got %d", m.cursor)
+	}
+
+	// 5. ']' jumps to next component (from compA to compB at index 3)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	m = updated.(Model)
+	if m.cursor != 3 {
+		t.Fatalf("expected cursor 3 (compB) after ']', got %d", m.cursor)
+	}
+
+	// Jump to next component again (compC at index 7)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	m = updated.(Model)
+	if m.cursor != 7 {
+		t.Fatalf("expected cursor 7 (compC) after ']', got %d", m.cursor)
+	}
+
+	// 6. '[' jumps to previous component (from compC at 7 to compB at 3)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
+	m = updated.(Model)
+	if m.cursor != 3 {
+		t.Fatalf("expected cursor 3 (compB) after '[', got %d", m.cursor)
+	}
+
+	// If in middle of compB (index 5), '[' jumps to start of compB (index 3)
+	m.cursor = 5
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
+	m = updated.(Model)
+	if m.cursor != 3 {
+		t.Fatalf("expected cursor 3 (start of compB) after '[', got %d", m.cursor)
+	}
+}
+
+func TestCommandPaletteShowsKeyBeforeAction(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 100
+	model.windowHeight = 28
+	updated, _ := model.Update(key(":"))
+	view := updated.(Model).View()
+	if !strings.Contains(view, "KEY      ACTION") || !strings.Contains(view, "/        Filter values") {
+		t.Fatalf("command palette does not show key before action:\n%s", view)
+	}
+}
+
+func TestDetailsViewRendersCopyableYAMLDefault(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 100
+	model.windowHeight = 28
+	model.filteredValues[0].DefaultValue = map[string]interface{}{
+		"requests": map[string]interface{}{
+			"cpu":    "100m",
+			"memory": "128Mi",
+		},
+	}
+	model.focusPane = FocusInspector
+	model.buildDetailItems()
+
+	view := model.View()
+	if strings.Contains(view, "{requests:") || strings.Contains(view, "map[") {
+		t.Fatalf("expected copyable YAML block instead of JSON or Go struct, got:\n%s", view)
+	}
+	for _, want := range []string{
+		"DEFAULT VALUE",
+		"requests:",
+		"  cpu: 100m",
+		"  memory: 128Mi",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected Details view to contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
+func TestWholeNumbersRenderAsIntegersNotFloats(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 100
+	model.windowHeight = 28
+	model.filteredValues[0].DefaultValue = float64(3000)
+	model.focusPane = FocusInspector
+	model.buildDetailItems()
+
+	view := model.View()
+	if strings.Contains(view, "3000.0") {
+		t.Fatalf("expected 3000 as an integer, got 3000.0 in Details view:\n%s", view)
+	}
+	if !strings.Contains(view, "3000") {
+		t.Fatalf("expected Details view to contain 3000, got:\n%s", view)
+	}
+
+	model.filteredValues[0].DefaultValue = map[string]interface{}{
+		"port":    float64(3000),
+		"timeout": float64(30),
+	}
+	nestedView := model.View()
+	if strings.Contains(nestedView, "3000.0") || strings.Contains(nestedView, "30.0") {
+		t.Fatalf("expected integers in nested map, got float representation:\n%s", nestedView)
+	}
+	if !strings.Contains(nestedView, "port: 3000") || !strings.Contains(nestedView, "timeout: 30") {
+		t.Fatalf("expected nested map to contain port: 3000 and timeout: 30, got:\n%s", nestedView)
+	}
+
+	m := Model{detailBundleMode: true}
+	v := DisplayItem{
+		ValueUsage: introspect.ValueUsage{
+			Path:         "service.port",
+			DefaultValue: float64(3000),
+		},
+		Component: "pkg/comp/chart",
+	}
+	snippet := m.generateBundleSnippetForItem(v)
+	if strings.Contains(snippet, "3000.0") {
+		t.Fatalf("expected snippet to have default: 3000, got float 3000.0:\n%s", snippet)
+	}
+	if !strings.Contains(snippet, "default: 3000") {
+		t.Fatalf("expected snippet to contain default: 3000, got:\n%s", snippet)
+	}
+}
+
+func TestComponentAutoScrollsWhenTooLong(t *testing.T) {
+	longComp := "core-base/istio-controlplane/istiod-with-a-very-long-name-that-does-not-fit-in-the-sidebar"
+	model := Model{
+		components:      map[string]*introspect.IntrospectResult{longComp: {ChartName: "istiod"}},
+		chartNames:      []string{longComp},
+		currentChart:    longComp,
+		componentCursor: 0,
+		focusPane:       FocusComponents,
+		windowWidth:     100,
+		windowHeight:    28,
+		compScroll:      0,
+		compScrollPause: 0,
+	}
+
+	initial := model.View()
+	if !strings.Contains(initial, "> ●") {
+		t.Fatalf("expected current chart cursor in component pane:\n%s", initial)
+	}
+
+	model.stepComponentScroll()
+	if model.compScroll <= 0 {
+		t.Fatalf("expected compScroll to advance automatically, got %d", model.compScroll)
+	}
+
+	scrolled := model.View()
+	if !strings.Contains(scrolled, "‹") {
+		t.Fatalf("expected component view to render scroll indicator ‹, got:\n%s", scrolled)
+	}
+}
+
+func testWorkspaceModel() Model {
+	const component = "core-base/istio-controlplane/istiod"
+	return NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{
+			component: {
+				ChartName:    "istiod",
+				ChartVersion: "1.27.1",
+				Source:       "/tmp/istiod",
+				Values: []introspect.ValueUsage{
+					{
+						Path:         "global.proxy.resources.requests.memory",
+						Chart:        "istiod",
+						DefaultValue: "128Mi",
+						Locations: []introspect.ValueUsageLocation{
+							{File: "/tmp/istiod/templates/deployment.yaml", Line: 148, Column: 12, Kind: "field"},
+						},
+					},
+					{Path: "pilot.autoscaleEnabled", Chart: "istiod", DefaultValue: true},
+				},
+			},
+		},
+		ComponentOrder: []string{component},
+	})
+}
+
+func key(value string) tea.KeyMsg {
+	switch value {
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	default:
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}
 	}
 }

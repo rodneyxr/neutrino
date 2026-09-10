@@ -13,125 +13,100 @@ neutrino inspect oci://ghcr.io/zarf-dev/packages/init:v0.74.0 -i
 !!! tip
     The TUI automatically resolves all file paths to absolute paths so that the editor-jump feature works correctly.
 
-## Views
+## Workspace
 
-### List View
+The interactive inspector uses a keyboard-first two-pane workspace and a full-width details view:
 
-The main view displays all discovered values in a tabular format, organized by component. Each row shows:
+| Surface | Purpose |
+|:---|:---|
+| **Components** | Select all components or narrow the workspace to one component. Expands when focused to show full package and component names. |
+| **Values** | Search and navigate discovered paths, values, types, and source locations. This pane has focus when the TUI opens. |
+| **Details** | Open the selected value full-width to inspect defaults, effective overrides, template locations, cross-references, and optional UDS authoring snippets. |
+
+The focused pane uses a double border and a `[FOCUSED]` label. Selection markers and labels preserve meaning in terminals that cannot display color.
+
+### Responsive layout
+
+Neutrino changes layout based on available terminal width:
+
+| Width | Layout |
+|:---|:---|
+| **120 columns or wider** | Components and a wide Values table are visible together. |
+| **80–119 columns** | Components and Values remain visible with a narrower Values table. |
+| **Below 80 columns** | One workspace pane is visible at a time. Use `Tab`, `Shift+Tab`, `h`, or `l` to switch between Components and Values. |
+
+### Values
+
+The Values pane displays each discovered value in a dense table. Wider terminals show:
 
 | Column | Description |
 |:---|:---|
-| **Path** | The dot-notation value path (e.g. `image.repository`) |
-| **Default** | The default value from `values.yaml`, if found |
-| **Type** | `field`, `variable`, `override`, or `inferred` |
-| **Location** | Source file and line number, or `(N locs)` if consolidated |
+| **Value Path** | Dot-notation value path, such as `image.repository`. Selected long paths scroll horizontally automatically with pauses at the beginning and end. |
+| **Value** | Package-provided default or effective override value. |
+| **Type** | `field`, `variable`, `override`, or `inferred`. |
+| **Source** | Source file and line, or a consolidated location count. |
 
-Within each component section, items are displayed in this order:
+Rows are grouped first by component and then into **Zarf variables**, **UDS override values**, **UDS variables**, and ordinary **Values**. `Space` or `c` toggles consolidated locations while the Values pane is focused.
 
-1. **Zarf variables** (`###ZARF_VAR_*###` markers) — shown at the top of each component.
-2. **UDS Override Values** — hard-coded values set by the bundle's `overrides.*.values` stanza.
-3. **UDS Override Variables** — user-configurable variables defined by the bundle's `overrides.*.variables` stanza.
-4. **Chart values** — all other Helm template value references.
+### Details
 
-### Summary Panels
+Selecting a value and pressing `Enter` opens a full-width Details view. It shows:
 
-Two optional summary panels can be toggled independently:
+- The complete selected path and component.
+- Chart default and effective override values where applicable.
+- Every affected template location.
+- Cross-references between Helm values and UDS overrides.
+- A UDS authoring snippet when bundle authoring mode is enabled with `b` or `Space`.
 
-- **Zarf Package Variables** (press `Z`) — Shows all `zarf.yaml` package-level variables across every package, displayed at the top of the list.
-- **UDS Bundle Overrides** (press `U`) — Shows a cross-package summary of all UDS override values and variables, displayed after the Zarf summary.
+Press `Enter` on a location to open it in `$EDITOR`. Press `Enter` on a cross-reference to jump to the related value. Press `Esc` to return to the workspace.
 
-### Detail View
+### Command palette
 
-Press `Enter` on any row to open the detail view. This shows:
-
-- For **Helm values**: All template locations (file, line, column) where the value is referenced, followed by any UDS overrides that target the same path ("Overrides" section).
-- For **UDS Override Values / Variables**: The affected template locations where the targeted Helm path is used ("Affected Template Locations"), plus a cross-reference link to the corresponding Helm value entry ("Related Values").
-- For **Zarf variables**: All template locations where the `###ZARF_VAR_*###` marker appears.
-
-Press `Enter` on a **location** entry to open the file in your editor. Press `Enter` on a **cross-reference** entry to jump to that item in the list.
-
-#### UDS Authoring Snippets
-
-When inspecting a UDS bundle, the detail view also displays ready-to-copy YAML snippets to help you author bundle and config files. When inspecting a Zarf package or standalone Helm chart, press `b` in the detail view to toggle bundle authoring mode and show the same `uds-bundle.yaml` snippet with placeholders for the bundle/package context you have not created yet.
-
-**For Helm values** — a `uds-bundle.yaml` snippet is shown at the bottom of the detail view with the full YAML path pre-filled so you know exactly where to place it:
-
-```yaml
-# uds-bundle.yaml
-packages:
-  - name: core-base
-    overrides:
-      istio-controlplane:
-        istiod:
-          variables:
-            - name: <prefix>_GLOBAL_PROXY_RESOURCES_REQUESTS_MEMORY  # variable name can be anything you choose
-              path: global.proxy.resources.requests.memory
-              description: "<description>"
-              default: 56Mi
-```
-
-The suggested `name` is derived from the Helm path (uppercased, dots replaced with underscores) prefixed with `<prefix>_` as a placeholder — rename it to whatever makes sense for your bundle. The `default` field is populated from the chart's `values.yaml`; if the chart has no default for this path, the line is omitted entirely.
-
-**For UDS Override Variables** — a `uds-config.yaml` snippet is shown so you know exactly how to set that variable when deploying the bundle:
-
-```yaml
-# uds-config.yaml
-variables:
-  core-base:
-    ISTIO_REQUESTS_MEMORY: <value>
-```
-
-The package name and variable name are taken directly from the bundle definition, so no guessing is required.
+Press `:` from either workspace pane to open the searchable command palette. The shortcut key is the first column, followed by the action and description. Every primary action is available there, including filtering, component selection, summaries, bundle authoring, editor integration, copying paths, help, and quit.
 
 ## Keybindings
 
-### Navigation
+### Focus and navigation
 
 | Key | Action |
 |:---|:---|
-| `j` / `↓` | Move cursor down one row |
-| `k` / `↑` | Move cursor up one row |
-| `J` | Move cursor down 5 rows |
-| `K` | Move cursor up 5 rows |
-| `g` | Jump to top of list |
-| `G` | Jump to bottom of list |
-| `PgDn` | Move cursor down one page |
-| `PgUp` | Move cursor up one page |
-| `n` | Jump to the first row of the **next** component |
-| `b` | Jump to the first row of the **previous** component in list view; toggle bundle authoring mode in detail view |
-| `Enter` | Open detail view / open file in editor / jump to cross-reference |
-| `Esc` | Back to list view / clear filter |
+| `Tab` / `Shift+Tab` | Switch between Components and Values. |
+| `h` / `←` | Focus the Components pane (expands the left column). |
+| `l` / `→` | Focus the Values pane (collapses the left column). |
+| `j` / `↓` | Move down 1 row in the focused pane. |
+| `k` / `↑` | Move up 1 row in the focused pane. |
+| `J` / `K` | Move 5 rows down or up in the focused pane. |
+| `[` / `]` | Jump to the previous or next component. |
+| `g` / `G` | Move to the first or last item in the focused pane. |
+| `PgDn` / `PgUp` | Move by the available viewport height. |
+| `Enter` | Select a component, open Details, open a location, or follow a cross-reference. |
+| `Esc` | Return to Values, close an overlay, or clear the active value filter. |
 
-### Search & Filter
-
-| Key | Action |
-|:---|:---|
-| `/` | Enter filter mode — type to search value paths |
-| `Enter` | Confirm filter and return to normal navigation |
-| `Esc` | Cancel filter and clear search |
-
-The filter provides autocomplete suggestions as you type, matching against all known value paths.
-
-### Component Selection
+### Search and commands
 
 | Key | Action |
 |:---|:---|
-| `:` | Enter component selection mode |
-| `↑` / `↓` | Cycle through matching components |
-| `Enter` | Confirm component selection |
-| `Esc` | Cancel and return to previous component |
+| `/` | Filter values by path. |
+| `f` | Filter and select a component. |
+| `:` | Open the searchable command palette. |
+| `?` | Open context-sensitive keyboard help. |
 
-Typing in component selection mode filters the available components. Leave the input empty and press `Enter` to show "All Components".
+Input modes preserve arrow keys for suggestions and selection. `Enter` applies the input; `Esc` cancels it.
 
-### Toggles
+### Actions and toggles
 
 | Key | Action |
 |:---|:---|
-| `c` | Toggle consolidation mode (group multiple locations per value vs. expand each) |
-| `Z` | Toggle the Zarf Package Variables summary panel at the top of the list |
-| `U` | Toggle the UDS Bundle Overrides summary panel (override values and variables across all packages) |
-| `y` | Open the first location of the selected value in your editor |
-| `q` / `Ctrl+C` | Quit |
+| `Space` | Apply the contextual action: select a component, toggle consolidated values, or toggle Details bundle authoring. |
+| `c` | Toggle consolidated value locations. |
+| `Z` | Toggle the Zarf package variable summary. |
+| `U` | Toggle the UDS bundle override summary. |
+| `b` | Toggle bundle authoring snippets in Details. |
+| `o` | Open the first source location for the selected value in `$EDITOR`. |
+| `y` | Copy the selected Helm value path using terminal OSC 52. |
+| `q` / `Ctrl+C` | Quit. |
+
+OSC 52 copying works through compatible local terminals and SSH sessions without requiring a desktop clipboard service. Terminal policy may require enabling OSC 52 support.
 
 ## UDS Bundle Override Display
 
