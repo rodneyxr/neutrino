@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -509,11 +510,86 @@ func TestComponentAutoScrollsWhenTooLong(t *testing.T) {
 		t.Fatalf("expected component view to render scroll indicator ‹, got:\n%s", scrolled)
 	}
 }
+func TestBundleAuthoringRemainsReachableBelowDetailsFold(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 72
+	model.windowHeight = 12
+	for line := 1; line <= 12; line++ {
+		model.filteredValues[0].Locations = append(model.filteredValues[0].Locations, introspect.ValueUsageLocation{
+			File:   fmt.Sprintf("/tmp/chart/templates/%02d.yaml", line),
+			Line:   line,
+			Column: 1,
+			Kind:   "field",
+		})
+	}
+
+	updated, _ := model.Update(key("enter"))
+	model = updated.(Model)
+	updated, _ = model.Update(key("b"))
+	model = updated.(Model)
+	if strings.Contains(model.View(), "UDS AUTHORING") {
+		t.Fatal("expected authoring section below the initial Details viewport")
+	}
+
+	for range 16 {
+		updated, _ = model.Update(key("j"))
+		model = updated.(Model)
+	}
+	if !strings.Contains(model.View(), "UDS AUTHORING") {
+		t.Fatalf("expected j to scroll to UDS authoring section, got:\n%s", model.View())
+	}
+
+}
+
+func TestDetailsRendersVeryLongScalarValue(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 100
+	model.windowHeight = 28
+	model.filteredValues[0].DefaultValue = strings.Repeat("x", 100_000)
+	model.focusPane = FocusInspector
+	model.buildDetailItems()
+
+	view := model.View()
+	if got := lipgloss.Width(view); got != model.windowWidth {
+		t.Fatalf("Details width %d, want %d", got, model.windowWidth)
+	}
+	if got := lipgloss.Height(view); got != model.windowHeight {
+		t.Fatalf("Details height %d, want %d", got, model.windowHeight)
+	}
+}
+
+func TestDetailsCanScrollBackAfterJumpingToEnd(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 72
+	model.windowHeight = 12
+	for line := 1; line <= 12; line++ {
+		model.filteredValues[0].Locations = append(model.filteredValues[0].Locations, introspect.ValueUsageLocation{
+			File:   fmt.Sprintf("/tmp/chart/templates/%02d.yaml", line),
+			Line:   line,
+			Column: 1,
+			Kind:   "field",
+		})
+	}
+
+	updated, _ := model.Update(key("enter"))
+	model = updated.(Model)
+	updated, _ = model.Update(key("b"))
+	model = updated.(Model)
+	updated, _ = model.Update(key("G"))
+	model = updated.(Model)
+	atEnd := model.View()
+	updated, _ = model.Update(key("k"))
+	model = updated.(Model)
+	if afterUp := model.View(); afterUp == atEnd {
+		t.Fatalf("expected k to scroll Details away from the end, still rendered:\n%s", afterUp)
+	}
+}
 
 func testWorkspaceModel() Model {
 	const component = "core-base/istio-controlplane/istiod"
 	return NewModel(introspect.InspectionReport{
 		Components: map[string]*introspect.IntrospectResult{
+
 			component: {
 				ChartName:    "istiod",
 				ChartVersion: "1.27.1",

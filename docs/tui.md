@@ -58,7 +58,7 @@ Selecting a value and pressing `Enter` opens a full-width Details view. It shows
 - Cross-references between Helm values and UDS overrides.
 - A UDS authoring snippet when bundle authoring mode is enabled with `b` or `Space`.
 
-Press `Enter` on a location to open it in `$EDITOR`. Press `Enter` on a cross-reference to jump to the related value. Press `Esc` to return to the workspace.
+Use `j` / `↓` and `k` / `↑` to scroll Details content, including a UDS authoring snippet below the template locations. `g` returns to the beginning; `G` moves to the end, and `j` / `k` continue from that position. Press `Enter` on a location to open it in `$EDITOR`. Press `Enter` on a cross-reference to jump to the related value. Press `Esc` to return to the workspace.
 
 ### Command palette
 

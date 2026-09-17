@@ -68,25 +68,26 @@ type Model struct {
 	udsOverrideVariables []introspect.UDSOverrideVariableWithContext
 
 	// State
-	inputMode        InputMode
-	focusPane        FocusPane
-	cursor           int
-	componentCursor  int
-	detailCursor     int
-	detailBundleMode bool
-	detailItems      []DetailItem
-	viewportOffset   int
-	pathScroll       int
-	pathScrollPause  int
-	compScroll       int
-	compScrollPause  int
-	windowHeight     int
-	windowWidth      int
-	consolidateMode  bool
-	showZarfSummary  bool
-	showUDSSummary   bool
-	showHelp         bool
-	statusMessage    string
+	inputMode          InputMode
+	focusPane          FocusPane
+	cursor             int
+	componentCursor    int
+	detailCursor       int
+	detailScrollOffset int
+	detailBundleMode   bool
+	detailItems        []DetailItem
+	viewportOffset     int
+	pathScroll         int
+	pathScrollPause    int
+	compScroll         int
+	compScrollPause    int
+	windowHeight       int
+	windowWidth        int
+	consolidateMode    bool
+	showZarfSummary    bool
+	showUDSSummary     bool
+	showHelp           bool
+	statusMessage      string
 
 	// Inputs
 	filterInput   textinput.Model

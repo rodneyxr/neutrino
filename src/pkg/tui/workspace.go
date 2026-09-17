@@ -135,6 +135,7 @@ func (m *Model) moveWithinFocusedPane(delta int) {
 		m.buildDetailItems()
 	case FocusInspector:
 		m.detailCursor = clamp(m.detailCursor+delta, 0, len(m.detailItems)-1)
+		m.detailScrollOffset = clamp(m.detailScrollOffset+delta, 0, m.detailScrollLimit())
 	}
 }
 
@@ -166,6 +167,9 @@ func (m *Model) moveFocusedToBoundary(last bool) {
 	case FocusInspector:
 		if last {
 			target = len(m.detailItems) - 1
+			m.detailScrollOffset = m.detailScrollLimit()
+		} else {
+			m.detailScrollOffset = 0
 		}
 		m.detailCursor = clamp(target, 0, len(m.detailItems)-1)
 	}
@@ -240,6 +244,7 @@ func (m *Model) activateFocused() tea.Cmd {
 			return nil
 		}
 		m.detailCursor = 0
+		m.detailScrollOffset = 0
 		m.buildDetailItems()
 		m.focusPane = FocusInspector
 	case FocusInspector:
@@ -337,6 +342,7 @@ func (m *Model) executeCommand(command commandDefinition) tea.Cmd {
 		m.toggleUDSSummary()
 	case commandBundleMode:
 		m.detailBundleMode = !m.detailBundleMode
+		m.detailScrollOffset = 0
 		m.statusMessage = toggleStatus("Bundle authoring", m.detailBundleMode)
 	case commandOpenSource:
 		return m.openSelectedSource()
@@ -929,9 +935,31 @@ func kindStyleFor(value DisplayItem) lipgloss.Style {
 func (m Model) inspectorPane(width, height int) string {
 	focused := m.focusPane == FocusInspector
 	innerWidth := max(1, width-4)
+	if _, ok := m.selectedValue(); !ok {
+		return paneFrame(width, height, focused).Render(paneHeadingStyle.Render(paneTitle("DETAILS", focused)) + "\n" + helpStyle.Render("Select a value to inspect it."))
+	}
+	return paneFrame(width, height, focused).Render(clipLinesAt(m.inspectorContent(innerWidth, focused), max(1, height-2), m.detailScrollOffset))
+}
+
+func (m Model) detailScrollLimit() int {
+	width := m.windowWidth
+	height := m.windowHeight
+	if width < 1 {
+		width = 100
+	}
+	if height < 1 {
+		height = 30
+	}
+	bodyHeight := height - lipgloss.Height(m.workspaceHeader(width)) - lipgloss.Height(m.workspaceFooter(width))
+	bodyHeight = max(4, bodyHeight)
+	content := m.inspectorContent(max(1, width-4), true)
+	return max(0, len(strings.Split(content, "\n"))-max(1, bodyHeight-2))
+}
+
+func (m Model) inspectorContent(innerWidth int, focused bool) string {
 	value, ok := m.selectedValue()
 	if !ok {
-		return paneFrame(width, height, focused).Render(paneHeadingStyle.Render(paneTitle("DETAILS", focused)) + "\n" + helpStyle.Render("Select a value to inspect it."))
+		return ""
 	}
 
 	var content strings.Builder
@@ -983,7 +1011,7 @@ func (m Model) inspectorPane(width, height int) string {
 			content.WriteString(snippetStyle.Render(wrapCell(snippet, innerWidth)))
 		}
 	}
-	return paneFrame(width, height, focused).Render(clipLines(content.String(), max(1, height-2)))
+	return content.String()
 }
 
 func (m Model) commandPaletteView(width, height int) string {
@@ -1084,34 +1112,54 @@ func wrapCell(value string, width int) string {
 	if width < 1 {
 		return ""
 	}
-	var wrapped []string
-	for _, line := range strings.Split(value, "\n") {
-		for lipgloss.Width(line) > width {
-			cut := line
-			for lipgloss.Width(cut) > width {
-				_, size := utf8.DecodeLastRuneInString(cut)
-				cut = cut[:len(cut)-size]
-			}
-			if cut == "" {
-				break
-			}
-			wrapped = append(wrapped, cut)
-			line = strings.TrimPrefix(line, cut)
-		}
-		wrapped = append(wrapped, line)
-	}
-	return strings.Join(wrapped, "\n")
-}
 
-func clipLines(value string, height int) string {
+	var wrapped strings.Builder
+	wrapped.Grow(len(value) + len(value)/width)
+	first := true
+	writeLine := func(line string) {
+		if !first {
+			wrapped.WriteByte('\n')
+		}
+		wrapped.WriteString(line)
+		first = false
+	}
+
+	for _, line := range strings.Split(value, "\n") {
+		if line == "" {
+			writeLine("")
+			continue
+		}
+		for len(line) > 0 {
+			end, lineWidth := 0, 0
+			for end < len(line) {
+				r, size := utf8.DecodeRuneInString(line[end:])
+				runeWidth := 1
+				if r >= utf8.RuneSelf {
+					runeWidth = lipgloss.Width(string(r))
+				}
+				if end > 0 && lineWidth+runeWidth > width {
+					break
+				}
+				end += size
+				lineWidth += runeWidth
+				if lineWidth >= width {
+					break
+				}
+			}
+			writeLine(line[:end])
+			line = line[end:]
+		}
+	}
+	return wrapped.String()
+}
+func clipLinesAt(value string, height, offset int) string {
 	lines := strings.Split(value, "\n")
-	if len(lines) <= height {
-		return value
+	if height <= 0 || len(lines) == 0 {
+		return ""
 	}
-	if height <= 1 {
-		return "…"
-	}
-	return strings.Join(lines[:height-1], "\n") + "\n" + helpStyle.Render("… more")
+	offset = clamp(offset, 0, max(0, len(lines)-height))
+	end := min(len(lines), offset+height)
+	return strings.Join(lines[offset:end], "\n")
 }
 
 func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1326,6 +1374,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		if m.focusPane == FocusInspector {
 			m.focusPane = FocusValues
+			m.detailScrollOffset = 0
 		} else if m.filterInput.Value() != "" {
 			m.filterInput.SetValue("")
 			m.updateFilteredValues()
@@ -1343,6 +1392,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		case FocusInspector:
 			m.detailBundleMode = !m.detailBundleMode
+			m.detailScrollOffset = 0
 			m.statusMessage = toggleStatus("Bundle authoring", m.detailBundleMode)
 		}
 	case "c":
@@ -1353,6 +1403,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleUDSSummary()
 	case "b":
 		m.detailBundleMode = !m.detailBundleMode
+		m.detailScrollOffset = 0
 		m.statusMessage = toggleStatus("Bundle authoring", m.detailBundleMode)
 	case "o":
 		cmd := m.openSelectedSource()
