@@ -643,6 +643,42 @@ func TestDetailsCanScrollBackAfterJumpingToEnd(t *testing.T) {
 	}
 }
 
+func TestValuesAlwaysConsolidateLocations(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 132
+	model.windowHeight = 32
+	component := model.chartNames[1]
+	value := &model.components[component].Values[0]
+	value.Locations = append(value.Locations, introspect.ValueUsageLocation{
+		File: "/tmp/istiod/templates/service.yaml", Line: 20, Column: 3, Kind: "field",
+	})
+	model.updateFilteredValues()
+
+	for _, shortcut := range []string{"c", " "} {
+		updated, _ := model.Update(key(shortcut))
+		model = updated.(Model)
+		if len(model.filteredValues) != 2 || len(model.filteredValues[0].Locations) != 2 {
+			t.Fatalf("%q changed consolidated values: %+v", shortcut, model.filteredValues)
+		}
+		if !strings.Contains(model.View(), "2 locations") {
+			t.Fatalf("%q removed the consolidated source count", shortcut)
+		}
+	}
+	if got := commandMatchCount("consolidated locations"); got != 0 {
+		t.Fatalf("consolidation command remains available: %d matches", got)
+	}
+	updated, _ := model.Update(key("enter"))
+	model = updated.(Model)
+	if len(model.detailItems) != 2 {
+		t.Fatalf("Details should list both source locations, got %+v", model.detailItems)
+	}
+	for _, location := range []string{"deployment.yaml:148:12", "service.yaml:20:3"} {
+		if !strings.Contains(model.View(), location) {
+			t.Fatalf("Details did not render %s", location)
+		}
+	}
+}
+
 func testWorkspaceModel() Model {
 	const component = "core-base/istio-controlplane/istiod"
 	return NewModel(introspect.InspectionReport{

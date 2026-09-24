@@ -83,7 +83,6 @@ type Model struct {
 	compScrollPause    int
 	windowHeight       int
 	windowWidth        int
-	consolidateMode    bool
 	showZarfSummary    bool
 	showUDSSummary     bool
 	showHelp           bool
@@ -137,7 +136,6 @@ func NewModel(report introspect.InspectionReport) Model {
 		currentChart:         currentChart,
 		inputMode:            InputModeNormal,
 		focusPane:            FocusValues,
-		consolidateMode:      true,
 		filterInput:          fi,
 		chartInput:           ci,
 		commandInput:         commands,
@@ -249,20 +247,7 @@ func (m *Model) updateFilteredValues() {
 					Component:  name,
 				}
 
-				if m.consolidateMode {
-					newValues = append(newValues, item)
-				} else {
-					// Flatten locations
-					if len(v.Locations) == 0 {
-						newValues = append(newValues, item)
-					} else {
-						for _, loc := range v.Locations {
-							val := item
-							val.Locations = []introspect.ValueUsageLocation{loc}
-							newValues = append(newValues, val)
-						}
-					}
-				}
+				newValues = append(newValues, item)
 			}
 		}
 
@@ -284,19 +269,7 @@ func (m *Model) updateFilteredValues() {
 					Component:  name,
 					IsZarfVar:  true,
 				}
-				if m.consolidateMode {
-					newValues = append(newValues, item)
-				} else {
-					if len(v.Locations) == 0 {
-						newValues = append(newValues, item)
-					} else {
-						for _, loc := range v.Locations {
-							val := item
-							val.Locations = []introspect.ValueUsageLocation{loc}
-							newValues = append(newValues, val)
-						}
-					}
-				}
+				newValues = append(newValues, item)
 			}
 		}
 
@@ -408,17 +381,6 @@ func (m *Model) updateFilteredValues() {
 			return newValues[i].IsUDSOverrideVar
 		}
 
-		if newValues[i].Path == newValues[j].Path {
-			// If paths are equal (unconsolidated), sort by file/line
-			if len(newValues[i].Locations) > 0 && len(newValues[j].Locations) > 0 {
-				locI := newValues[i].Locations[0]
-				locJ := newValues[j].Locations[0]
-				if locI.File != locJ.File {
-					return locI.File < locJ.File
-				}
-				return locI.Line < locJ.Line
-			}
-		}
 		return newValues[i].Path < newValues[j].Path
 	})
 
@@ -431,8 +393,7 @@ func (m *Model) updateFilteredValues() {
 		if input != "" {
 			for _, v := range newValues {
 				if strings.HasPrefix(strings.ToLower(v.Path), strings.ToLower(input)) {
-					// Add to suggestions if not already there (consolidated might have duplicates if we didn't unique them, but newValues should be unique paths in consolidated mode)
-					// To be safe and keep it snappy, just take the first few distinct ones.
+					// Distinct items may share a path; suggest each path only once.
 					alreadyAdded := false
 					for _, s := range suggestions {
 						if s == v.Path {

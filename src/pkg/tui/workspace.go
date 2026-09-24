@@ -40,7 +40,6 @@ const (
 	commandComponents
 	commandNextComponent
 	commandPrevComponent
-	commandConsolidate
 	commandZarfSummary
 	commandUDSSummary
 	commandBundleMode
@@ -62,7 +61,6 @@ var commands = [...]commandDefinition{
 	{commandComponents, "Select component", "f", "Filter or switch the component scope"},
 	{commandNextComponent, "Next component", "n / ]", "Jump to the next component"},
 	{commandPrevComponent, "Previous component", "N / [", "Jump to the previous component"},
-	{commandConsolidate, "Toggle consolidated locations", "space", "Group or expand repeated template locations"},
 	{commandZarfSummary, "Toggle package variables", "Z", "Show the package variable summary"},
 	{commandUDSSummary, "Toggle bundle overrides", "U", "Show the cross-package override summary"},
 	{commandBundleMode, "Toggle bundle authoring", "b", "Show UDS authoring snippets in Details"},
@@ -330,8 +328,6 @@ func (m *Model) executeCommand(command commandDefinition) tea.Cmd {
 		m.beginFilter()
 	case commandComponents:
 		m.beginComponentFilter()
-	case commandConsolidate:
-		m.toggleConsolidation()
 	case commandNextComponent:
 		m.jumpComponent(1)
 	case commandPrevComponent:
@@ -354,14 +350,6 @@ func (m *Model) executeCommand(command commandDefinition) tea.Cmd {
 		return tea.Quit
 	}
 	return nil
-}
-
-func (m *Model) toggleConsolidation() {
-	m.consolidateMode = !m.consolidateMode
-	m.updateFilteredValues()
-	m.ensureCursorVisible()
-	m.buildDetailItems()
-	m.statusMessage = toggleStatus("Consolidated locations", m.consolidateMode)
 }
 
 func (m *Model) toggleZarfSummary() {
@@ -1092,7 +1080,7 @@ func (m Model) helpView(width, height int) string {
 		"/                 filter values\n" +
 		"f                 select component\n" +
 		":                 command palette\n" +
-		"Space             contextual toggle\n" +
+		"Space             select component / Details authoring\n" +
 		"o                 open source in $EDITOR\n" +
 		"y                 copy value path\n" +
 		"Z / U             summary toggles\n" +
@@ -1420,8 +1408,6 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case " ", "space":
 		switch m.focusPane {
-		case FocusValues:
-			m.toggleConsolidation()
 		case FocusComponents:
 			cmd := m.activateFocused()
 			return m, cmd
@@ -1430,8 +1416,6 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detailScrollOffset = 0
 			m.statusMessage = toggleStatus("Bundle authoring", m.detailBundleMode)
 		}
-	case "c":
-		m.toggleConsolidation()
 	case "Z":
 		m.toggleZarfSummary()
 	case "U":
