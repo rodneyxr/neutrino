@@ -111,21 +111,21 @@ func TestWorkspaceResponsiveLayoutsFitTerminal(t *testing.T) {
 			name:        "wide",
 			width:       132,
 			height:      32,
-			want:        []string{"COMPONENTS", "[FOCUSED] VALUES", "2 panes"},
+			want:        []string{"COMPONENTS", "VALUES", "2 panes"},
 			doesNotWant: []string{"DETAILS"},
 		},
 		{
 			name:        "medium",
 			width:       100,
 			height:      28,
-			want:        []string{"COMPONENTS", "[FOCUSED] VALUES", "2 panes"},
+			want:        []string{"COMPONENTS", "VALUES", "2 panes"},
 			doesNotWant: []string{"DETAILS"},
 		},
 		{
 			name:        "compact",
 			width:       72,
 			height:      24,
-			want:        []string{"[FOCUSED] VALUES", "single pane"},
+			want:        []string{"VALUES", "single pane"},
 			doesNotWant: []string{"COMPONENTS", "DETAILS"},
 		},
 	} {
@@ -199,7 +199,7 @@ func TestKeyboardFlowOpensAndClosesFullWidthDetails(t *testing.T) {
 	updated, _ := model.Update(key("enter"))
 	details := updated.(Model)
 	view := details.View()
-	if !strings.Contains(view, "[FOCUSED] DETAILS") {
+	if !strings.Contains(view, "DETAILS") {
 		t.Fatalf("enter did not open full-width details:\n%s", view)
 	}
 	if strings.Contains(view, "COMPONENTS") {
@@ -208,7 +208,7 @@ func TestKeyboardFlowOpensAndClosesFullWidthDetails(t *testing.T) {
 
 	updated, _ = details.Update(key("esc"))
 	workspace := updated.(Model).View()
-	if !strings.Contains(workspace, "[FOCUSED] VALUES") || !strings.Contains(workspace, "COMPONENTS") {
+	if !strings.Contains(workspace, "VALUES") || !strings.Contains(workspace, "COMPONENTS") {
 		t.Fatalf("escape did not restore the two-pane workspace:\n%s", workspace)
 	}
 }
@@ -326,19 +326,11 @@ func TestLeftAndRightArrowsNavigatePanes(t *testing.T) {
 	if m.focusPane != FocusComponents {
 		t.Fatalf("left arrow did not focus Components pane, focus is %v", m.focusPane)
 	}
-	view := m.View()
-	if !strings.Contains(view, "[FOCUSED] COMPONENTS") {
-		t.Fatalf("expected focused components view:\n%s", view)
-	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
 	m = updated.(Model)
 	if m.focusPane != FocusValues {
 		t.Fatalf("right arrow did not focus Values pane, focus is %v", m.focusPane)
-	}
-	view = m.View()
-	if !strings.Contains(view, "[FOCUSED] VALUES") {
-		t.Fatalf("expected focused values view:\n%s", view)
 	}
 }
 

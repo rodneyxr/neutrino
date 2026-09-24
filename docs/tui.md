@@ -23,7 +23,7 @@ The interactive inspector uses a keyboard-first two-pane workspace and a full-wi
 | **Values** | Search and navigate discovered paths, values, types, and source locations. This pane has focus when the TUI opens. |
 | **Details** | Open the selected value full-width to inspect defaults, effective overrides, template locations, cross-references, and optional UDS authoring snippets. |
 
-The focused pane uses a double border and a `[FOCUSED]` label. Selection markers and labels preserve meaning in terminals that cannot display color.
+The focused pane uses a double border. Selection markers and pane titles preserve meaning in terminals that cannot display color.
 
 ### Responsive layout
 

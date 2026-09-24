@@ -537,13 +537,6 @@ func focusName(pane FocusPane) string {
 	}
 }
 
-func paneTitle(title string, focused bool) string {
-	if focused {
-		return "[FOCUSED] " + title
-	}
-	return title
-}
-
 func paneFrame(width, height int, focused bool) lipgloss.Style {
 	style := paneStyle
 	if focused {
@@ -559,7 +552,7 @@ func (m Model) componentPane(width, height int) string {
 		start = m.componentCursor - contentHeight + 1
 	}
 	var content strings.Builder
-	content.WriteString(paneHeadingStyle.Render(paneTitle("COMPONENTS", m.focusPane == FocusComponents)))
+	content.WriteString(paneHeadingStyle.Render("COMPONENTS"))
 	content.WriteByte('\n')
 	for index := start; index < len(m.chartNames) && index < start+contentHeight; index++ {
 		name := m.chartNames[index]
@@ -766,7 +759,7 @@ func (m Model) valuesPane(width, height int) string {
 	innerWidth := max(1, width-4)
 	contentHeight := max(1, height-4)
 	var content strings.Builder
-	content.WriteString(paneHeadingStyle.Render(paneTitle("VALUES", focused)))
+	content.WriteString(paneHeadingStyle.Render("VALUES"))
 	if filter := m.filterInput.Value(); filter != "" {
 		content.WriteString(filterStyle.Render("  /" + truncateCell(filter, max(1, innerWidth-12))))
 	}
@@ -959,7 +952,7 @@ func (m Model) inspectorPane(width, height int) string {
 	focused := m.focusPane == FocusInspector
 	innerWidth := max(1, width-4)
 	if _, ok := m.selectedValue(); !ok {
-		return paneFrame(width, height, focused).Render(paneHeadingStyle.Render(paneTitle("DETAILS", focused)) + "\n" + helpStyle.Render("Select a value to inspect it."))
+		return paneFrame(width, height, focused).Render(paneHeadingStyle.Render("DETAILS") + "\n" + helpStyle.Render("Select a value to inspect it."))
 	}
 	return paneFrame(width, height, focused).Render(clipLinesAt(m.inspectorContent(innerWidth, focused), max(1, height-2), m.detailScrollOffset))
 }
@@ -986,7 +979,7 @@ func (m Model) inspectorContent(innerWidth int, focused bool) string {
 	}
 
 	var content strings.Builder
-	content.WriteString(paneHeadingStyle.Render(paneTitle("DETAILS", focused)))
+	content.WriteString(paneHeadingStyle.Render("DETAILS"))
 	content.WriteString("  " + kindStyle.Render(strings.ToUpper(displayKind(value))))
 	content.WriteByte('\n')
 	content.WriteString(headerStyle.Render(wrapCell(value.Path, innerWidth)))
