@@ -848,6 +848,14 @@ func (m Model) valueComponentLabel(value DisplayItem, width int) string {
 	if value.IsPkgVar {
 		return "Zarf package"
 	}
+	if value.IsPackageValue || value.IsPackageMapping {
+		if value.Component == "UDS Next bundle" {
+			return "UDS Next bundle · " + value.PackageName
+		}
+		if value.PackageName != "" {
+			return "Zarf Package Values · " + value.PackageName
+		}
+	}
 	if value.IsSummaryItem {
 		return "UDS bundle summary"
 	}
@@ -868,6 +876,15 @@ func componentBand(label string, width int) string {
 
 func valueSection(value DisplayItem) string {
 	switch {
+	case value.IsBundleVariable:
+		return "UDS Next variables · configured input"
+	case value.IsPackageMapping:
+		return "Zarf Package Values · mappings"
+	case value.IsPackageValue:
+		if value.Component == "UDS Next bundle" {
+			return "UDS Next values files · operator input"
+		}
+		return "Zarf Package Values · configured input"
 	case value.IsPkgVar || value.IsZarfVar:
 		return "Zarf variables"
 	case value.IsUDSOverrideVar:
@@ -908,6 +925,21 @@ func (m Model) valueLineCount(start, end int) int {
 }
 
 func displayValue(value DisplayItem) string {
+	if value.IsPackageMapping {
+		if value.Runtime {
+			return "runtime"
+		}
+		return "mapping"
+	}
+	if value.IsPackageValue && value.Component == "UDS Next bundle" {
+		if len(value.ValueFiles) == 0 {
+			return "package"
+		}
+		return fmt.Sprintf("%d values files", len(value.ValueFiles))
+	}
+	if value.IsPackageValue && !value.ValuePresent {
+		return "files / schema"
+	}
 	if value.IsUDSOverrideValue {
 		return formatDefaultValue(value.OverrideValue)
 	}
@@ -916,6 +948,12 @@ func displayValue(value DisplayItem) string {
 
 func displayKind(value DisplayItem) string {
 	switch {
+	case value.IsBundleVariable:
+		return "variable"
+	case value.IsPackageMapping:
+		return "mapping"
+	case value.IsPackageValue:
+		return "package"
 	case value.IsPkgVar || value.IsZarfVar:
 		return "variable"
 	case value.IsUDSOverrideValue || value.IsUDSOverrideVar:
@@ -1039,6 +1077,15 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 	identity("Value path", value.Path)
 	valueType := "Helm chart value"
 	switch {
+	case value.IsBundleVariable:
+		valueType = "UDS Next bundle variable · configured input"
+	case value.IsPackageMapping:
+		valueType = "Zarf Package Value mapping"
+	case value.IsPackageValue:
+		valueType = "Zarf Package Value"
+		if value.Component == "UDS Next bundle" {
+			valueType = "UDS Next values files · operator input"
+		}
 	case value.IsPkgVar:
 		valueType = "Zarf package variable"
 	case value.IsZarfVar:
@@ -1053,13 +1100,61 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 		identity("Controls", value.UDSVarPath)
 	}
 
+	if value.PackageName != "" {
+		identity("Package", value.PackageName)
+	}
+	if value.IsPackageValue || value.IsPackageMapping || value.IsBundleVariable {
+		if m.bundle != nil {
+			identity("Bundle", strings.TrimSpace(m.bundle.Name+" "+m.bundle.Version)+" ("+m.bundle.Format+")")
+			for _, pkg := range m.bundle.Packages {
+				if pkg.ID != value.PackageName {
+					continue
+				}
+				identity("Source", pkg.Source)
+				identity("Namespace", pkg.Namespace)
+				identity("Depends on", strings.Join(pkg.DependsOn, ", "))
+				identity("Components", strings.Join(pkg.OptionalComponents, ", "))
+				break
+			}
+		}
+		if value.IsPackageMapping {
+			identity("Mapping component", value.MappingComponent)
+			identity("Mapping chart", value.MappingChart)
+		}
+		if value.IsPackageMapping {
+			identity("Source path", value.ValueSource)
+			identity("Target path", value.ValueTarget)
+			identity("Excludes", strings.Join(value.ExcludedPaths, ", "))
+			if value.Runtime {
+				identity("Resolution", "runtime · no effective value inferred")
+			} else {
+				identity("Resolution", "mapping declaration · not an effective chart value")
+			}
+		}
+		if len(value.ValueFiles) > 0 {
+			section("VALUES FILES · DECLARED ORDER")
+			for _, file := range value.ValueFiles {
+				add(codeStyle.Render(wrapCell(file, innerWidth)))
+			}
+		}
+		if value.ValueSchema != nil {
+			section("PACKAGE VALUES SCHEMA")
+			add(codeStyle.Render(wrapCell(formatYAMLValue(value.ValueSchema), innerWidth)))
+		}
+	}
 	if value.IsUDSOverrideValue {
 		section("CHART DEFAULT")
 		add(codeStyle.Render(wrapCell(formatYAMLValue(value.OriginalDefault), innerWidth)))
 		section("EFFECTIVE VALUE")
 		add(snippetStyle.Render(wrapCell(formatYAMLValue(value.OverrideValue), innerWidth)))
+	} else if value.IsPackageMapping || value.IsPackageValue && !value.ValuePresent {
+		// A mapping or an operator-provided values file is not a resolved value.
 	} else {
-		section("DEFAULT VALUE")
+		if value.IsPackageValue || value.IsBundleVariable {
+			section("CONFIGURED VALUE · NOT DEPLOYMENT EFFECTIVE")
+		} else {
+			section("DEFAULT VALUE")
+		}
 		add(codeStyle.Render(wrapCell(formatYAMLValue(value.DefaultValue), innerWidth)))
 	}
 	description := value.PkgVarDesc

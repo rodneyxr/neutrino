@@ -79,6 +79,43 @@ type ZarfVariableUsage struct {
 	Locations []ValueUsageLocation `json:"locations"`
 }
 
+// PackageValueUsage records an ordered Zarf value mapping or a runtime template reference.
+type PackageValueUsage struct {
+	Path          string               `json:"path" yaml:"path"`
+	ComponentName string               `json:"componentName,omitempty" yaml:"componentName,omitempty"`
+	ChartName     string               `json:"chartName,omitempty" yaml:"chartName,omitempty"`
+	TargetPath    string               `json:"targetPath,omitempty" yaml:"targetPath,omitempty"`
+	ExcludePaths  []string             `json:"excludePaths,omitempty" yaml:"excludePaths,omitempty"`
+	Locations     []ValueUsageLocation `json:"locations,omitempty" yaml:"locations,omitempty"`
+	Runtime       bool                 `json:"runtime,omitempty" yaml:"runtime,omitempty"`
+}
+
+// PackageValues separates packaged defaults, operator inputs, schema and runtime uses.
+type PackageValues struct {
+	PackageName string                 `json:"packageName,omitempty" yaml:"packageName,omitempty"`
+	Values      map[string]interface{} `json:"values,omitempty" yaml:"values,omitempty"`
+	Schema      map[string]interface{} `json:"schema,omitempty" yaml:"schema,omitempty"`
+	Files       []string               `json:"files,omitempty" yaml:"files,omitempty"`
+	Usages      []PackageValueUsage    `json:"usages,omitempty" yaml:"usages,omitempty"`
+}
+
+type BundleMetadata struct {
+	Format    string                  `json:"format" yaml:"format"`
+	Name      string                  `json:"name" yaml:"name"`
+	Version   string                  `json:"version" yaml:"version"`
+	Variables map[string]interface{}  `json:"variables,omitempty" yaml:"variables,omitempty"`
+	Packages  []BundlePackageMetadata `json:"packages,omitempty" yaml:"packages,omitempty"`
+}
+
+type BundlePackageMetadata struct {
+	ID                 string   `json:"id" yaml:"id"`
+	Source             string   `json:"source" yaml:"source"`
+	DependsOn          []string `json:"dependsOn,omitempty" yaml:"dependsOn,omitempty"`
+	ValuesFiles        []string `json:"valuesFiles,omitempty" yaml:"valuesFiles,omitempty"`
+	Namespace          string   `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+	OptionalComponents []string `json:"optionalComponents,omitempty" yaml:"optionalComponents,omitempty"`
+}
+
 // UDSOverrideValue represents a hard-coded value override from a uds-bundle.yaml.
 // These are set directly and are NOT overridable via uds-config.yaml.
 type UDSOverrideValue struct {
@@ -120,7 +157,8 @@ type IntrospectResult struct {
 	// RemoteSource is the URL to the chart source code (e.g. GitHub repo), if found.
 	RemoteSource string `json:"remoteSource,omitempty"`
 	// ZarfVars is the list of discovered Zarf variables.
-	ZarfVars []ZarfVariableUsage `json:"zarfVars,omitempty"`
+	ZarfVars             []ZarfVariableUsage `json:"zarfVars,omitempty"`
+	PackageValueMappings []PackageValueUsage `json:"packageValueMappings,omitempty" yaml:"packageValueMappings,omitempty"`
 	// UDSOverrideValues contains hard-coded value overrides from uds-bundle.yaml.
 	UDSOverrideValues []UDSOverrideValue `json:"udsOverrideValues,omitempty" yaml:"udsOverrideValues,omitempty"`
 	// UDSOverrideVariables contains variables exposed via uds-bundle.yaml overrides.
@@ -137,6 +175,10 @@ type IntrospectOptions struct {
 	NoCache bool
 	// NoValues disables the inference of nested paths from values.yaml.
 	NoValues bool
+	// ValuesFiles are ordered operator-supplied package value files, after packaged defaults.
+	ValuesFiles []string
+	// BundleConfig is a Next bundle deployment configuration path.
+	BundleConfig string
 }
 
 // UDSOverrideContext wraps an override value or variable with its package/component/chart context.
@@ -165,4 +207,6 @@ type InspectionReport struct {
 	ComponentOrder       []string                         `json:"-" yaml:"-"`
 	UDSOverrideValues    []UDSOverrideValueWithContext    `json:"udsOverrideValues,omitempty" yaml:"udsOverrideValues,omitempty"`
 	UDSOverrideVariables []UDSOverrideVariableWithContext `json:"udsOverrideVariables,omitempty" yaml:"udsOverrideVariables,omitempty"`
+	PackageValues        []PackageValues                  `json:"packageValues,omitempty" yaml:"packageValues,omitempty"`
+	Bundle               *BundleMetadata                  `json:"bundle,omitempty" yaml:"bundle,omitempty"`
 }

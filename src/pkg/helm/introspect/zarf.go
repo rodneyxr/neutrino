@@ -1,6 +1,7 @@
 package introspect
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -21,6 +22,8 @@ type ZarfPackageIntrospection struct {
 	Variables            []v1alpha1.InteractiveVariable
 	UDSOverrideValues    []UDSOverrideValueWithContext
 	UDSOverrideVariables []UDSOverrideVariableWithContext
+	PackageValues        []PackageValues
+	Bundle               *BundleMetadata
 }
 
 // InspectZarfPackage analyzes a Zarf package to find Helm values.
@@ -28,6 +31,10 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 	if IsRemote(path) {
 		return inspectRemoteZarfPackage(ctx, path, arch, opts)
 	}
+	return inspectLocalZarfPackage(ctx, path, version, arch, opts, false)
+}
+
+func inspectLocalZarfPackage(ctx context.Context, path string, version string, arch string, opts IntrospectOptions, packageView bool) (*ZarfPackageIntrospection, error) {
 
 	var cacheDir string
 	var alreadyExtracted bool
@@ -97,6 +104,10 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 	var pkg v1alpha1.ZarfPackage
 	if err := yaml.Unmarshal(zarfBytes, &pkg); err != nil {
 		return nil, fmt.Errorf("failed to parse zarf.yaml: %w", err)
+	}
+	packageValues, err := inspectPackageValues(ctx, cacheDir, path, !packageView && isDirectory, pkg, opts.ValuesFiles)
+	if err != nil {
+		return nil, err
 	}
 
 	results := make(map[string]*IntrospectResult)
@@ -187,29 +198,42 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 				continue
 			}
 
-			// Gather Zarf managed values files
+			// Only static chart values files are YAML. Templated files are inspected
+			// as unresolved runtime inputs, never passed to Helm's YAML parser.
 			var valuesFiles []string
-			managedValuesCount := len(chart.ValuesFiles) + len(chart.TemplatedValuesFiles)
-			for i := range managedValuesCount {
-				var vf string
-				if i < len(chart.ValuesFiles) {
-					vf = chart.ValuesFiles[i]
-				} else {
-					vf = chart.TemplatedValuesFiles[i-len(chart.ValuesFiles)]
-				}
-				var found bool
+			for i, vf := range chart.ValuesFiles {
 				if valuesBaseDir != "" {
 					vfPath := filepath.Join(valuesBaseDir, fmt.Sprintf("%s-%s-%d", chart.Name, chart.Version, i))
 					if _, err := os.Stat(vfPath); err == nil {
 						valuesFiles = append(valuesFiles, vfPath)
-						found = true
+						continue
 					}
 				}
-				if !found && isDirectory {
+				if isDirectory {
 					vfPath := filepath.Join(path, vf)
 					if _, err := os.Stat(vfPath); err == nil {
 						valuesFiles = append(valuesFiles, vfPath)
 					}
+				}
+			}
+			for i, vf := range chart.TemplatedValuesFiles {
+				location := fmt.Sprintf("%s-%s-%d", chart.Name, chart.Version, len(chart.ValuesFiles)+i)
+				if valuesBaseDir != "" {
+					location = filepath.Join(valuesBaseDir, location)
+				}
+				if _, err := os.Stat(location); err != nil && isDirectory {
+					location = filepath.Join(path, vf)
+				}
+				contents, err := os.ReadFile(location)
+				if err != nil {
+					return nil, fmt.Errorf("required templated values file %q: %w", location, err)
+				}
+				if !bytes.Contains(contents, []byte("{{")) {
+					// Legacy marker substitution is static YAML and remains
+					// inspectable even when listed as a templated values file.
+					valuesFiles = append(valuesFiles, location)
+				} else {
+					packageValues.Usages = append(packageValues.Usages, inspectTemplateText(string(contents), location, component.Name, chart.Name)...)
 				}
 			}
 			src.ValuesFiles = valuesFiles
@@ -229,18 +253,32 @@ func InspectZarfPackage(ctx context.Context, path string, version string, arch s
 					}
 				}
 			}
+			for _, mapping := range chart.Values {
+				usage := PackageValueUsage{
+					Path: mapping.SourcePath, ComponentName: component.Name,
+					ChartName: chart.Name, TargetPath: mapping.TargetPath,
+					ExcludePaths: mapping.ExcludePaths,
+				}
+				packageValues.Usages = append(packageValues.Usages, usage)
+				res.PackageValueMappings = append(res.PackageValueMappings, usage)
+			}
 
 			key := fmt.Sprintf("%s/%s", component.Name, chart.Name)
 			results[key] = res
 			componentOrder = append(componentOrder, key)
 		}
+		packageValues.Usages = append(packageValues.Usages, inspectComponentRuntime(component, cacheDir, path, isDirectory)...)
 	}
 
-	return &ZarfPackageIntrospection{
+	report := &ZarfPackageIntrospection{
 		ComponentOrder: componentOrder,
 		ChartResults:   results,
 		Variables:      pkg.Variables,
-	}, nil
+	}
+	if len(packageValues.Files) > 0 || len(packageValues.Schema) > 0 || len(packageValues.Usages) > 0 || len(opts.ValuesFiles) > 0 {
+		report.PackageValues = []PackageValues{packageValues}
+	}
+	return report, nil
 }
 
 func inspectRemoteZarfPackage(ctx context.Context, source string, arch string, opts IntrospectOptions) (*ZarfPackageIntrospection, error) {
@@ -262,5 +300,5 @@ func inspectRemoteZarfPackage(ctx context.Context, source string, arch string, o
 	if err := view.materialize(viewDir); err != nil {
 		return nil, err
 	}
-	return InspectZarfPackage(ctx, viewDir, "", arch, opts)
+	return inspectLocalZarfPackage(ctx, viewDir, "", arch, opts, true)
 }

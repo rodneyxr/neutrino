@@ -276,10 +276,21 @@ func FindChartRoot(dir string) (string, error) {
 
 // IsZarfPackage checks if the source is a Zarf package.
 func IsZarfPackage(ctx context.Context, source string, arch string) (bool, error) {
+	if stat, err := os.Stat(source); err == nil && stat.IsDir() {
+		info, err := os.Stat(filepath.Join(source, "zarf.yaml"))
+		return err == nil && info.Mode().IsRegular(), nil
+	}
 	if strings.HasSuffix(source, ".tar.zst") {
-		return true, nil
+		if _, err := os.Stat(source); os.IsNotExist(err) {
+			return true, nil
+		}
+		next, err := isNextLocal(source)
+		return !next, err
 	}
 	if strings.HasPrefix(source, "oci://") {
+		if next, err := isNextRemote(ctx, source, arch); err == nil && next {
+			return false, nil
+		}
 		l := logger.From(ctx)
 		targetArch := config.GetArch(arch)
 		platform := oci.PlatformForArch(targetArch)
@@ -300,6 +311,9 @@ func IsZarfPackage(ctx context.Context, source string, arch string) (bool, error
 
 // IsUDSBundle checks if the source is a UDS bundle.
 func IsUDSBundle(ctx context.Context, source string, arch string) (bool, error) {
+	if next, err := isNextLocalOrRemote(ctx, source, arch); err == nil && next {
+		return true, nil
+	}
 	if strings.HasSuffix(source, ".tar.zst") {
 		return isUDSBundleLocal(ctx, source)
 	}

@@ -188,6 +188,26 @@ func inspectRemoteUDSBundle(ctx context.Context, source string, version string, 
 // InspectUDSBundle analyzes a UDS bundle to find Helm values across all its Zarf packages.
 func InspectUDSBundle(ctx context.Context, path string, version string, arch string, opts IntrospectOptions) (*ZarfPackageIntrospection, error) {
 	if IsRemote(path) {
+		isNext, err := isNextRemote(ctx, path, arch)
+		if err != nil {
+			return nil, err
+		}
+		if isNext {
+			return InspectNextUDSBundle(ctx, path, version, arch, opts)
+		}
+	} else {
+		isNext, err := isNextLocal(path)
+		if err != nil {
+			return nil, err
+		}
+		if isNext {
+			return InspectNextUDSBundle(ctx, path, version, arch, opts)
+		}
+	}
+	if opts.BundleConfig != "" {
+		return nil, fmt.Errorf("--config requires a Next UDS bundle")
+	}
+	if IsRemote(path) {
 		return inspectRemoteUDSBundle(ctx, path, version, arch, opts)
 	}
 	return inspectMaterializedUDSBundle(ctx, path, version, arch, opts, false)
@@ -261,6 +281,7 @@ func inspectMaterializedUDSBundle(ctx context.Context, path string, version stri
 	var allVariables []v1alpha1.InteractiveVariable
 	var allOverrideValues []UDSOverrideValueWithContext
 	var allOverrideVariables []UDSOverrideVariableWithContext
+	var allPackageValues []PackageValues
 
 	for _, pkg := range bundle.Packages {
 		pkgName := pkg.Name
@@ -402,7 +423,13 @@ func inspectMaterializedUDSBundle(ctx context.Context, path string, version stri
 			continue
 		}
 
-		pkgInspection, err := InspectZarfPackage(ctx, pkgSource, pkgVersion, arch, opts)
+		var pkgInspection *ZarfPackageIntrospection
+		var err error
+		if layoutPath != "" || strict {
+			pkgInspection, err = inspectLocalZarfPackage(ctx, pkgSource, pkgVersion, arch, opts, true)
+		} else {
+			pkgInspection, err = InspectZarfPackage(ctx, pkgSource, pkgVersion, arch, opts)
+		}
 		if err != nil {
 			if strict {
 				return nil, fmt.Errorf("failed to inspect UDS package %q from its Package View: %w", pkgName, err)
@@ -435,6 +462,10 @@ func inspectMaterializedUDSBundle(ctx context.Context, path string, version stri
 			// Prefix variable name to indicate origin? Or leave as is. Zarf vars are usually unique enough.
 			v.Name = fmt.Sprintf("%s.%s", pkgName, v.Name)
 			allVariables = append(allVariables, v)
+		}
+		for _, values := range pkgInspection.PackageValues {
+			values.PackageName = pkgName
+			allPackageValues = append(allPackageValues, values)
 		}
 
 		// Process UDS bundle overrides for this package
@@ -498,6 +529,7 @@ func inspectMaterializedUDSBundle(ctx context.Context, path string, version stri
 
 		ChartResults:         results,
 		Variables:            allVariables,
+		PackageValues:        allPackageValues,
 		UDSOverrideValues:    allOverrideValues,
 		UDSOverrideVariables: allOverrideVariables,
 	}, nil

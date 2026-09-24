@@ -43,11 +43,15 @@ then correlates those references with Zarf variables and package metadata.
   column) and _how_ (direct field access vs. variable assignment).
 - **Zarf Variable Mapping**: Surfaces Zarf package variables with their
   defaults, descriptions, and template locations.
+- **Zarf Package Values**: Inspects structured inputs, schemas, ordered values
+  files, Helm mappings and exclusions, separately from legacy variables.
+- **UDS Next Bundles**: Inspects HCL source, local artifacts, and OCI bundles,
+  including defaults/config variables and package values-file provenance.
 - **UDS Bundle Override Analysis**: Cross-references hard-coded bundle override
   values and user-configurable override variables with the underlying chart
   defaults, making it easy to understand exactly what a bundle operator has
   locked down and what an end-user can still configure via `uds-config.yaml`.
-- **Authoring Snippets**: For every Helm value in a UDS bundle context, the TUI
+- **Legacy Authoring Snippets**: For every Helm value in a legacy UDS bundle context, the TUI
   detail view shows a ready-to-copy `uds-bundle.yaml` snippet for creating an
   override variable. For every UDS override variable, it shows the corresponding
   `uds-config.yaml` snippet — including the full YAML path and the chart's

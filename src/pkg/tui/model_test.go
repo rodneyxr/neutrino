@@ -879,6 +879,89 @@ func TestValuesAlwaysConsolidateLocations(t *testing.T) {
 	}
 }
 
+func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.T) {
+	model := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{},
+		PackageValues: []introspect.PackageValues{{
+			PackageName: "api",
+			Values:      map[string]interface{}{"database": map[string]interface{}{"host": "db.internal"}},
+			Schema:      map[string]interface{}{"type": "object"},
+			Files:       []string{"defaults.yaml", "operator.yaml"},
+			Usages: []introspect.PackageValueUsage{{
+				Path: ".database.host", ComponentName: "server", ChartName: "app",
+				TargetPath: "database.hostname", ExcludePaths: []string{"secret"},
+				Runtime: true,
+			}},
+		}},
+	})
+	if len(model.filteredValues) != 2 {
+		t.Fatalf("package values should appear without charts: %+v", model.filteredValues)
+	}
+	model.filterInput.SetValue("database.hostname")
+	model.updateFilteredValues()
+	if len(model.filteredValues) != 1 || !model.filteredValues[0].IsPackageMapping {
+		t.Fatalf("mapping target should be searchable: %+v", model.filteredValues)
+	}
+	model.buildDetailItems()
+	body, _ := model.inspectorContent(100, true)
+	for _, want := range []string{".database.host", "database.hostname", "secret", "runtime · no effective value inferred", "server", "app"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in mapping details: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "EFFECTIVE VALUE") {
+		t.Fatalf("runtime mapping cannot show an effective value: %s", body)
+	}
+	model.filterInput.SetValue("defaults.yaml")
+	model.updateFilteredValues()
+	model.buildDetailItems()
+	body, _ = model.inspectorContent(100, true)
+	for _, want := range []string{"defaults.yaml", "operator.yaml", "PACKAGE VALUES SCHEMA", "db.internal"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in package values details: %s", want, body)
+		}
+	}
+}
+
+func TestNextBundleMetadataNeverSuggestsLegacyAuthoring(t *testing.T) {
+	const chart = "api/server/app"
+	model := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{chart: {
+			Values: []introspect.ValueUsage{{Path: "image.tag", DefaultValue: "1"}},
+		}},
+		ComponentOrder: []string{chart},
+		Bundle: &introspect.BundleMetadata{
+			Format: "next", Name: "platform", Version: "2",
+			Variables: map[string]interface{}{"replicas": 3},
+			Packages: []introspect.BundlePackageMetadata{{
+				ID: "api", Source: "oci://registry/api", ValuesFiles: []string{"values/api/0.yaml"},
+				DependsOn: []string{"base"}, Namespace: "team", OptionalComponents: []string{"server"},
+			}},
+		},
+	})
+	if len(model.filteredValues) != 3 {
+		t.Fatalf("Next defaults, package inputs, and chart should coexist: %+v", model.filteredValues)
+	}
+	for _, value := range model.filteredValues {
+		if value.IsPackageValue {
+			model.filterInput.SetValue("values/api/0.yaml")
+			model.updateFilteredValues()
+			model.buildDetailItems()
+			body, _ := model.inspectorContent(100, true)
+			for _, want := range []string{"platform 2", "oci://registry/api", "values/api/0.yaml", "base", "team", "server"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("missing %q in Next package details: %s", want, body)
+				}
+			}
+			break
+		}
+	}
+	model.detailBundleMode = true
+	if snippet := model.generateBundleSnippetForItem(DisplayItem{Component: chart, ValueUsage: introspect.ValueUsage{Path: "image.tag"}}); snippet != "" {
+		t.Fatalf("Next chart must not suggest legacy uds-bundle.yaml: %s", snippet)
+	}
+}
+
 func testWorkspaceModel() Model {
 	const component = "core-base/istio-controlplane/istiod"
 	return NewModel(introspect.InspectionReport{

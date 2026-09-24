@@ -12,6 +12,9 @@ Neutrino determines the package type using extension heuristics, naming conventi
 |:---|:---|
 | `uds-bundle-*.tar.zst` filename | Local UDS Bundle |
 | OCI manifest with `uds-bundle.yaml` layer | Remote UDS Bundle |
+| `bundle.uds.hcl` file or containing directory | UDS Next source |
+| OCI index with `application/vnd.defenseunicorns.uds.bundle.v1` artifact type | UDS Next artifact |
+| Directory containing `zarf.yaml` | Local Zarf source |
 | `zarf-package-*.tar.zst` filename | Local Zarf Package |
 | OCI manifest with `application/vnd.zarf.config.v1+json` layer | Remote Zarf Package |
 | `.tgz` archive with `Chart.yaml` inside | Helm Chart Archive |
@@ -22,7 +25,7 @@ For remote OCI sources, Neutrino inspects the manifest and layer annotations bef
 
 ## UDS Bundles
 
-UDS bundles act as the highest-level orchestrator. They are composed of a `uds-bundle.yaml` which declares a series of embedded or external Zarf packages.
+Legacy UDS bundles use `uds-bundle.yaml`; Next bundles use `bundle.uds.hcl` and a distinct OCI artifact format. Both contain Zarf packages, and both retain legacy Zarf-variable inspection alongside Package Values.
 
 ### Remote OCI Handling
 
@@ -36,9 +39,17 @@ For each Zarf package referenced in the bundle, Neutrino:
 4. Runs the [Helm introspection](helm-introspection.md) pipeline against every chart.
 5. Processes all `overrides` stanzas from `uds-bundle.yaml` for each chart (see [Bundle Overrides](#bundle-overrides) below).
 
-### Local Tarball Handling
+### Legacy Local Tarball Handling
 
 If a bundle is presented as a `.tar.zst` archive, Neutrino extracts it to an internal cache directory. Instead of parsing the whole bundle immediately, it uses the OCI layout (`index.json`) contained inside the tarball to locate and reconstruct individual embedded Zarf packages.
+
+### UDS Next
+
+Next inspection supports HCL source definitions, created `.tar.zst` artifacts, unpacked `oci/` layouts, and remote OCI indexes. It reads the bundle-definition manifest and ordered values layers, resolves the selected architecture, and forms each embedded package's verified Package View. It does not fetch embedded image blobs. Archive inspection reads selected entries without extracting the full OCI image payload.
+
+HCL locals, package references, and dependencies are resolved before inspection. Duplicate package IDs, missing dependencies, cycles, missing selected descriptors, or digest/size failures stop Next Bundle Inspection. Source packages are inspected in deterministic dependency-first order.
+
+`defaults.uds.hcl` variables are overlaid by an explicit `--config` file. Bundle values files use the standard Go template `.vars` context. Known inputs are rendered and merged into Package Values in declaration order; missing template inputs are identified as unresolved. These remain configuration inputs, not a simulated deployment.
 
 ### Bundle Overrides
 
@@ -84,7 +95,7 @@ Zarf packages contain a `zarf.yaml` and a set of components carrying Helm charts
 
 ### Remote OCI
 
-When pulling from a remote OCI registry, Neutrino leverages Zarf's built-in `PullOptions` to fetch the package tarball to a managed cache directory.
+The Neutrino-owned Package Reader resolves a digest-pinned Package Root and fetches only verified selected descriptors: `zarf.yaml`, chart-bearing component archives, and assembled package values/schema when present. It never fetches `images/**`. Selected missing or corrupt descriptors fail inspection rather than falling back to a full pull.
 
 ### Local Archives and Directories
 
@@ -99,6 +110,7 @@ Once a Zarf package is available locally, Neutrino:
 3. Unpacks the `charts/` directories from each component.
 4. Invokes the [Helm introspection](helm-introspection.md) pipeline against each discovered chart.
 5. Maps `###ZARF_VAR_*###` markers found in templates back to the variables defined in `zarf.yaml`.
+6. Reads package-level values and JSON schema, preserving input order and chart mappings independently of legacy variables. Built packages use assembled root `values.yaml` and `values.schema.json`; source directories use the declared source paths.
 
 !!! info "Component ordering"
     Components and packages are displayed in the order they are defined in `zarf.yaml` and `uds-bundle.yaml`, preserving the deployment sequence.

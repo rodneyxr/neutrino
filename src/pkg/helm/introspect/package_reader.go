@@ -16,6 +16,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
+	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 )
 
 const (
@@ -121,7 +122,10 @@ func (r *packageReader) ReadFile(ctx context.Context, configMediaType string, ti
 }
 
 func (r *packageReader) ReadEmbedded(ctx context.Context, descriptor ocispec.Descriptor) (*packageView, error) {
-	contents, err := r.fetchVerified(ctx, descriptor)
+	if descriptor.MediaType != ocispec.MediaTypeImageManifest && descriptor.MediaType != zarfLayerMediaType {
+		return nil, fmt.Errorf("unsupported selected embedded package manifest media type %q", descriptor.MediaType)
+	}
+	contents, err := r.fetchVerifiedMedia(ctx, descriptor, descriptor.MediaType)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +177,25 @@ func (r *packageReader) Read(ctx context.Context) (*packageView, error) {
 
 	selected := []ocispec.Descriptor{zarfDescriptor}
 	files := map[string][]byte{"zarf.yaml": zarfBytes}
+	// Assembled Zarf v0.82.0 packages store merged package defaults and schema
+	// at fixed root titles, not at the source paths retained in zarf.yaml.
+	for _, title := range []string{layout.ValuesYAML, layout.ValuesSchema} {
+		required := (title == layout.ValuesYAML && len(pkg.Values.Files) > 0) ||
+			(title == layout.ValuesSchema && pkg.Values.Schema != "")
+		descriptor, exists := byTitle[title]
+		if !exists {
+			if required {
+				return nil, fmt.Errorf("incomplete package layout: missing selected descriptor %q", title)
+			}
+			continue
+		}
+		contents, err := r.fetchVerified(ctx, descriptor)
+		if err != nil {
+			return nil, err
+		}
+		selected = append(selected, descriptor)
+		files[title] = contents
+	}
 	for _, component := range pkg.Components {
 		if len(component.Charts) == 0 {
 			continue
@@ -271,8 +294,12 @@ func isRegularArchiveEntry(entries map[string]byte, name string) bool {
 }
 
 func (r *packageReader) fetchVerified(ctx context.Context, descriptor ocispec.Descriptor) ([]byte, error) {
+	return r.fetchVerifiedMedia(ctx, descriptor, zarfLayerMediaType)
+}
+
+func (r *packageReader) fetchVerifiedMedia(ctx context.Context, descriptor ocispec.Descriptor, mediaType string) ([]byte, error) {
 	title := descriptor.Annotations[ocispec.AnnotationTitle]
-	if descriptor.MediaType != zarfLayerMediaType {
+	if descriptor.MediaType != mediaType {
 		return nil, fmt.Errorf("unsupported selected descriptor %q media type %q", title, descriptor.MediaType)
 	}
 	if descriptor.Size <= 0 {
