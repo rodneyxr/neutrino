@@ -523,27 +523,14 @@ func (m Model) workspaceFooter(width int) string {
 		}
 		return footerBarStyle.Width(width).Render(m.statusMessage + strings.Repeat(" ", gap) + hint)
 	}
-	status := m.statusMessage
-	if status == "" {
-		status = focusName(m.focusPane) + " focused"
-	}
 	line := primary
-	remaining := width - lipgloss.Width(primary) - lipgloss.Width(status) - 3
-	if remaining > 0 {
-		line += strings.Repeat(" ", remaining) + status
+	if m.statusMessage != "" {
+		remaining := width - lipgloss.Width(primary) - lipgloss.Width(m.statusMessage) - 3
+		if remaining > 0 {
+			line += strings.Repeat(" ", remaining) + m.statusMessage
+		}
 	}
 	return footerBarStyle.Width(width).Render(truncateCell(line, width-2))
-}
-
-func focusName(pane FocusPane) string {
-	switch pane {
-	case FocusComponents:
-		return "Components"
-	case FocusInspector:
-		return "Details"
-	default:
-		return "Values"
-	}
 }
 
 func paneFrame(width, height int, focused bool) lipgloss.Style {

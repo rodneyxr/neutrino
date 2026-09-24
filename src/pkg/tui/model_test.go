@@ -156,6 +156,18 @@ func TestWorkspaceResponsiveLayoutsFitTerminal(t *testing.T) {
 	}
 }
 
+func TestWorkspaceFooterDoesNotShowFocusedPaneLabel(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 132
+	for _, pane := range []FocusPane{FocusComponents, FocusValues, FocusInspector} {
+		model.focusPane = pane
+		footer := model.workspaceFooter(model.windowWidth)
+		if strings.Contains(footer, "focused") {
+			t.Errorf("pane %v: footer unexpectedly shows focus label: %q", pane, footer)
+		}
+	}
+}
+
 func TestValuesPaneUsesLastAvailableRow(t *testing.T) {
 	model := testWorkspaceModel()
 	model.windowHeight = 18
