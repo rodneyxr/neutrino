@@ -50,15 +50,9 @@ Rows are grouped under a full-width component band, with muted sentence-case lab
 
 ### Details
 
-Selecting a value and pressing `Enter` opens a full-width Details view. It shows:
+Selecting a value and pressing `Enter` opens a full-width Details view. Its labeled identity shows the component, chart, value path, and value type; unavailable levels (for example, component for a standalone chart) show `—`. Below are YAML default/effective values, the full variable description wrapped to the pane width (when available), chart-relative template locations with counts, and related values. UDS variables show the Helm path they control; UDS override values show both the chart default and the effective bundle value. Bundle authoring mode (`b` or `Space`) adds a UDS authoring snippet. Source paths remain absolute internally for editor jumps, but Details displays them relative to the chart.
 
-- The complete selected path and component.
-- Chart default and effective override values where applicable.
-- Every affected template location.
-- Cross-references between Helm values and UDS overrides.
-- A UDS authoring snippet when bundle authoring mode is enabled with `b` or `Space`.
-
-Use `j` / `↓` and `k` / `↑` to scroll Details content, including a UDS authoring snippet below the template locations. `g` returns to the beginning; `G` moves to the end, and `j` / `k` continue from that position. Press `Enter` on a location to open it in `$EDITOR`. Press `Enter` on a cross-reference to jump to the related value. Press `Esc` to return to the workspace.
+Use `j` / `↓` and `k` / `↑` to scroll Details and select source locations or related values. The selection stays visible as you navigate long lists; scrolling continues into a UDS authoring snippet below the locations. `g` returns to the beginning; `G` moves to the end. Press `Enter` on a location to open it in `$EDITOR`, or on a related value to inspect it. `y` copies the value path, and `Esc` returns to the workspace.
 
 ### Command palette
 

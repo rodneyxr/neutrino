@@ -138,6 +138,7 @@ func (m *Model) moveWithinFocusedPane(delta int) {
 	case FocusInspector:
 		m.detailCursor = clamp(m.detailCursor+delta, 0, len(m.detailItems)-1)
 		m.detailScrollOffset = clamp(m.detailScrollOffset+delta, 0, m.detailScrollLimit())
+		m.ensureDetailCursorVisible()
 	}
 }
 
@@ -508,7 +509,11 @@ func (m Model) workspaceFooter(width int) string {
 	case InputModeChartSelect:
 		primary = m.chartInput.View() + helpStyle.Render("  ↑↓ choose  enter apply  esc cancel")
 	default:
-		primary = helpStyle.Render("tab/arrows panes  j/k move  J/K 5-lines  n/N comp  enter details  / search  : cmd  ? help  q quit")
+		if m.focusPane == FocusInspector {
+			primary = helpStyle.Render("j/k scroll & select  enter open  y copy path  b authoring  esc back  ? help")
+		} else {
+			primary = helpStyle.Render("tab/arrows panes  j/k move  J/K 5-lines  n/N comp  enter details  / search  : cmd  ? help  q quit")
+		}
 	}
 	if m.inputMode == InputModeNormal && m.statusMessage != "" {
 		hint := helpStyle.Render(": commands  ? help")
@@ -958,7 +963,8 @@ func (m Model) inspectorPane(width, height int) string {
 	if _, ok := m.selectedValue(); !ok {
 		return paneFrame(width, height, focused).Render(paneHeadingStyle.Render("DETAILS") + "\n" + helpStyle.Render("Select a value to inspect it."))
 	}
-	return paneFrame(width, height, focused).Render(clipLinesAt(m.inspectorContent(innerWidth, focused), max(1, height-2), m.detailScrollOffset))
+	content, _ := m.inspectorContent(innerWidth, focused)
+	return paneFrame(width, height, focused).Render(clipLinesAt(content, max(1, height-2), m.detailScrollOffset))
 }
 
 func (m Model) detailScrollLimit() int {
@@ -972,66 +978,201 @@ func (m Model) detailScrollLimit() int {
 	}
 	bodyHeight := height - lipgloss.Height(m.workspaceHeader(width)) - lipgloss.Height(m.workspaceFooter(width))
 	bodyHeight = max(4, bodyHeight)
-	content := m.inspectorContent(max(1, width-4), true)
+	content, _ := m.inspectorContent(max(1, width-4), true)
 	return max(0, len(strings.Split(content, "\n"))-max(1, bodyHeight-2))
 }
 
-func (m Model) inspectorContent(innerWidth int, focused bool) string {
+func (m *Model) ensureDetailCursorVisible() {
+	if len(m.detailItems) == 0 {
+		return
+	}
+	width, height := m.windowWidth, m.windowHeight
+	if width < 1 {
+		width = 100
+	}
+	if height < 1 {
+		height = 30
+	}
+	_, row := m.inspectorContent(max(1, width-4), true)
+	visible := max(1, height-lipgloss.Height(m.workspaceHeader(width))-lipgloss.Height(m.workspaceFooter(width))-2)
+	if row < m.detailScrollOffset {
+		m.detailScrollOffset = row
+	} else if row >= m.detailScrollOffset+visible {
+		m.detailScrollOffset = row - visible + 1
+	}
+	m.detailScrollOffset = clamp(m.detailScrollOffset, 0, m.detailScrollLimit())
+}
+
+// inspectorContent returns the scrollable body and the selected action's line.
+func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 	value, ok := m.selectedValue()
 	if !ok {
-		return ""
+		return "", -1
 	}
 
 	var content strings.Builder
-	content.WriteString(paneHeadingStyle.Render("DETAILS"))
-	content.WriteString("  " + kindStyle.Render(strings.ToUpper(displayKind(value))))
-	content.WriteByte('\n')
-	content.WriteString(headerStyle.Render(wrapCell(value.Path, innerWidth)))
-	content.WriteByte('\n')
-	content.WriteString(helpStyle.Render(wrapCell(value.Component, innerWidth)))
-	content.WriteString("\n\n")
+	lineNumber, selectedLine := 0, -1
+	add := func(text string) {
+		content.WriteString(text)
+		content.WriteByte('\n')
+		lineNumber += strings.Count(text, "\n") + 1
+	}
+	section := func(label string) {
+		add("")
+		rule := "━━ " + label + " "
+		if remaining := innerWidth - lipgloss.Width(rule); remaining > 0 {
+			rule += strings.Repeat("━", remaining)
+		}
+		add(fieldLabelStyle.Render(truncateCell(rule, innerWidth)))
+	}
+
+	add(paneHeadingStyle.Render("DETAILS"))
+	key := value.Component
+	if value.IsSummaryItem {
+		key = value.SummaryComponent
+	}
+	_, component, chart := parseComponentKey(key)
+	if key == "" || value.IsPkgVar {
+		component, chart = "", ""
+	}
+	if result := m.components[key]; result != nil && result.ChartName != "" {
+		chart = result.ChartName
+	}
+	if value.Chart != "" {
+		chart = value.Chart
+	}
+	identity := func(label, text string) {
+		if text == "" {
+			text = "—"
+		}
+		add(fieldLabelStyle.Render(fmt.Sprintf("%-11s", label)) + " " + headerStyle.Render(wrapCell(text, max(1, innerWidth-12))))
+	}
+	identity("Component", component)
+	identity("Chart", chart)
+	identity("Value path", value.Path)
+	valueType := "Helm chart value"
+	switch {
+	case value.IsPkgVar:
+		valueType = "Zarf package variable"
+	case value.IsZarfVar:
+		valueType = "Zarf variable"
+	case value.IsUDSOverrideValue:
+		valueType = "UDS override value · fixed"
+	case value.IsUDSOverrideVar:
+		valueType = "UDS variable · configurable"
+	}
+	identity("Value type", valueType)
+	if value.IsUDSOverrideVar && value.UDSVarPath != "" {
+		identity("Controls", value.UDSVarPath)
+	}
+
 	if value.IsUDSOverrideValue {
-		content.WriteString(fieldLabelStyle.Render("CHART DEFAULT") + "\n")
-		content.WriteString(wrapCell(formatYAMLValue(value.OriginalDefault), innerWidth))
-		content.WriteString("\n" + fieldLabelStyle.Render("EFFECTIVE VALUE") + "\n")
-		content.WriteString(wrapCell(formatYAMLValue(value.OverrideValue), innerWidth))
+		section("CHART DEFAULT")
+		add(codeStyle.Render(wrapCell(formatYAMLValue(value.OriginalDefault), innerWidth)))
+		section("EFFECTIVE VALUE")
+		add(snippetStyle.Render(wrapCell(formatYAMLValue(value.OverrideValue), innerWidth)))
 	} else {
-		content.WriteString(fieldLabelStyle.Render("DEFAULT VALUE") + "\n")
-		content.WriteString(wrapCell(formatYAMLValue(value.DefaultValue), innerWidth))
+		section("DEFAULT VALUE")
+		add(codeStyle.Render(wrapCell(formatYAMLValue(value.DefaultValue), innerWidth)))
 	}
 	description := value.PkgVarDesc
 	if value.UDSVarDescription != "" {
 		description = value.UDSVarDescription
 	}
 	if description != "" {
-		content.WriteString("\n\n" + fieldLabelStyle.Render("DESCRIPTION") + "\n")
-		content.WriteString(wrapCell(description, innerWidth))
+		section("DESCRIPTION")
+		add(wrapCell(description, innerWidth))
 	}
-	content.WriteString("\n\n" + fieldLabelStyle.Render("LOCATIONS") + "\n")
-	if len(m.detailItems) == 0 {
-		content.WriteString(helpStyle.Render("No template locations found."))
-	} else {
+
+	locations, refs := 0, 0
+	for _, item := range m.detailItems {
+		if item.Kind == DetailItemLocation {
+			locations++
+		} else {
+			refs++
+		}
+	}
+	section(fmt.Sprintf("TEMPLATE LOCATIONS  ·  %d", locations))
+	if locations == 0 {
+		add(helpStyle.Render("No template locations found."))
+	}
+	for index, detail := range m.detailItems {
+		if detail.Kind != DetailItemLocation {
+			continue
+		}
+		file := m.chartRelativeLocation(value, detail.Location.File)
+		label := fmt.Sprintf("%s:%d:%d", file, detail.Location.Line, detail.Location.Column)
+		if focused && index == m.detailCursor {
+			selectedLine = lineNumber
+			add(selectedRowStyle.Render("> " + tailCell(label, max(1, innerWidth-2))))
+		} else {
+			add("  " + tailCell(label, max(1, innerWidth-2)))
+		}
+	}
+	if refs > 0 {
+		section(fmt.Sprintf("RELATED VALUES  ·  %d", refs))
 		for index, detail := range m.detailItems {
-			line := detail.Label
-			if detail.Kind == DetailItemLocation {
-				line = fmt.Sprintf("%s:%d:%d", filepath.Base(detail.Location.File), detail.Location.Line, detail.Location.Column)
+			if detail.Kind != DetailItemCrossRef {
+				continue
 			}
-			line = truncateCell(line, innerWidth)
+			label := truncateCell(detail.Label, max(1, innerWidth-2))
 			if focused && index == m.detailCursor {
-				content.WriteString(selectedRowStyle.Render("> " + truncateCell(line, max(1, innerWidth-2))))
+				selectedLine = lineNumber
+				add(selectedRowStyle.Render("> " + label))
 			} else {
-				content.WriteString("  " + truncateCell(line, max(1, innerWidth-2)))
+				add("  " + label)
 			}
-			content.WriteByte('\n')
 		}
 	}
 	if m.detailBundleMode {
 		if snippet := m.generateBundleSnippetForItem(value); snippet != "" {
-			content.WriteString("\n" + fieldLabelStyle.Render("UDS AUTHORING") + "\n")
-			content.WriteString(snippetStyle.Render(wrapCell(snippet, innerWidth)))
+			section("UDS AUTHORING")
+			add(snippetStyle.Render(wrapCell(snippet, innerWidth)))
 		}
 	}
-	return content.String()
+	return strings.TrimSuffix(content.String(), "\n"), selectedLine
+}
+
+// chartRelativeLocation changes only the display path; DetailItem keeps the
+// original filename so Enter still opens the actual source file in the editor.
+func (m Model) chartRelativeLocation(value DisplayItem, file string) string {
+	key := value.Component
+	if value.IsSummaryItem {
+		key = value.SummaryComponent
+	}
+	if filepath.IsAbs(file) {
+		if result := m.components[key]; result != nil && result.Source != "" {
+			if relative, err := filepath.Rel(result.Source, file); err == nil &&
+				relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) &&
+				!filepath.IsAbs(relative) {
+				return relative
+			}
+		}
+		if at := strings.Index(file, string(filepath.Separator)+"templates"+string(filepath.Separator)); at >= 0 {
+			return file[at+1:]
+		}
+		return filepath.Base(file)
+	}
+	file = filepath.Clean(file)
+	if file == ".." || strings.HasPrefix(file, ".."+string(filepath.Separator)) {
+		return filepath.Base(file)
+	}
+	return file
+}
+
+// tailCell preserves the filename and line when a source path exceeds the pane.
+func tailCell(value string, width int) string {
+	if lipgloss.Width(value) <= width {
+		return value
+	}
+	if width <= 1 {
+		return "…"
+	}
+	runes := []rune(value)
+	for len(runes) > 0 && lipgloss.Width(string(runes)) > width-1 {
+		runes = runes[1:]
+	}
+	return "…" + string(runes)
 }
 
 func (m Model) commandPaletteView(width, height int) string {

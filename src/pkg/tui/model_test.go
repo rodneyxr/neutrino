@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
+	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 )
 
 func TestGenerateBundleSnippetRequiresBundleContextByDefault(t *testing.T) {
@@ -527,6 +528,73 @@ func TestDetailsViewRendersCopyableYAMLDefault(t *testing.T) {
 	}
 }
 
+func TestDetailsKeepFullVariableDescriptions(t *testing.T) {
+	description := "A description that continues past the old sixty-byte cutoff " +
+		strings.Repeat("x", 70) + "\nThe second paragraph is still visible."
+	for _, tc := range []struct {
+		name  string
+		setup func(*Model)
+		match func(DisplayItem) bool
+	}{
+		{
+			name: "package variable",
+			setup: func(m *Model) {
+				m.pkgVariables = []v1alpha1.InteractiveVariable{{Variable: v1alpha1.Variable{Name: "LONG_DESC"}, Description: description}}
+				m.showZarfSummary = true
+			},
+			match: func(item DisplayItem) bool { return item.IsPkgVar },
+		},
+		{
+			name: "bundle summary variable",
+			setup: func(m *Model) {
+				m.udsOverrideVariables = []introspect.UDSOverrideVariableWithContext{{
+					UDSOverrideContext: introspect.UDSOverrideContext{
+						PackageName: "core-base", ComponentName: "istio-controlplane", ChartName: "istiod",
+					},
+					UDSOverrideVariable: introspect.UDSOverrideVariable{Name: "LONG_DESC", Description: description},
+				}}
+				m.showUDSSummary = true
+			},
+			match: func(item DisplayItem) bool { return item.IsUDSOverrideVar && item.IsSummaryItem },
+		},
+		{
+			name: "component variable",
+			setup: func(m *Model) {
+				m.components[m.chartNames[1]].UDSOverrideVariables = []introspect.UDSOverrideVariable{{
+					Name: "LONG_DESC", Description: description,
+				}}
+			},
+			match: func(item DisplayItem) bool { return item.IsUDSOverrideVar && !item.IsSummaryItem },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := testWorkspaceModel()
+			tc.setup(&model)
+			model.updateFilteredValues()
+			for index, item := range model.filteredValues {
+				if !tc.match(item) {
+					continue
+				}
+				model.cursor = index
+				body, _ := model.inspectorContent(48, true)
+				if !strings.Contains(body, "The second paragraph is still visible.") ||
+					!strings.Contains(body, strings.Repeat("x", 34)) || strings.Contains(body, "cuto...") {
+					t.Fatalf("description was lost rather than wrapped:\n%s", body)
+				}
+				model.windowWidth = 52
+				model.windowHeight = 28
+				model.focusPane = FocusInspector
+				model.buildDetailItems()
+				if view := model.View(); !strings.Contains(view, "The second paragraph is still visible.") {
+					t.Fatalf("details viewport did not show the complete description:\n%s", view)
+				}
+				return
+			}
+			t.Fatal("variable not present in filtered values")
+		})
+	}
+}
+
 func TestWholeNumbersRenderAsIntegersNotFloats(t *testing.T) {
 	model := testWorkspaceModel()
 	model.windowWidth = 100
@@ -630,6 +698,93 @@ func TestBundleAuthoringRemainsReachableBelowDetailsFold(t *testing.T) {
 		t.Fatalf("expected j to scroll to UDS authoring section, got:\n%s", model.View())
 	}
 
+}
+
+func TestDetailsLabelsIdentityAndUsesChartRelativeLocations(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 110
+	model.windowHeight = 32
+	model.filteredValues[0].Locations = []introspect.ValueUsageLocation{
+		{File: "/tmp/istiod/values.yaml", Line: 4, Column: 1},
+		{File: "/tmp/istiod/charts/child/templates/workload.yaml", Line: 7, Column: 2},
+		{File: "/tmp/istiod/templates/deployment.yaml", Line: 148, Column: 12},
+	}
+	model.focusPane = FocusInspector
+	model.buildDetailItems()
+	body, _ := model.inspectorContent(106, true)
+	for _, want := range []string{
+		"Component   istio-controlplane", "Chart       istiod",
+		"Value path", "global.proxy.resources.requests.memory", "Value type", "Helm chart value",
+		"values.yaml:4:1", "charts/child/templates/workload.yaml:7:2", "templates/deployment.yaml:148:12",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("details missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "/tmp/istiod") || strings.Contains(body, "Package     ") {
+		t.Fatalf("details contains an absolute source path or package row:\n%s", body)
+	}
+}
+
+func TestDetailsIdentifyStandaloneChartsAndBundleVariables(t *testing.T) {
+	model := testWorkspaceModel()
+	model.components[""] = &introspect.IntrospectResult{ChartName: "standalone", Source: "/tmp/standalone"}
+	model.filteredValues = []DisplayItem{{
+		ValueUsage: introspect.ValueUsage{Path: "image.tag", Chart: "standalone"},
+	}}
+	body, _ := model.inspectorContent(80, true)
+	for _, want := range []string{"Component   —", "Chart       standalone", "Value type  Helm chart value"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("standalone identity missing %q:\n%s", want, body)
+		}
+	}
+
+	model.filteredValues[0] = DisplayItem{
+		ValueUsage: introspect.ValueUsage{Path: "ISTIO_MEMORY"},
+		Component:  "UDS Bundle Overrides", IsSummaryItem: true, IsUDSOverrideVar: true,
+		SummaryComponent: "core-base/istio-controlplane/istiod",
+		UDSVarPath:       "global.proxy.resources.requests.memory",
+	}
+	body, _ = model.inspectorContent(80, true)
+	for _, want := range []string{
+		"Component   istio-controlplane", "Chart       istiod",
+		"Value path  ISTIO_MEMORY", "Value type  UDS variable · configurable",
+		"Controls    global.proxy.resources.requests.memory",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("bundle variable identity missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestDetailsKeepsSelectedLocationVisibleAcrossSections(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 72
+	model.windowHeight = 14
+	for line := 1; line <= 15; line++ {
+		model.filteredValues[0].Locations = append(model.filteredValues[0].Locations, introspect.ValueUsageLocation{
+			File: fmt.Sprintf("/tmp/chart/templates/subdir/%02d.yaml", line), Line: line, Column: 2,
+		})
+	}
+	updated, _ := model.Update(key("enter"))
+	model = updated.(Model)
+	for range 15 {
+		updated, _ = model.Update(key("j"))
+		model = updated.(Model)
+	}
+	if model.detailCursor != 15 {
+		t.Fatalf("selected action = %d, want 15", model.detailCursor)
+	}
+	if !strings.Contains(model.View(), "> templates/subdir/15.yaml:15:2") {
+		t.Fatalf("selected source should remain visible with its directory:\n%s", model.View())
+	}
+	for range 15 {
+		updated, _ = model.Update(key("k"))
+		model = updated.(Model)
+	}
+	if !strings.Contains(model.View(), "> templates/deployment.yaml:148:12") {
+		t.Fatalf("first source should be visible again:\n%s", model.View())
+	}
 }
 
 func TestDetailsRendersVeryLongScalarValue(t *testing.T) {

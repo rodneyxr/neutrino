@@ -161,10 +161,6 @@ func (m *Model) updateFilteredValues() {
 	if m.showZarfSummary {
 		for _, pv := range m.pkgVariables {
 			if filter == "" || strings.Contains(strings.ToLower(pv.Name), strings.ToLower(filter)) {
-				desc := strings.ReplaceAll(pv.Description, "\n", " ")
-				if len(desc) > 60 {
-					desc = desc[:57] + "..."
-				}
 				newValues = append(newValues, DisplayItem{
 					ValueUsage: introspect.ValueUsage{
 						Path:         pv.Name,
@@ -172,7 +168,7 @@ func (m *Model) updateFilteredValues() {
 					},
 					Component:  "Zarf Package Variables",
 					IsPkgVar:   true,
-					PkgVarDesc: desc,
+					PkgVarDesc: pv.Description,
 				})
 			}
 		}
@@ -201,10 +197,6 @@ func (m *Model) updateFilteredValues() {
 			destComponent := fmt.Sprintf("%s/%s/%s", ov.PackageName, ov.ComponentName, ov.ChartName)
 			searchStr := strings.ToLower(ov.Name + " " + ov.Path)
 			if filter == "" || strings.Contains(searchStr, strings.ToLower(filter)) {
-				desc := strings.ReplaceAll(ov.Description, "\n", " ")
-				if len(desc) > 60 {
-					desc = desc[:57] + "..."
-				}
 				newValues = append(newValues, DisplayItem{
 					ValueUsage: introspect.ValueUsage{
 						Path:         ov.Name,
@@ -214,7 +206,7 @@ func (m *Model) updateFilteredValues() {
 					IsUDSOverrideVar:  true,
 					IsSummaryItem:     true,
 					UDSVarPath:        ov.Path,
-					UDSVarDescription: desc,
+					UDSVarDescription: ov.Description,
 					OriginalDefault:   ov.OriginalDefault,
 					SummaryComponent:  destComponent,
 				})
@@ -297,10 +289,6 @@ func (m *Model) updateFilteredValues() {
 			searchStr := strings.ToLower(ov.Name + " " + ov.Path)
 			if filter == "" || strings.Contains(searchStr, strings.ToLower(filter)) {
 				chartHasItems = true
-				desc := strings.ReplaceAll(ov.Description, "\n", " ")
-				if len(desc) > 60 {
-					desc = desc[:57] + "..."
-				}
 				newValues = append(newValues, DisplayItem{
 					ValueUsage: introspect.ValueUsage{
 						Path:         ov.Name,
@@ -309,7 +297,7 @@ func (m *Model) updateFilteredValues() {
 					Component:         name,
 					IsUDSOverrideVar:  true,
 					UDSVarPath:        ov.Path,
-					UDSVarDescription: desc,
+					UDSVarDescription: ov.Description,
 					OriginalDefault:   ov.OriginalDefault,
 				})
 			}
