@@ -3,31 +3,42 @@ package tui
 import "github.com/charmbracelet/lipgloss"
 
 var (
-	// Colors
-	docStyle          = lipgloss.NewStyle().Margin(1, 2)
-	titleStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF75B5")).Bold(true)
-	filterStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#61AFEF"))
-	chartFilterStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379"))
-	selectedStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#E06C75")).Bold(true)
-	itemStyle         = lipgloss.NewStyle().PaddingLeft(4)
-	selectedItemStyle = lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("#E06C75"))
-	footerStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).MarginTop(1)
-	helpStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Italic(true)
+	titleStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0")).Bold(true)
+	headerStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#E7EDF7")).Bold(true)
+	filterStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0"))
+	helpStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("#78869A"))
+	codeStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("#C8D2E1"))
+	kindStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("#BDA1FF")).Bold(true)
+	zarfVarStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFCA62"))
+	tableHeaderStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#7F8DA2")).Bold(true)
+	snippetStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0"))
+	fieldLabelStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#78869A")).Bold(true)
+	paneHeadingStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#AEBACB")).Bold(true)
+	componentBandStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CE36C")).Bold(true)
+	groupHeadingStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#8997AA"))
+	selectedRowStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#F4F8FF")).Background(lipgloss.Color("#17303A")).Bold(true)
+	udsOverrideValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0"))
+	udsOverrideVarStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#BDA1FF"))
 
-	// Detail styles
-	codeStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ABB2BF"))
-	locationStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#56B6C2"))
-	kindStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#C678DD"))
-	headerStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Bold(true).Underline(true)
-	zarfVarStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#D19A66")).Bold(true)
-	// UDS override styles
-	udsOverrideValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#61AFEF")).Bold(true)
-	udsOverrideVarStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#C678DD")).Bold(true)
-	// Table styles
-	tableHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ABB2BF")).Bold(true).Underline(true)
-	// Cross-reference link style
-	crossRefStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379")).Italic(true)
-	// Snippet style for copyable YAML snippets
-	snippetStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#56B6C2"))
-	snippetLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379")).Bold(true)
+	headerBarStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#DDE6F3")).
+			Background(lipgloss.Color("#0C1119")).
+			Padding(0, 1)
+	footerBarStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#8997AA")).
+			Background(lipgloss.Color("#0C1119")).
+			Padding(0, 1)
+	paneStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("#293649")).
+			Padding(0, 1)
+	focusedPaneStyle = lipgloss.NewStyle().
+				Border(lipgloss.DoubleBorder()).
+				BorderForeground(lipgloss.Color("#59D5E0")).
+				Padding(0, 1)
+	modalStyle = lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(lipgloss.Color("#59D5E0")).
+			Background(lipgloss.Color("#0E151E")).
+			Padding(1, 2)
 )
