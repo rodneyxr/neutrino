@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -235,6 +236,46 @@ func TestCommandPaletteRunsCopyPathWithoutMouse(t *testing.T) {
 	}
 	if view := updated.(Model).View(); !strings.Contains(view, "Copied global.proxy.resources.requests.memory") {
 		t.Fatalf("copy command did not report the copied path:\n%s", view)
+	}
+}
+func TestStatusReturnsToDefaultAfterTwoSeconds(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 100
+	model.windowHeight = 28
+
+	updated, _ := model.Update(key("Z"))
+	model = updated.(Model)
+	if !strings.Contains(model.workspaceFooter(100), "Package variable summary on") {
+		t.Fatal("toggle did not display its status")
+	}
+
+	updated, _ = model.Update(pathScrollTickMsg(model.statusExpiresAt.Add(-time.Nanosecond)))
+	model = updated.(Model)
+	if !strings.Contains(model.workspaceFooter(100), "Package variable summary on") {
+		t.Fatal("status disappeared before two seconds")
+	}
+
+	updated, _ = model.Update(pathScrollTickMsg(model.statusExpiresAt))
+	model = updated.(Model)
+	if strings.Contains(model.workspaceFooter(100), "Package variable summary on") ||
+		!strings.Contains(model.workspaceFooter(100), "tab/arrows panes") {
+		t.Fatalf("status did not return to default footer: %q", model.workspaceFooter(100))
+	}
+}
+
+func TestNewStatusRefreshesExpiry(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowWidth = 100
+
+	updated, _ := model.Update(key("Z"))
+	model = updated.(Model)
+	oldExpiry := model.statusExpiresAt
+	updated, _ = model.Update(key("U"))
+	model = updated.(Model)
+	updated, _ = model.Update(pathScrollTickMsg(oldExpiry))
+	model = updated.(Model)
+	if !strings.Contains(model.workspaceFooter(100), "Bundle override summary on") {
+		t.Fatalf("previous message expired the newer status: %q", model.workspaceFooter(100))
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -87,6 +88,7 @@ type Model struct {
 	showUDSSummary     bool
 	showHelp           bool
 	statusMessage      string
+	statusExpiresAt    time.Time
 
 	// Inputs
 	filterInput   textinput.Model
@@ -464,6 +466,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleNormalKey(msg)
 		}
 	case pathScrollTickMsg:
+		if m.statusMessage != "" && !time.Time(msg).Before(m.statusExpiresAt) {
+			m.statusMessage = ""
+		}
 		m.stepAutoScroll()
 		return m, tickPathScroll()
 	case tea.WindowSizeMsg:

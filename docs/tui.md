@@ -64,6 +64,8 @@ Use `j` / `↓` and `k` / `↑` to scroll Details content, including a UDS autho
 
 Press `:` from either workspace pane to open the searchable command palette. The shortcut key is the first column, followed by the action and description. Every primary action is available there, including filtering, component selection, summaries, bundle authoring, editor integration, copying paths, help, and quit.
 
+Action feedback in the footer returns to the default keyboard hints after about two seconds. A newer message restarts that interval.
+
 ## Keybindings
 
 ### Focus and navigation

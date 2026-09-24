@@ -77,6 +77,10 @@ func tickPathScroll() tea.Cmd {
 		return pathScrollTickMsg(t)
 	})
 }
+func (m *Model) setStatus(message string) {
+	m.statusMessage = message
+	m.statusExpiresAt = time.Now().Add(2 * time.Second)
+}
 
 func (m Model) layout() layoutMode {
 	switch {
@@ -236,7 +240,7 @@ func (m *Model) activateFocused() tea.Cmd {
 		m.pathScroll = 0
 		m.pathScrollPause = 2
 		m.buildDetailItems()
-		m.statusMessage = "Showing " + m.componentLabel(m.currentChart)
+		m.setStatus("Showing " + m.componentLabel(m.currentChart))
 	case FocusValues:
 		if len(m.filteredValues) == 0 || m.filteredValues[m.cursor].IsEmptyState {
 			return nil
@@ -266,7 +270,7 @@ func (m *Model) activateFocused() tea.Cmd {
 func (m *Model) beginFilter() {
 	m.inputMode = InputModeFilter
 	m.filterInput.Focus()
-	m.statusMessage = "Type to filter values"
+	m.setStatus("Type to filter values")
 }
 
 func (m *Model) beginComponentFilter() {
@@ -276,7 +280,7 @@ func (m *Model) beginComponentFilter() {
 	m.chartInput.SetValue("")
 	m.chartInput.Focus()
 	m.updateFilteredValues()
-	m.statusMessage = "Type to select a component"
+	m.setStatus("Type to select a component")
 }
 
 func (m *Model) beginCommandPalette() {
@@ -339,7 +343,7 @@ func (m *Model) executeCommand(command commandDefinition) tea.Cmd {
 	case commandBundleMode:
 		m.detailBundleMode = !m.detailBundleMode
 		m.detailScrollOffset = 0
-		m.statusMessage = toggleStatus("Bundle authoring", m.detailBundleMode)
+		m.setStatus(toggleStatus("Bundle authoring", m.detailBundleMode))
 	case commandOpenSource:
 		return m.openSelectedSource()
 	case commandCopyPath:
@@ -358,7 +362,7 @@ func (m *Model) toggleZarfSummary() {
 	m.cursor = 0
 	m.viewportOffset = 0
 	m.buildDetailItems()
-	m.statusMessage = toggleStatus("Package variable summary", m.showZarfSummary)
+	m.setStatus(toggleStatus("Package variable summary", m.showZarfSummary))
 }
 
 func (m *Model) toggleUDSSummary() {
@@ -367,7 +371,7 @@ func (m *Model) toggleUDSSummary() {
 	m.cursor = 0
 	m.viewportOffset = 0
 	m.buildDetailItems()
-	m.statusMessage = toggleStatus("Bundle override summary", m.showUDSSummary)
+	m.setStatus(toggleStatus("Bundle override summary", m.showUDSSummary))
 }
 
 func toggleStatus(label string, enabled bool) string {
@@ -387,35 +391,35 @@ func (m Model) selectedValue() (DisplayItem, bool) {
 func (m *Model) openSelectedSource() tea.Cmd {
 	value, ok := m.selectedValue()
 	if !ok {
-		m.statusMessage = "No source location for the selected value"
+		m.setStatus("No source location for the selected value")
 		return nil
 	}
 	if len(value.Locations) > 0 {
 		location := value.Locations[0]
-		m.statusMessage = "Opening " + filepath.Base(location.File)
+		m.setStatus("Opening " + filepath.Base(location.File))
 		return openEditor(location.File, location.Line, location.Column)
 	}
 	for _, detail := range m.detailItems {
 		if detail.Kind == DetailItemLocation {
-			m.statusMessage = "Opening " + filepath.Base(detail.Location.File)
+			m.setStatus("Opening " + filepath.Base(detail.Location.File))
 			return openEditor(detail.Location.File, detail.Location.Line, detail.Location.Column)
 		}
 	}
-	m.statusMessage = "No source location for the selected value"
+	m.setStatus("No source location for the selected value")
 	return nil
 }
 
 func (m *Model) copySelectedPath() tea.Cmd {
 	value, ok := m.selectedValue()
 	if !ok {
-		m.statusMessage = "No value path to copy"
+		m.setStatus("No value path to copy")
 		return nil
 	}
 	path := value.Path
 	if value.IsUDSOverrideVar && value.UDSVarPath != "" {
 		path = value.UDSVarPath
 	}
-	m.statusMessage = "Copied " + path
+	m.setStatus("Copied " + path)
 	return osc52Copy(path)
 }
 
@@ -1183,7 +1187,7 @@ func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		m.inputMode = InputModeNormal
 		m.filterInput.Blur()
-		m.statusMessage = fmt.Sprintf("%d matching values", len(m.filteredValues))
+		m.setStatus(fmt.Sprintf("%d matching values", len(m.filteredValues)))
 	case "esc":
 		m.inputMode = InputModeNormal
 		m.filterInput.Blur()
@@ -1192,7 +1196,7 @@ func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 		m.viewportOffset = 0
 		m.buildDetailItems()
-		m.statusMessage = "Value filter cleared"
+		m.setStatus("Value filter cleared")
 	default:
 		var cmd tea.Cmd
 		m.filterInput, cmd = m.filterInput.Update(msg)
@@ -1237,7 +1241,7 @@ func (m Model) handleComponentKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focusPane = FocusValues
 		m.buildDetailItems()
 		m.syncComponentCursor()
-		m.statusMessage = "Showing " + m.componentLabel(m.currentChart)
+		m.setStatus("Showing " + m.componentLabel(m.currentChart))
 	case "esc":
 		m.inputMode = InputModeNormal
 		m.chartInput.Blur()
@@ -1246,7 +1250,7 @@ func (m Model) handleComponentKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.updateFilteredValues()
 		m.ensureCursorVisible()
 		m.syncComponentCursor()
-		m.statusMessage = "Component selection cancelled"
+		m.setStatus("Component selection cancelled")
 	case "up", "down":
 		m.cycleComponentMatch(msg.String() == "down")
 	default:
@@ -1397,7 +1401,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 			m.viewportOffset = 0
 			m.buildDetailItems()
-			m.statusMessage = "Value filter cleared"
+			m.setStatus("Value filter cleared")
 		}
 	case " ", "space":
 		switch m.focusPane {
@@ -1407,7 +1411,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case FocusInspector:
 			m.detailBundleMode = !m.detailBundleMode
 			m.detailScrollOffset = 0
-			m.statusMessage = toggleStatus("Bundle authoring", m.detailBundleMode)
+			m.setStatus(toggleStatus("Bundle authoring", m.detailBundleMode))
 		}
 	case "Z":
 		m.toggleZarfSummary()
@@ -1416,7 +1420,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "b":
 		m.detailBundleMode = !m.detailBundleMode
 		m.detailScrollOffset = 0
-		m.statusMessage = toggleStatus("Bundle authoring", m.detailBundleMode)
+		m.setStatus(toggleStatus("Bundle authoring", m.detailBundleMode))
 	case "o":
 		cmd := m.openSelectedSource()
 		return m, cmd
