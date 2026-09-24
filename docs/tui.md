@@ -46,7 +46,7 @@ The Values pane displays each discovered value in a dense table. Wider terminals
 | **Type** | `field`, `variable`, `override`, or `inferred`. |
 | **Source** | Source file and line, or a consolidated location count. |
 
-Rows are grouped first by component and then into **Zarf variables**, **UDS override values**, **UDS variables**, and ordinary **Values**. `Space` or `c` toggles consolidated locations while the Values pane is focused.
+Rows are grouped under a full-width component band, with muted sentence-case labels and a blank line separating **Zarf variables**, **UDS override values** (fixed by the bundle), **UDS variables** (configurable via `uds-config.yaml`), and **Helm chart values**. Package-wide Zarf variables and bundle-wide override summaries have their own bands. When scrolling into the middle of a component, its band and the current section label remain visible. `Space` or `c` toggles consolidated locations while the Values pane is focused.
 
 ### Details
 

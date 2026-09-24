@@ -795,18 +795,35 @@ func (m Model) valuesPane(width, height int) string {
 	maxLines := contentHeight - 2
 	linesUsed := 0
 	start := clamp(m.viewportOffset, 0, max(0, len(m.filteredValues)-1))
-	lastGroup := ""
+	lastComponent := ""
+	lastSection := ""
 	for index := start; index < len(m.filteredValues); index++ {
 		value := m.filteredValues[index]
-		group := m.valueGroupKey(value)
-		if group != lastGroup {
-			if linesUsed+1 > maxLines {
+		if index == start || value.Component != lastComponent {
+			if linesUsed+2 > maxLines {
 				break
 			}
-			content.WriteString(groupHeadingStyle.Render(truncateCell(m.valueGroupLabel(value), innerWidth)))
+			content.WriteString(componentBandStyle.Render(componentBand(m.valueComponentLabel(value, innerWidth), innerWidth)))
 			content.WriteByte('\n')
 			linesUsed++
-			lastGroup = group
+			lastComponent = value.Component
+			lastSection = ""
+		}
+		section := valueSection(value)
+		if section != lastSection {
+			if lastSection != "" {
+				if linesUsed+3 > maxLines {
+					break
+				}
+				content.WriteByte('\n')
+				linesUsed++
+			} else if linesUsed+2 > maxLines {
+				break
+			}
+			content.WriteString(groupHeadingStyle.Render(truncateCell("  "+section, innerWidth)))
+			content.WriteByte('\n')
+			linesUsed++
+			lastSection = section
 		}
 		if linesUsed+1 > maxLines {
 			break
@@ -850,18 +867,26 @@ func (m Model) valuesPane(width, height int) string {
 	return paneFrame(width, height, focused).Render(content.String())
 }
 
-func (m Model) valueGroupKey(value DisplayItem) string {
-	return value.Component + "\x00" + valueSection(value)
+func (m Model) valueComponentLabel(value DisplayItem, width int) string {
+	if value.IsPkgVar {
+		return "Zarf package"
+	}
+	if value.IsSummaryItem {
+		return "UDS bundle summary"
+	}
+	return m.componentDisplayName(value.Component, width)
 }
 
-func (m Model) valueGroupLabel(value DisplayItem) string {
-	component := m.componentLabel(value.Component)
-	if value.IsPkgVar {
-		component = "Package"
-	} else if value.IsSummaryItem {
-		component = "Bundle summary"
+func componentBand(label string, width int) string {
+	prefix := "━━ "
+	if width <= lipgloss.Width(prefix) {
+		return truncateCell(prefix, width)
 	}
-	return component + "  /  " + valueSection(value)
+	title := prefix + truncateCell(label, width-lipgloss.Width(prefix))
+	if remaining := width - lipgloss.Width(title); remaining > 1 {
+		title += " " + strings.Repeat("━", remaining-1)
+	}
+	return title
 }
 
 func valueSection(value DisplayItem) string {
@@ -869,11 +894,11 @@ func valueSection(value DisplayItem) string {
 	case value.IsPkgVar || value.IsZarfVar:
 		return "Zarf variables"
 	case value.IsUDSOverrideVar:
-		return "UDS variables"
+		return "UDS variables · configurable"
 	case value.IsUDSOverrideValue:
-		return "UDS override values"
+		return "UDS overrides · fixed by bundle"
 	default:
-		return "Values"
+		return "Helm chart values"
 	}
 }
 
@@ -883,12 +908,22 @@ func (m Model) valueLineCount(start, end int) int {
 	}
 	end = min(end, len(m.filteredValues)-1)
 	lines := 0
-	lastGroup := ""
+	lastComponent := ""
+	lastSection := ""
 	for index := start; index <= end; index++ {
-		group := m.valueGroupKey(m.filteredValues[index])
-		if group != lastGroup {
+		value := m.filteredValues[index]
+		if index == start || value.Component != lastComponent {
 			lines++
-			lastGroup = group
+			lastComponent = value.Component
+			lastSection = ""
+		}
+		section := valueSection(value)
+		if section != lastSection {
+			if lastSection != "" {
+				lines++
+			}
+			lines++
+			lastSection = section
 		}
 		lines++
 	}

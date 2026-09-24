@@ -202,15 +202,21 @@ func TestCommandPaletteRunsCopyPathWithoutMouse(t *testing.T) {
 }
 
 func TestValuesAreGroupedByComponentAndSection(t *testing.T) {
-	const component = "core-base/istio-controlplane/istiod"
+	const first = "core-base/istio-controlplane/istiod"
+	const second = "core-base/istio-admin-gateway/gateway"
 	model := Model{
-		components:   map[string]*introspect.IntrospectResult{component: {ChartName: "istiod"}},
-		chartNames:   []string{"All Charts", component},
+		components: map[string]*introspect.IntrospectResult{
+			first:  {ChartName: "istiod"},
+			second: {ChartName: "gateway"},
+		},
+		chartNames:   []string{"All Charts", first, second},
 		currentChart: "All Charts",
 		filteredValues: []DisplayItem{
-			{ValueUsage: introspect.ValueUsage{Path: "IMAGE_TAG"}, Component: component, IsZarfVar: true},
-			{ValueUsage: introspect.ValueUsage{Path: "PROXY_MEMORY"}, Component: component, IsUDSOverrideVar: true, UDSVarPath: "global.proxy.resources.requests.memory"},
-			{ValueUsage: introspect.ValueUsage{Path: "image.repository"}, Component: component},
+			{ValueUsage: introspect.ValueUsage{Path: "REGISTRY_URL"}, Component: "Zarf Package Variables", IsPkgVar: true},
+			{ValueUsage: introspect.ValueUsage{Path: "IMAGE_TAG"}, Component: first, IsZarfVar: true},
+			{ValueUsage: introspect.ValueUsage{Path: "PROXY_MEMORY"}, Component: first, IsUDSOverrideVar: true, UDSVarPath: "global.proxy.resources.requests.memory"},
+			{ValueUsage: introspect.ValueUsage{Path: "image.repository"}, Component: first},
+			{ValueUsage: introspect.ValueUsage{Path: "replicas"}, Component: second, IsUDSOverrideValue: true},
 		},
 		focusPane:    FocusValues,
 		windowWidth:  110,
@@ -219,20 +225,35 @@ func TestValuesAreGroupedByComponentAndSection(t *testing.T) {
 
 	view := model.View()
 	headings := []string{
-		"istio-controlplane/istiod  /  Zarf variables",
-		"istio-controlplane/istiod  /  UDS variables",
-		"istio-controlplane/istiod  /  Values",
+		"━━ Zarf package",
+		"  " + valueSection(model.filteredValues[0]),
+		"━━ " + first,
+		"  " + valueSection(model.filteredValues[2]),
+		"  " + valueSection(model.filteredValues[3]),
+		"━━ " + second,
+		"  " + valueSection(model.filteredValues[4]),
 	}
 	previous := -1
 	for _, heading := range headings {
 		index := strings.Index(view, heading)
 		if index < 0 {
-			t.Fatalf("missing group heading %q:\n%s", heading, view)
+			t.Fatalf("missing heading %q:\n%s", heading, view)
 		}
 		if index <= previous {
-			t.Fatalf("group heading %q is out of order:\n%s", heading, view)
+			t.Fatalf("heading %q is out of order:\n%s", heading, view)
 		}
 		previous = index
+	}
+	if strings.Count(view, "━━ "+first) != 1 {
+		t.Fatalf("component band must appear once across its sections:\n%s", view)
+	}
+	if got := model.valueLineCount(1, 2); got != 6 {
+		t.Fatalf("two sections within a component should have a blank separator: got %d lines, want 6", got)
+	}
+	model.viewportOffset = 2
+	scrolled := model.View()
+	if !strings.Contains(scrolled, "━━ "+first) || !strings.Contains(scrolled, "  "+valueSection(model.filteredValues[2])) {
+		t.Fatalf("scrolling into a component must retain its context:\n%s", scrolled)
 	}
 }
 
