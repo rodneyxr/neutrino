@@ -76,7 +76,7 @@ Press `:` from either workspace pane to open the searchable command palette. The
 | `j` / `↓` | Move down 1 row in the focused pane. |
 | `k` / `↑` | Move up 1 row in the focused pane. |
 | `J` / `K` | Move 5 rows down or up in the focused pane. |
-| `[` / `]` | Jump to the previous or next component. |
+| `n` / `N` (also `]` / `[`) | Jump to the next or previous component. |
 | `g` / `G` | Move to the first or last item in the focused pane. |
 | `PgDn` / `PgUp` | Move by the available viewport height. |
 | `Enter` | Select a component, open Details, open a location, or follow a cross-reference. |

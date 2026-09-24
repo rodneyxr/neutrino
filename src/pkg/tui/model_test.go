@@ -154,6 +154,43 @@ func TestWorkspaceResponsiveLayoutsFitTerminal(t *testing.T) {
 	}
 }
 
+func TestValuesPaneUsesLastAvailableRow(t *testing.T) {
+	model := testWorkspaceModel()
+	model.windowHeight = 18
+	model.filteredValues = make([]DisplayItem, 30)
+	for i := range model.filteredValues {
+		model.filteredValues[i] = DisplayItem{
+			ValueUsage: introspect.ValueUsage{Path: fmt.Sprintf("value-%02d", i)},
+			Component:  "core-base/istio-controlplane/istiod",
+		}
+	}
+	for _, width := range []int{72, 100, 132} {
+		model.windowWidth = width
+		model.viewportOffset = 0
+		lines := strings.Split(model.View(), "\n")
+		if got := lines[model.windowHeight-3]; !strings.Contains(got, "value-") {
+			t.Fatalf("width %d: last Values interior row should contain a value, got %q", width, got)
+		}
+		model.cursor = 9
+		model.ensureCursorVisible()
+		if model.viewportOffset != 0 {
+			t.Fatalf("width %d: cursor fits on last row without scrolling; viewport offset = %d", width, model.viewportOffset)
+		}
+		updated, _ := model.Update(key("G"))
+		model = updated.(Model)
+		view := model.View()
+		if got := lipgloss.Height(view); got != model.windowHeight {
+			t.Fatalf("width %d: scrolled workspace height %d, want %d", width, got, model.windowHeight)
+		}
+		if got := lipgloss.Width(view); got != width {
+			t.Fatalf("width %d: scrolled workspace width %d", width, got)
+		}
+		if !strings.Contains(strings.Split(view, "\n")[0], "NEUTRINO") {
+			t.Fatalf("width %d: scrolled workspace lost its title", width)
+		}
+	}
+}
+
 func TestKeyboardFlowOpensAndClosesFullWidthDetails(t *testing.T) {
 	model := testWorkspaceModel()
 	model.windowWidth = 132
@@ -387,28 +424,28 @@ func TestLineAndComponentNavigation(t *testing.T) {
 		t.Fatalf("expected cursor 0 after 'K', got %d", m.cursor)
 	}
 
-	// 5. ']' jumps to next component (from compA to compB at index 3)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	// 'n' jumps to the next component (from compA to compB at index 3).
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	m = updated.(Model)
 	if m.cursor != 3 {
-		t.Fatalf("expected cursor 3 (compB) after ']', got %d", m.cursor)
+		t.Fatalf("expected cursor 3 (compB) after 'n', got %d", m.cursor)
 	}
 
-	// Jump to next component again (compC at index 7)
+	// ']' remains an alias for the next component (compC at index 7).
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
 	m = updated.(Model)
 	if m.cursor != 7 {
 		t.Fatalf("expected cursor 7 (compC) after ']', got %d", m.cursor)
 	}
 
-	// 6. '[' jumps to previous component (from compC at 7 to compB at 3)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
+	// Shift+N jumps to the previous component (from compC to compB).
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'N'}})
 	m = updated.(Model)
 	if m.cursor != 3 {
-		t.Fatalf("expected cursor 3 (compB) after '[', got %d", m.cursor)
+		t.Fatalf("expected cursor 3 (compB) after 'N', got %d", m.cursor)
 	}
 
-	// If in middle of compB (index 5), '[' jumps to start of compB (index 3)
+	// '[' remains an alias; in the middle of compB it jumps to its start.
 	m.cursor = 5
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
 	m = updated.(Model)

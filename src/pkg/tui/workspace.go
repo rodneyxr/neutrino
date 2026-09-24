@@ -60,8 +60,8 @@ type commandDefinition struct {
 var commands = [...]commandDefinition{
 	{commandSearch, "Filter values", "/", "Search paths across the selected component"},
 	{commandComponents, "Select component", "f", "Filter or switch the component scope"},
-	{commandNextComponent, "Next component", "]", "Jump to the next component"},
-	{commandPrevComponent, "Previous component", "[", "Jump to the previous component"},
+	{commandNextComponent, "Next component", "n / ]", "Jump to the next component"},
+	{commandPrevComponent, "Previous component", "N / [", "Jump to the previous component"},
 	{commandConsolidate, "Toggle consolidated locations", "space", "Group or expand repeated template locations"},
 	{commandZarfSummary, "Toggle package variables", "Z", "Show the package variable summary"},
 	{commandUDSSummary, "Toggle bundle overrides", "U", "Show the cross-package override summary"},
@@ -516,7 +516,7 @@ func (m Model) workspaceFooter(width int) string {
 	case InputModeChartSelect:
 		primary = m.chartInput.View() + helpStyle.Render("  ↑↓ choose  enter apply  esc cancel")
 	default:
-		primary = helpStyle.Render("tab/arrows panes  j/k move  J/K 5-lines  [/] comp  enter details  / search  : cmd  ? help  q quit")
+		primary = helpStyle.Render("tab/arrows panes  j/k move  J/K 5-lines  n/N comp  enter details  / search  : cmd  ? help  q quit")
 	}
 	if m.inputMode == InputModeNormal && m.statusMessage != "" {
 		hint := helpStyle.Render(": commands  ? help")
@@ -786,13 +786,13 @@ func (m Model) valuesPane(width, height int) string {
 
 	pathWidth, valWidth, typeWidth, srcWidth, showMetadata := m.columnWidths(innerWidth)
 	if showMetadata {
-		content.WriteString(tableHeaderStyle.Render(fmt.Sprintf("  %-*s %-*s %-*s %s", pathWidth, "VALUE PATH", valWidth, "VALUE", typeWidth, "TYPE", "SOURCE")))
+		content.WriteString(tableHeaderStyle.Render(truncateCell(fmt.Sprintf("  %-*s %-*s %-*s %s", pathWidth, "VALUE PATH", valWidth, "VALUE", typeWidth, "TYPE", "SOURCE"), innerWidth)))
 	} else {
 		content.WriteString(tableHeaderStyle.Render(fmt.Sprintf("  %-*s %s", pathWidth, "VALUE PATH", "VALUE")))
 	}
 	content.WriteByte('\n')
 
-	maxLines := contentHeight - 2
+	maxLines := contentHeight
 	linesUsed := 0
 	start := clamp(m.viewportOffset, 0, max(0, len(m.filteredValues)-1))
 	lastComponent := ""
@@ -864,7 +864,7 @@ func (m Model) valuesPane(width, height int) string {
 	if len(m.filteredValues) == 0 {
 		content.WriteString(helpStyle.Render("No values match the current filters."))
 	}
-	return paneFrame(width, height, focused).Render(content.String())
+	return paneFrame(width, height, focused).Render(strings.TrimSuffix(content.String(), "\n"))
 }
 
 func (m Model) valueComponentLabel(value DisplayItem, width int) string {
@@ -1086,7 +1086,7 @@ func (m Model) helpView(width, height int) string {
 		"h / l, ← / →      focus left / right pane\n" +
 		"j / k, ↑ / ↓      move 1 line in focused pane\n" +
 		"J / K             jump 5 lines in focused pane\n" +
-		"[ / ]             jump previous / next component\n" +
+		"n / N, ] / [     jump next / previous component\n" +
 		"g / G             first / last item\n" +
 		"Enter             open full-width details\n" +
 		"/                 filter values\n" +
@@ -1383,9 +1383,9 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveWithinFocusedPane(5)
 	case "K":
 		m.moveWithinFocusedPane(-5)
-	case "]":
+	case "n", "]":
 		m.jumpComponent(1)
-	case "[":
+	case "N", "[":
 		m.jumpComponent(-1)
 	case "g":
 		m.moveFocusedToBoundary(false)
