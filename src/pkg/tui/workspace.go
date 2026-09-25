@@ -45,6 +45,7 @@ const (
 	commandZarfSummary
 	commandUDSSummary
 	commandBundleMode
+	commandSchema
 	commandOpenSource
 	commandCopyPath
 	commandHelp
@@ -65,7 +66,8 @@ var commands = [...]commandDefinition{
 	{commandPrevComponent, "Previous component", "N / [", "Jump to the previous component"},
 	{commandZarfSummary, "Toggle package variables", "Z", "Show the package variable summary"},
 	{commandUDSSummary, "Toggle bundle overrides", "U", "Show the cross-package override summary"},
-	{commandBundleMode, "Toggle bundle authoring", "b", "Show UDS authoring snippets in Details"},
+	{commandBundleMode, "Toggle authoring snippets", "b", "Show Package Values and UDS authoring snippets in Details"},
+	{commandSchema, "Toggle package values schema", "s", "Show or hide the schema at the bottom of Details"},
 	{commandOpenSource, "Open source location", "o", "Open the selected value in $EDITOR"},
 	{commandCopyPath, "Copy value path", "y", "Copy the selected path through terminal OSC 52"},
 	{commandHelp, "Show keyboard help", "?", "Open the context-sensitive shortcut reference"},
@@ -273,6 +275,7 @@ func (m *Model) activateFocused() tea.Cmd {
 		}
 		m.detailCursor = 0
 		m.detailScrollOffset = 0
+		m.detailSchemaShown = false
 		m.statusMessage = ""
 		m.buildDetailItems()
 		m.focusPane = FocusInspector
@@ -282,6 +285,7 @@ func (m *Model) activateFocused() tea.Cmd {
 			m.detailRef = nil
 			m.detailCursor = 0
 			m.detailScrollOffset = 0
+			m.detailSchemaShown = false
 			m.statusMessage = ""
 			m.buildDetailItems()
 			m.focusPane = FocusInspector
@@ -302,6 +306,9 @@ func (m *Model) activateFocused() tea.Cmd {
 		}
 		if detail.Kind == DetailItemLocation {
 			return openEditor(detail.Location.File, detail.Location.Line, detail.Location.Column)
+		}
+		if detail.Kind == DetailItemFile {
+			return openEditor(detail.File, 1, 1)
 		}
 		if detail.relatedValue != nil {
 			m.detailRef = detail.relatedValue
@@ -388,7 +395,14 @@ func (m *Model) executeCommand(command commandDefinition) tea.Cmd {
 	case commandBundleMode:
 		m.detailBundleMode = !m.detailBundleMode
 		m.detailScrollOffset = 0
-		m.setStatus(toggleStatus("Bundle authoring", m.detailBundleMode))
+		m.setStatus(toggleStatus("Authoring snippets", m.detailBundleMode))
+	case commandSchema:
+		value, ok := m.detailValue()
+		if m.focusPane == FocusInspector && ok && value.ValueSchema != nil {
+			m.detailSchemaShown = !m.detailSchemaShown
+			m.detailScrollOffset = m.detailScrollLimit()
+			m.setStatus(toggleStatus("Package values schema", m.detailSchemaShown))
+		}
 	case commandOpenSource:
 		return m.openSelectedSource()
 	case commandCopyPath:
@@ -448,6 +462,10 @@ func (m *Model) openSelectedSource() tea.Cmd {
 		if detail.Kind == DetailItemLocation {
 			m.setStatus("Opening " + filepath.Base(detail.Location.File))
 			return openEditor(detail.Location.File, detail.Location.Line, detail.Location.Column)
+		}
+		if detail.Kind == DetailItemFile {
+			m.setStatus("Opening " + filepath.Base(detail.File))
+			return openEditor(detail.File, 1, 1)
 		}
 	}
 	m.setStatus("No source location for the selected value")
@@ -566,6 +584,8 @@ func (m Model) workspaceFooter(width int) string {
 					action = "enter explore  p copy input"
 				case DetailItemLocation:
 					action = "enter edit"
+				case DetailItemFile:
+					action = "enter view file"
 				case DetailItemCrossRef:
 					action = "enter inspect"
 				}
@@ -1283,7 +1303,7 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 	}
 	if value.IsUDSOverrideValue {
 		section("CHART DEFAULT")
-		add(detailCodeStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.OriginalDefault), max(1, innerWidth-2))))
+		add(detailDefaultStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.OriginalDefault), max(1, innerWidth-2))))
 		section("EFFECTIVE VALUE")
 		add(detailCodeStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.OverrideValue), max(1, innerWidth-2))))
 	} else if value.IsPackageMapping || value.IsPackageValue && !value.ValuePresent {
@@ -1294,7 +1314,11 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 		} else {
 			section("DEFAULT VALUE")
 		}
-		add(detailCodeStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.DefaultValue), max(1, innerWidth-2))))
+		style := detailCodeStyle
+		if !value.IsPackageValue && !value.IsBundleVariable {
+			style = detailDefaultStyle
+		}
+		add(style.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.DefaultValue), max(1, innerWidth-2))))
 	}
 	description := value.PkgVarDesc
 	if value.UDSVarDescription != "" {
@@ -1397,48 +1421,66 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 			}
 		}
 	}
-	fileEntry := func(index int, file string) {
-		lines := strings.Split(ansi.Wrap(file, max(1, innerWidth-6), ""), "\n")
-		add(helpStyle.Render(fmt.Sprintf("  %02d  ", index+1)) + codeStyle.Render(lines[0]))
+	fileDetailIndex := 0
+	for fileDetailIndex < len(m.detailItems) && m.detailItems[fileDetailIndex].Kind != DetailItemFile {
+		fileDetailIndex++
+	}
+	fileEntry := func(index int, file detailFile) {
+		lines := strings.Split(ansi.Wrap(file.label, max(1, innerWidth-6), ""), "\n")
+		prefix := helpStyle.Render(fmt.Sprintf("  %02d  ", index+1))
+		if file.source != "" && fileDetailIndex < len(m.detailItems) {
+			if focused && fileDetailIndex == m.detailCursor {
+				selectedLine = lineNumber
+				add(selectedRowStyle.Width(innerWidth).Render("> " + truncateCell(file.label, max(1, innerWidth-2))))
+			} else {
+				add(prefix + codeStyle.Render(lines[0]))
+			}
+			fileDetailIndex++
+		} else {
+			add(prefix + codeStyle.Render(lines[0]))
+		}
 		for _, line := range lines[1:] {
 			add("      " + codeStyle.Render(line))
 		}
 	}
-	filesShown := make(map[string]bool)
-	for _, detail := range m.detailItems {
-		if detail.packageMapping == nil {
-			continue
+	for _, group := range detailFileGroups(value, m.detailItems) {
+		heading := "INPUT FILES"
+		if group.packageName != "" {
+			heading += " · " + group.packageName
 		}
-		pkg := detail.packageMapping.pkg
-		if len(pkg.Files) == 0 || filesShown[pkg.PackageName] {
-			continue
+		section(heading)
+		if len(group.files) > 1 {
+			if group.packageName != "" {
+				add(helpStyle.Render("Declared order · later files take precedence"))
+			} else {
+				add(helpStyle.Render("Declared order"))
+			}
 		}
-		filesShown[pkg.PackageName] = true
-		section("INPUT FILES · " + pkg.PackageName)
-		add(helpStyle.Render("Declared order · later files take precedence"))
-		for index, file := range pkg.Files {
+		for index, file := range group.files {
 			fileEntry(index, file)
 		}
-	}
-	if len(value.ValueFiles) > 0 {
-		section("INPUT FILES")
-		add(helpStyle.Render("Declared order"))
-		for index, file := range value.ValueFiles {
-			fileEntry(index, file)
-		}
-	}
-	if value.ValueSchema != nil {
-		section("PACKAGE VALUES SCHEMA")
-		add(codeStyle.Render(wrapCell(formatYAMLValue(value.ValueSchema), innerWidth)))
 	}
 	if mappingHeading {
 		add("")
 		add(helpStyle.Render(ansi.Wrap("Inspection only: mapping availability is not schema validation. Inputs are not deployment-effective values.", innerWidth, "")))
 	}
 	if m.detailBundleMode {
+		if snippet := m.packageValuesSnippet(value); snippet != "" {
+			section("PACKAGE VALUES AUTHORING")
+			add(helpStyle.Render(ansi.Wrap("Save in a package values YAML file and supply with --values. This is input, not deployment-effective configuration.", innerWidth, "")))
+			add(snippetStyle.Render(wrapCell(snippet, innerWidth)))
+		}
 		if snippet := m.generateBundleSnippetForItem(value); snippet != "" {
 			section("UDS AUTHORING")
 			add(snippetStyle.Render(wrapCell(snippet, innerWidth)))
+		}
+	}
+	if value.ValueSchema != nil {
+		if m.detailSchemaShown {
+			section("PACKAGE VALUES SCHEMA · S TO HIDE")
+			add(codeStyle.Render(wrapCell(formatYAMLValue(value.ValueSchema), innerWidth)))
+		} else {
+			section("PACKAGE VALUES SCHEMA · HIDDEN · S TO SHOW")
 		}
 	}
 	return strings.TrimSuffix(content.String(), "\n"), selectedLine
@@ -1534,8 +1576,9 @@ func (m Model) helpView(width, height int) string {
 		"o                 open source in $EDITOR\n" +
 		"y                 copy value path\n" +
 		"p                 copy selected mapping input path\n" +
+		"s                 show / hide package values schema\n" +
 		"Z / U             summary toggles\n" +
-		"b                 bundle authoring\n" +
+		"b                 Package Values / UDS authoring\n" +
 		"Esc               back / clear\n" +
 		"q                 quit\n\n" +
 		helpStyle.Render("Press ? or Esc to close")
@@ -1900,7 +1943,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case FocusInspector:
 			m.detailBundleMode = !m.detailBundleMode
 			m.detailScrollOffset = 0
-			m.setStatus(toggleStatus("Bundle authoring", m.detailBundleMode))
+			m.setStatus(toggleStatus("Authoring snippets", m.detailBundleMode))
 		}
 	case "Z":
 		m.toggleZarfSummary()
@@ -1909,7 +1952,16 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "b":
 		m.detailBundleMode = !m.detailBundleMode
 		m.detailScrollOffset = 0
-		m.setStatus(toggleStatus("Bundle authoring", m.detailBundleMode))
+		m.setStatus(toggleStatus("Authoring snippets", m.detailBundleMode))
+	case "s":
+		if m.focusPane == FocusInspector {
+			value, ok := m.detailValue()
+			if ok && value.ValueSchema != nil {
+				m.detailSchemaShown = !m.detailSchemaShown
+				m.detailScrollOffset = m.detailScrollLimit()
+				m.setStatus(toggleStatus("Package values schema", m.detailSchemaShown))
+			}
+		}
 	case "o":
 		cmd := m.openSelectedSource()
 		return m, cmd

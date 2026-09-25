@@ -41,8 +41,16 @@ func inspectPackageValues(ctx context.Context, root, source string, sourceDirect
 		}
 		result.Values = map[string]interface{}(vals)
 	}
-	result.Files = append(result.Files, pkg.Values.Files...)
+	if assembled {
+		if len(defaults) > 0 {
+			result.Files = append(result.Files, layout.ValuesYAML)
+		}
+	} else {
+		result.Files = append(result.Files, pkg.Values.Files...)
+	}
 	result.Files = append(result.Files, overrides...)
+	result.FileSources = append(result.FileSources, defaults...)
+	result.FileSources = append(result.FileSources, overrides...)
 	schemaPath := filepath.Join(source, pkg.Values.Schema)
 	if assembled {
 		schemaPath = filepath.Join(root, layout.ValuesSchema)
@@ -81,7 +89,6 @@ func inspectTemplateText(text, filename, component, chart string) []PackageValue
 	}
 	return usages
 }
-
 
 func inspectComponentRuntime(component v1alpha1.ZarfComponent, root, source string, sourceDirectory bool) []PackageValueUsage {
 	var uses []PackageValueUsage

@@ -96,6 +96,7 @@ type PackageValues struct {
 	Values      map[string]interface{} `json:"values,omitempty" yaml:"values,omitempty"`
 	Schema      map[string]interface{} `json:"schema,omitempty" yaml:"schema,omitempty"`
 	Files       []string               `json:"files,omitempty" yaml:"files,omitempty"`
+	FileSources []string               `json:"-" yaml:"-"`
 	Usages      []PackageValueUsage    `json:"usages,omitempty" yaml:"usages,omitempty"`
 }
 

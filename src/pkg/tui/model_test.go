@@ -853,7 +853,8 @@ func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.
 			PackageName: "api",
 			Values:      map[string]interface{}{"database": map[string]interface{}{"host": "db.internal"}},
 			Schema:      map[string]interface{}{"type": "object"},
-			Files:       []string{"defaults.yaml", "operator.yaml"},
+			Files:       []string{"../../src/my-package/zarf-values.yaml", "zarf-values.yaml"},
+			FileSources: []string{"/workspace/src/my-package/zarf-values.yaml", "/workspace/zarf-values.yaml"},
 			Usages: []introspect.PackageValueUsage{{
 				Path: ".database.host", ComponentName: "server", ChartName: "app",
 				TargetPath: "database.hostname", ExcludePaths: []string{"secret"},
@@ -879,14 +880,50 @@ func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.
 	if strings.Contains(body, "EFFECTIVE VALUE") {
 		t.Fatalf("runtime mapping cannot show an effective value: %s", body)
 	}
-	model.filterInput.SetValue("defaults.yaml")
+	model.filterInput.SetValue("zarf-values.yaml")
 	model.updateFilteredValues()
 	model.buildDetailItems()
+	model.focusPane = FocusInspector
 	body, _ = model.inspectorContent(100, true)
-	for _, want := range []string{"defaults.yaml", "operator.yaml", "PACKAGE VALUES SCHEMA", "db.internal"} {
+	for _, want := range []string{"src/my-package/zarf-values.yaml", "zarf-values.yaml", "PACKAGE VALUES SCHEMA · HIDDEN", "db.internal"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in package values details: %s", want, body)
 		}
+	}
+	if strings.Contains(body, "type: object") || strings.Contains(body, "../..") {
+		t.Fatalf("schema should be collapsed and file paths should not traverse upward: %s", body)
+	}
+	if len(model.detailItems) != 3 || model.detailItems[1].Kind != DetailItemFile || model.detailItems[1].File != "/workspace/src/my-package/zarf-values.yaml" {
+		t.Fatalf("values files should be selectable in declared order: %+v", model.detailItems)
+	}
+	updated, _ := model.Update(key("s"))
+	model = updated.(Model)
+	body, _ = model.inspectorContent(100, true)
+	if !strings.Contains(body, "type: object") || strings.LastIndex(body, "PACKAGE VALUES SCHEMA") < strings.LastIndex(body, "INPUT FILES") {
+		t.Fatalf("expanded schema should render at the bottom: %s", body)
+	}
+}
+
+func TestDefaultValueStyleHasNoBackground(t *testing.T) {
+	if _, ok := detailDefaultStyle.GetBackground().(lipgloss.NoColor); !ok {
+		t.Fatal("default values should not have a background color")
+	}
+}
+
+func TestSingleInputFileOmitsOrderingNote(t *testing.T) {
+	model := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{},
+		PackageValues: []introspect.PackageValues{{
+			PackageName: "api",
+			Files:       []string{"values.yaml"},
+			FileSources: []string{"/cache/package/values.yaml"},
+		}},
+	})
+	model.focusPane = FocusInspector
+	model.buildDetailItems()
+	body, _ := model.inspectorContent(100, true)
+	if !strings.Contains(body, "values.yaml") || strings.Contains(body, "Declared order") || strings.Contains(body, "take precedence") {
+		t.Fatalf("single input file should not describe ordering or precedence: %s", body)
 	}
 }
 

@@ -52,7 +52,7 @@ Rows are grouped under a full-width component band, with muted sentence-case lab
 
 ### Details
 
-Selecting a value and pressing `Enter` opens full-width Details. The value path is the title, with a compact package/component/chart breadcrumb and value type underneath; unavailable identity levels are omitted. Shaded YAML blocks separate defaults from configured inputs. Short section headings organize configuration mappings, template locations, related values, and input-file provenance. Descriptions and long metadata wrap rather than disappear. UDS variables show the Helm path they control; UDS override values retain separate chart-default and effective-value blocks. Bundle authoring mode (`b` or `Space`) adds a UDS authoring snippet. Source paths remain absolute internally for editor jumps, but Details displays them relative to the chart.
+Selecting a value and pressing `Enter` opens full-width Details. The value path is the title, with a compact package/component/chart breadcrumb and value type underneath; unavailable identity levels are omitted. YAML blocks separate defaults from configured inputs. Short section headings organize configuration mappings, template locations, related values, and input-file provenance. Descriptions and long metadata wrap rather than disappear. UDS variables show the Helm path they control; UDS override values retain separate chart-default and effective-value blocks. Bundle authoring mode (`b` or `Space`) adds a UDS authoring snippet. Source paths remain absolute internally for editor jumps, but Details displays them relative to the chart.
 
 Package Values with one chart mapping open the chart-first table directly on `Enter`, including inputs such as `istio-controlplane.base: {}`. Values with multiple mappings open Details so you can select a destination. You can also open declaration rows under **Chart mappings · explore configurable values**.
 
@@ -67,11 +67,25 @@ The table is scoped to the owning package, component/chart, and `sourcePath` →
 | **Excluded** (red) | Matches a fully prefixed package `excludePaths` entry. |
 | **Other** (grey) | A discovered chart path outside this mapping's destination. Press `a` to show/hide these rows. Root mappings already cover all chart paths. |
 
-Chart values and mapping-table rows open the **same Details view**. **Configure through Package Values** shows each owning-package mapping's status, declared route, exact **Set input at** path, supplied value (or absence), and exclusion reason. Root destinations are labeled **chart root (.)**. **Input files** appears after source locations and related values, lists files in declared order, and is shown once per package rather than repeated for each mapping. For Next bundles, the package label is the bundle package ID. Discovery and mapping do not simulate deployment or resolve runtime inputs.
+Chart values and mapping-table rows open the **same Details view**. **Configure through Package Values** shows each owning-package mapping's status, declared route, exact **Set input at** path, supplied value (or absence), and exclusion reason. Root destinations are labeled **chart root (.)**. **Input files** appears after source locations and related values, lists files relative to their common parent, and is shown once per package rather than repeated for each mapping. When multiple files exist, their declared order determines precedence. Select a file and press `Enter` to open it. Assembled Zarf packages expose their packaged defaults as the single merged `values.yaml` that was actually inspected; operator inputs remain separate ordered files. The package values schema is collapsed by default at the bottom; press `s` to show or hide it. For Next bundles, the package label is the bundle package ID. Discovery and mapping do not simulate deployment or resolve runtime inputs.
 
 Use `j` / `↓` and `k` / `↑` to scroll Details and select mappings, source locations, or related values. The footer describes the selected action: explore a mapping, edit a source, or inspect a related value. `Enter` performs that action; `o` opens the first source location. Selection stays visible as you navigate. A bottom position indicator shows the visible line range and retains the value path when its title has scrolled away. `g` returns to the beginning; `G` moves to the end, including input provenance and any UDS authoring snippet.
 
 In Details, `y` copies the chart value path; `p` copies the selected mapping's package input path. In the mapping table, `y` still copies the package input path. `Esc` returns to the originating table or workspace; nested mapping links preserve the preceding Details selection.
+
+Press `b` or `Space` to show **Package Values Authoring**: nested YAML for the selected mapping's **Set input at** path. When a source location or related value is selected, the first mapping supplies the example. The snippet uses supplied package input when present (including `null`, `false`, and empty values), otherwise the chart default. An unknown default produces a marked `<set-value>` placeholder. Excluded, out-of-target, and runtime mappings do not generate examples. Configured Package Value rows can also show their current input as YAML.
+
+For example, mapping `.istio-controlplane.base` to the chart root and selecting `base.excludedCRDs` produces:
+
+```yaml
+# Example using the chart default; edit before use
+istio-controlplane:
+  base:
+    base:
+      excludedCRDs: []
+```
+
+Save the snippet in a package values file supplied through `--values`. The example represents configuration input, not a deployment result. The schema remains the final Details section.
 
 ### Command palette
 
@@ -112,14 +126,15 @@ Input modes preserve arrow keys for suggestions and selection. `Enter` applies t
 
 | Key | Action |
 |:---|:---|
-| `Space` | Select a component when Components is focused, or toggle bundle authoring in Details. |
+| `Space` | Select a component when Components is focused, or toggle authoring snippets in Details. |
 | `a` | In a Package Value mapping table, show/hide discovered chart paths outside the selected destination. |
 | `Z` | Toggle the Zarf package variable summary. |
 | `U` | Toggle the UDS bundle override summary. |
-| `b` | Toggle bundle authoring snippets in Details. |
+| `b` | Toggle Package Values and UDS bundle authoring snippets in Details. |
 | `o` | Open the first source location for the selected value in `$EDITOR`. |
 | `y` | Copy the selected value path using terminal OSC 52; mapping tables copy the package input path. |
 | `p` | In Details, copy the selected mapping's package input path. |
+| `s` | In Details, show or hide the package values schema. |
 | `q` / `Ctrl+C` | Quit. |
 
 OSC 52 copying works through compatible local terminals and SSH sessions without requiring a desktop clipboard service. Terminal policy may require enabling OSC 52 support.

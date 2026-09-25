@@ -27,6 +27,9 @@ var (
 				Foreground(lipgloss.Color("#DDE6F3")).
 				Background(lipgloss.Color("#101C27")).
 				Padding(0, 1)
+	detailDefaultStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#DDE6F3")).
+				Padding(0, 1)
 
 	headerBarStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#DDE6F3")).

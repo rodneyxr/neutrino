@@ -29,6 +29,7 @@ func TestPackageValuesSourceMergeAndOperatorPrecedence(t *testing.T) {
 	got, err := inspectPackageValues(context.Background(), root, root, true, pkg, []string{filepath.Join(root, "override.yaml")})
 	require.NoError(t, err)
 	require.Equal(t, []string{"first.yaml", "second.yaml", filepath.Join(root, "override.yaml")}, got.Files)
+	require.Equal(t, []string{filepath.Join(root, "first.yaml"), filepath.Join(root, "second.yaml"), filepath.Join(root, "override.yaml")}, got.FileSources)
 	require.Equal(t, "second", got.Values["app"].(map[string]interface{})["name"])
 	require.EqualValues(t, 9090, got.Values["app"].(map[string]interface{})["port"])
 	require.Equal(t, []interface{}{"two"}, got.Values["items"])
@@ -38,13 +39,18 @@ func TestPackageValuesSourceMergeAndOperatorPrecedence(t *testing.T) {
 func TestPackageValuesAssembledDescriptorsRequired(t *testing.T) {
 	root := t.TempDir()
 	pkg := v1alpha1.ZarfPackage{}
-	pkg.Values.Files = []string{"source/default.yaml"}
+	pkg.Values.Files = []string{"source/default.yaml", "source/production.yaml"}
 	pkg.Values.Schema = "source/schema.json"
 	_, err := inspectPackageValues(context.Background(), root, root, false, pkg, nil)
 	require.ErrorContains(t, err, "values.yaml")
 	require.NoError(t, os.WriteFile(filepath.Join(root, "values.yaml"), []byte("foo: bar\n"), 0600))
 	_, err = inspectPackageValues(context.Background(), root, root, false, pkg, nil)
 	require.ErrorContains(t, err, "values.schema.json")
+	require.NoError(t, os.WriteFile(filepath.Join(root, "values.schema.json"), []byte(`{"type":"object"}`), 0600))
+	got, err := inspectPackageValues(context.Background(), root, root, false, pkg, nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"values.yaml"}, got.Files)
+	require.Equal(t, []string{filepath.Join(root, "values.yaml")}, got.FileSources)
 }
 
 func TestPackageValueRuntimeReferencesNotDefaults(t *testing.T) {

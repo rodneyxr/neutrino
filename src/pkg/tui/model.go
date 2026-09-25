@@ -33,6 +33,7 @@ const (
 	DetailItemLocation DetailItemKind = iota
 	DetailItemCrossRef
 	DetailItemMapping
+	DetailItemFile
 )
 
 // DetailItem represents a single navigable row in the detail view.
@@ -43,6 +44,7 @@ type DetailItem struct {
 	Label          string                        // rendered label for cross-ref items
 	Mapping        introspect.PackageValueUsage  // valid when Kind == DetailItemMapping
 	packageMapping *valueMappingDetail
+	File           string // resolved path when Kind == DetailItemFile
 }
 
 type DisplayItem struct {
@@ -69,6 +71,7 @@ type DisplayItem struct {
 	ValuePresent       bool
 	ValueSchema        interface{}
 	ValueFiles         []string
+	ValueFileSources   []string
 	ValueSource        string
 	ValueTarget        string
 	ExcludedPaths      []string
@@ -182,6 +185,7 @@ type Model struct {
 	detailCursor       int
 	detailScrollOffset int
 	detailBundleMode   bool
+	detailSchemaShown  bool
 	detailItems        []DetailItem
 	viewportOffset     int
 	mapping            *mappingScreen
@@ -272,6 +276,10 @@ func (m *Model) updateFilteredValues() {
 	// visible even when a package contains no charts.
 	if m.currentChart == "All Charts" {
 		for _, pkg := range m.packageValues {
+			var schema interface{}
+			if len(pkg.Schema) > 0 {
+				schema = pkg.Schema
+			}
 			var leafPaths []string
 			packageLeaves("", pkg.Values, func(path string, configured interface{}) {
 				leafPaths = append(leafPaths, path)
@@ -279,8 +287,8 @@ func (m *Model) updateFilteredValues() {
 				item := DisplayItem{
 					ValueUsage: introspect.ValueUsage{Path: path, DefaultValue: configured},
 					Component:  "Zarf Package Values", PackageName: pkg.PackageName,
-					IsPackageValue: true, ValuePresent: true, ValueFiles: pkg.Files,
-					ValueSchema: pkg.Schema, Routes: routes, MappingStatus: packageStatus(routes),
+					IsPackageValue: true, ValuePresent: true, ValueFiles: pkg.Files, ValueFileSources: pkg.FileSources,
+					ValueSchema: schema, Routes: routes, MappingStatus: packageStatus(routes),
 				}
 				if matchesValueFilter(item, filter) {
 					newValues = append(newValues, item)
@@ -308,7 +316,8 @@ func (m *Model) updateFilteredValues() {
 			}
 			if len(pkg.Values) == 0 && (len(pkg.Files) > 0 || len(pkg.Schema) > 0) {
 				item := DisplayItem{ValueUsage: introspect.ValueUsage{Path: "(package values)"}, Component: "Zarf Package Values",
-					PackageName: pkg.PackageName, IsPackageValue: true, ValueFiles: pkg.Files, ValueSchema: pkg.Schema}
+					PackageName: pkg.PackageName, IsPackageValue: true, ValueFiles: pkg.Files,
+					ValueFileSources: pkg.FileSources, ValueSchema: schema}
 				if matchesValueFilter(item, filter) {
 					newValues = append(newValues, item)
 				}
@@ -843,6 +852,13 @@ func (m *Model) buildDetailItems() {
 		}
 		if !v.IsZarfVar && !v.IsPackageMapping && !v.IsPackageValue && !v.IsBundleVariable {
 			items = append(items, m.findOverridesForPath(v.Component, v.Path)...)
+		}
+	}
+	for _, group := range detailFileGroups(v, items) {
+		for _, file := range group.files {
+			if file.source != "" {
+				items = append(items, DetailItem{Kind: DetailItemFile, File: file.source})
+			}
 		}
 	}
 
