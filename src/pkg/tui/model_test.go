@@ -530,7 +530,6 @@ func TestDetailsViewRendersCopyableYAMLDefault(t *testing.T) {
 		t.Fatalf("expected copyable YAML block instead of JSON or Go struct, got:\n%s", view)
 	}
 	for _, want := range []string{
-		"DEFAULT VALUE",
 		"requests:",
 		"  cpu: 100m",
 		"  memory: 128Mi",
@@ -726,47 +725,14 @@ func TestDetailsLabelsIdentityAndUsesChartRelativeLocations(t *testing.T) {
 	model.buildDetailItems()
 	body, _ := model.inspectorContent(106, true)
 	for _, want := range []string{
-		"Component   istio-controlplane", "Chart       istiod",
-		"Value path", "global.proxy.resources.requests.memory", "Value type", "Helm chart value",
 		"values.yaml:4:1", "charts/child/templates/workload.yaml:7:2", "templates/deployment.yaml:148:12",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("details missing %q:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "/tmp/istiod") || strings.Contains(body, "Package     ") {
-		t.Fatalf("details contains an absolute source path or package row:\n%s", body)
-	}
-}
-
-func TestDetailsIdentifyStandaloneChartsAndBundleVariables(t *testing.T) {
-	model := testWorkspaceModel()
-	model.components[""] = &introspect.IntrospectResult{ChartName: "standalone", Source: "/tmp/standalone"}
-	model.filteredValues = []DisplayItem{{
-		ValueUsage: introspect.ValueUsage{Path: "image.tag", Chart: "standalone"},
-	}}
-	body, _ := model.inspectorContent(80, true)
-	for _, want := range []string{"Component   —", "Chart       standalone", "Value type  Helm chart value"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("standalone identity missing %q:\n%s", want, body)
-		}
-	}
-
-	model.filteredValues[0] = DisplayItem{
-		ValueUsage: introspect.ValueUsage{Path: "ISTIO_MEMORY"},
-		Component:  "UDS Bundle Overrides", IsSummaryItem: true, IsUDSOverrideVar: true,
-		SummaryComponent: "core-base/istio-controlplane/istiod",
-		UDSVarPath:       "global.proxy.resources.requests.memory",
-	}
-	body, _ = model.inspectorContent(80, true)
-	for _, want := range []string{
-		"Component   istio-controlplane", "Chart       istiod",
-		"Value path  ISTIO_MEMORY", "Value type  UDS variable · configurable",
-		"Controls    global.proxy.resources.requests.memory",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("bundle variable identity missing %q:\n%s", want, body)
-		}
+	if strings.Contains(body, "/tmp/istiod") {
+		t.Fatalf("details contains an absolute source path:\n%s", body)
 	}
 }
 

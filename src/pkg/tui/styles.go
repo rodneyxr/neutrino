@@ -21,6 +21,12 @@ var (
 	selectedRowStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#F4F8FF")).Background(lipgloss.Color("#17303A")).Bold(true)
 	udsOverrideValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0"))
 	udsOverrideVarStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#BDA1FF"))
+	detailTitleStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#E7EDF7")).Bold(true)
+	detailSectionStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0")).Bold(true)
+	detailCodeStyle       = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#DDE6F3")).
+				Background(lipgloss.Color("#101C27")).
+				Padding(0, 1)
 
 	headerBarStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#DDE6F3")).

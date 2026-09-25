@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const (
@@ -272,6 +273,7 @@ func (m *Model) activateFocused() tea.Cmd {
 		}
 		m.detailCursor = 0
 		m.detailScrollOffset = 0
+		m.statusMessage = ""
 		m.buildDetailItems()
 		m.focusPane = FocusInspector
 	case FocusMapping:
@@ -280,6 +282,7 @@ func (m *Model) activateFocused() tea.Cmd {
 			m.detailRef = nil
 			m.detailCursor = 0
 			m.detailScrollOffset = 0
+			m.statusMessage = ""
 			m.buildDetailItems()
 			m.focusPane = FocusInspector
 		}
@@ -556,13 +559,27 @@ func (m Model) workspaceFooter(width int) string {
 		case m.focusPane == FocusMapping:
 			primary = helpStyle.Render("j/k move  enter details  a other chart paths  y copy package path  esc back")
 		case m.focusPane == FocusInspector:
-			primary = helpStyle.Render("j/k scroll & select  enter open  y chart path  p package path  o source  esc back")
+			action := "enter open"
+			if m.detailCursor >= 0 && m.detailCursor < len(m.detailItems) {
+				switch m.detailItems[m.detailCursor].Kind {
+				case DetailItemMapping:
+					action = "enter explore  p copy input"
+				case DetailItemLocation:
+					action = "enter edit"
+				case DetailItemCrossRef:
+					action = "enter inspect"
+				}
+			}
+			primary = helpStyle.Render("j/k move  " + action + "  y copy path  esc back  ? help")
 		default:
 			primary = helpStyle.Render("tab/arrows panes  j/k move  J/K 5-lines  n/N comp  enter details  / search  : cmd  ? help  q quit")
 		}
 	}
 	if m.inputMode == InputModeNormal && m.statusMessage != "" {
 		hint := helpStyle.Render(": commands  ? help")
+		if m.focusPane == FocusInspector {
+			hint = helpStyle.Render("? help  esc back")
+		}
 		gap := width - lipgloss.Width(m.statusMessage) - lipgloss.Width(hint) - 2
 		if gap < 1 {
 			return footerBarStyle.Width(width).Render(truncateCell(m.statusMessage, width-2))
@@ -1064,7 +1081,22 @@ func (m Model) inspectorPane(width, height int) string {
 		return paneFrame(width, height, focused).Render(paneHeadingStyle.Render("DETAILS") + "\n" + helpStyle.Render("Select a value to inspect it."))
 	}
 	content, _ := m.inspectorContent(innerWidth, focused)
-	return paneFrame(width, height, focused).Render(clipLinesAt(content, max(1, height-2), m.detailScrollOffset))
+	visible := max(1, height-3)
+	total := strings.Count(content, "\n") + 1
+	offset := clamp(m.detailScrollOffset, 0, max(0, total-visible))
+	position := fmt.Sprintf("%d–%d / %d lines", offset+1, min(total, offset+visible), total)
+	context := "Details"
+	if offset > 0 {
+		if value, ok := m.detailValue(); ok {
+			context = value.Path
+		}
+	}
+	gap := max(1, innerWidth-lipgloss.Width(position)-2)
+	progress := fmt.Sprintf("%-*s  %s", gap, truncateCell(context, gap), position)
+	frame := paneFrame(width, height, focused).Border(lipgloss.RoundedBorder())
+	body := clipLinesAt(content, visible, offset)
+	body += strings.Repeat("\n", max(0, visible-lipgloss.Height(body)))
+	return frame.Render(body + "\n" + helpStyle.Render(truncateCell(progress, innerWidth)))
 }
 
 func (m Model) detailScrollLimit() int {
@@ -1079,7 +1111,7 @@ func (m Model) detailScrollLimit() int {
 	bodyHeight := height - lipgloss.Height(m.workspaceHeader(width)) - lipgloss.Height(m.workspaceFooter(width))
 	bodyHeight = max(4, bodyHeight)
 	content, _ := m.inspectorContent(max(1, width-4), true)
-	return max(0, len(strings.Split(content, "\n"))-max(1, bodyHeight-2))
+	return max(0, len(strings.Split(content, "\n"))-max(1, bodyHeight-3))
 }
 
 func (m *Model) ensureDetailCursorVisible() {
@@ -1094,7 +1126,7 @@ func (m *Model) ensureDetailCursorVisible() {
 		height = 30
 	}
 	_, row := m.inspectorContent(max(1, width-4), true)
-	visible := max(1, height-lipgloss.Height(m.workspaceHeader(width))-lipgloss.Height(m.workspaceFooter(width))-2)
+	visible := max(1, height-lipgloss.Height(m.workspaceHeader(width))-lipgloss.Height(m.workspaceFooter(width))-3)
 	if row < m.detailScrollOffset {
 		m.detailScrollOffset = row
 	} else if row >= m.detailScrollOffset+visible {
@@ -1119,14 +1151,14 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 	}
 	section := func(label string) {
 		add("")
-		rule := "━━ " + label + " "
-		if remaining := innerWidth - lipgloss.Width(rule); remaining > 0 {
-			rule += strings.Repeat("━", remaining)
+		title := detailSectionStyle.Render(truncateCell(label, innerWidth))
+		if remaining := innerWidth - lipgloss.Width(label) - 2; remaining > 0 {
+			title += helpStyle.Render("  " + strings.Repeat("─", min(8, remaining)))
 		}
-		add(fieldLabelStyle.Render(truncateCell(rule, innerWidth)))
+		add(title)
 	}
 
-	add(paneHeadingStyle.Render("DETAILS"))
+	add(helpStyle.Render("VALUE DETAILS"))
 	key := value.Component
 	if value.IsSummaryItem {
 		key = value.SummaryComponent
@@ -1151,11 +1183,27 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 		if text == "" {
 			text = "—"
 		}
-		add(fieldLabelStyle.Render(fmt.Sprintf("%-11s", label)) + " " + headerStyle.Render(wrapCell(text, max(1, innerWidth-12))))
+		labelWidth := min(14, max(1, innerWidth/3))
+		lines := strings.Split(ansi.Wrap(text, max(1, innerWidth-labelWidth-1), ""), "\n")
+		add(fieldLabelStyle.Render(fmt.Sprintf("%-*s", labelWidth, truncateCell(label, labelWidth))) + " " + codeStyle.Render(lines[0]))
+		for _, line := range lines[1:] {
+			add(strings.Repeat(" ", labelWidth+1) + codeStyle.Render(line))
+		}
 	}
-	identity("Component", component)
-	identity("Chart", chart)
-	identity("Value path", value.Path)
+	add(detailTitleStyle.Render(wrapCell(value.Path, innerWidth)))
+	var context []string
+	if pkg, _, _ := parseComponentKey(key); pkg != "" {
+		context = append(context, pkg)
+	}
+	if component != "" {
+		context = append(context, component)
+	}
+	if chart != "" {
+		context = append(context, chart)
+	}
+	if len(context) > 0 {
+		add(helpStyle.Render(ansi.Wrap(strings.Join(context, " / "), innerWidth, "")))
+	}
 	valueType := "Helm chart value"
 	switch {
 	case value.IsBundleVariable:
@@ -1176,7 +1224,7 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 	case value.IsUDSOverrideVar:
 		valueType = "UDS variable · configurable"
 	}
-	identity("Value type", valueType)
+	add(kindStyleFor(value).Render(ansi.Wrap(valueType, innerWidth, "")))
 	if m.mappingRowDetail && m.detailRef == nil && m.mapping.rows[m.mapping.cursor].undiscovered {
 		identity("Discovery", "Supplied package path; not discovered in chart")
 	}
@@ -1232,22 +1280,12 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 				linkIndex++
 			}
 		}
-		if len(value.ValueFiles) > 0 {
-			section("VALUES FILES · DECLARED ORDER")
-			for _, file := range value.ValueFiles {
-				add(codeStyle.Render(wrapCell(file, innerWidth)))
-			}
-		}
-		if value.ValueSchema != nil {
-			section("PACKAGE VALUES SCHEMA")
-			add(codeStyle.Render(wrapCell(formatYAMLValue(value.ValueSchema), innerWidth)))
-		}
 	}
 	if value.IsUDSOverrideValue {
 		section("CHART DEFAULT")
-		add(codeStyle.Render(wrapCell(formatYAMLValue(value.OriginalDefault), innerWidth)))
+		add(detailCodeStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.OriginalDefault), max(1, innerWidth-2))))
 		section("EFFECTIVE VALUE")
-		add(snippetStyle.Render(wrapCell(formatYAMLValue(value.OverrideValue), innerWidth)))
+		add(detailCodeStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.OverrideValue), max(1, innerWidth-2))))
 	} else if value.IsPackageMapping || value.IsPackageValue && !value.ValuePresent {
 		// A mapping or an operator-provided values file is not a resolved value.
 	} else {
@@ -1256,7 +1294,7 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 		} else {
 			section("DEFAULT VALUE")
 		}
-		add(codeStyle.Render(wrapCell(formatYAMLValue(value.DefaultValue), innerWidth)))
+		add(detailCodeStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.DefaultValue), max(1, innerWidth-2))))
 	}
 	description := value.PkgVarDesc
 	if value.UDSVarDescription != "" {
@@ -1264,7 +1302,7 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 	}
 	if description != "" {
 		section("DESCRIPTION")
-		add(wrapCell(description, innerWidth))
+		add(ansi.Wrap(description, innerWidth, ""))
 	}
 
 	mappingHeading := false
@@ -1273,44 +1311,47 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 			continue
 		}
 		if !mappingHeading {
-			section("PACKAGE MAPPINGS · ENTER TO EXPLORE · P TO COPY INPUT PATH")
+			section("CONFIGURE THROUGH PACKAGE VALUES")
 			mappingHeading = true
 		}
 		mapping := detail.packageMapping
 		row := mapping.row
-		label := mapping.pkg.PackageName + " · " + detail.Mapping.Path + " → " + detail.Mapping.TargetPath + " · " + row.status
+		status := row.status
+		switch row.status {
+		case "available":
+			status = "accepts input"
+		case "other":
+			status = "outside target"
+		}
+		label := mapping.pkg.PackageName + "  ·  " + status
 		if focused && index == m.detailCursor {
 			selectedLine = lineNumber
-			add(selectedRowStyle.Render("> " + wrapCell(label, max(1, innerWidth-2))))
+			add(selectedRowStyle.Width(innerWidth).Render("> " + wrapCell(label, max(1, innerWidth-2))))
 		} else {
-			add("  " + wrapCell(label, max(1, innerWidth-2)))
+			add(mappingRowStyle(row.status).Render("  " + wrapCell(label, max(1, innerWidth-2))))
 		}
+		target := detail.Mapping.TargetPath
+		if target == "." {
+			target = "chart root (.)"
+		}
+		identity("Mapping", detail.Mapping.Path+" → "+target)
 		if row.packagePath != "" {
-			identity("Input path", row.packagePath)
+			identity("Set input at", row.packagePath)
 		}
 		if row.exclusion != "" {
 			identity("Excluded by", row.exclusion)
 		}
 		if row.status == "other" {
-			add(helpStyle.Render("Outside this mapping's destination targetPath."))
+			add(helpStyle.Render(ansi.Wrap("This chart value is outside the mapping's destination.", innerWidth, "")))
 		} else if !row.present {
-			identity("Input", "not supplied")
+			identity("Package input", "Not supplied")
 		} else if row.input == nil {
-			identity("Input", "null")
+			identity("Package input", "null")
 		} else {
-			add(fieldLabelStyle.Render("Configured input:"))
-			add(codeStyle.Render(wrapCell(formatYAMLValue(row.input), innerWidth)))
-		}
-		if len(mapping.pkg.Files) > 0 {
-			add(fieldLabelStyle.Render("Package input files · declared order:"))
-			for _, file := range mapping.pkg.Files {
-				add(wrapCell(file, innerWidth))
-			}
+			add(fieldLabelStyle.Render("Package input"))
+			add(detailCodeStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(row.input), max(1, innerWidth-2))))
 		}
 		add("")
-	}
-	if mappingHeading {
-		add(helpStyle.Render(wrapCell("Declared mappings only; schema approval, runtime inputs, later mappings and deployment-effective values are not inferred.", innerWidth)))
 	}
 
 	locations, refs := 0, 0
@@ -1336,7 +1377,7 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 		label := fmt.Sprintf("%s:%d:%d", file, detail.Location.Line, detail.Location.Column)
 		if focused && index == m.detailCursor {
 			selectedLine = lineNumber
-			add(selectedRowStyle.Render("> " + tailCell(label, max(1, innerWidth-2))))
+			add(selectedRowStyle.Width(innerWidth).Render("> " + tailCell(label, max(1, innerWidth-2))))
 		} else {
 			add("  " + tailCell(label, max(1, innerWidth-2)))
 		}
@@ -1350,11 +1391,49 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 			label := truncateCell(detail.Label, max(1, innerWidth-2))
 			if focused && index == m.detailCursor {
 				selectedLine = lineNumber
-				add(selectedRowStyle.Render("> " + label))
+				add(selectedRowStyle.Width(innerWidth).Render("> " + label))
 			} else {
 				add("  " + label)
 			}
 		}
+	}
+	fileEntry := func(index int, file string) {
+		lines := strings.Split(ansi.Wrap(file, max(1, innerWidth-6), ""), "\n")
+		add(helpStyle.Render(fmt.Sprintf("  %02d  ", index+1)) + codeStyle.Render(lines[0]))
+		for _, line := range lines[1:] {
+			add("      " + codeStyle.Render(line))
+		}
+	}
+	filesShown := make(map[string]bool)
+	for _, detail := range m.detailItems {
+		if detail.packageMapping == nil {
+			continue
+		}
+		pkg := detail.packageMapping.pkg
+		if len(pkg.Files) == 0 || filesShown[pkg.PackageName] {
+			continue
+		}
+		filesShown[pkg.PackageName] = true
+		section("INPUT FILES · " + pkg.PackageName)
+		add(helpStyle.Render("Declared order · later files take precedence"))
+		for index, file := range pkg.Files {
+			fileEntry(index, file)
+		}
+	}
+	if len(value.ValueFiles) > 0 {
+		section("INPUT FILES")
+		add(helpStyle.Render("Declared order"))
+		for index, file := range value.ValueFiles {
+			fileEntry(index, file)
+		}
+	}
+	if value.ValueSchema != nil {
+		section("PACKAGE VALUES SCHEMA")
+		add(codeStyle.Render(wrapCell(formatYAMLValue(value.ValueSchema), innerWidth)))
+	}
+	if mappingHeading {
+		add("")
+		add(helpStyle.Render(ansi.Wrap("Inspection only: mapping availability is not schema validation. Inputs are not deployment-effective values.", innerWidth, "")))
 	}
 	if m.detailBundleMode {
 		if snippet := m.generateBundleSnippetForItem(value); snippet != "" {
