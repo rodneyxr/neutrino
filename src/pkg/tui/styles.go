@@ -10,6 +10,8 @@ var (
 	codeStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("#C8D2E1"))
 	kindStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("#BDA1FF")).Bold(true)
 	zarfVarStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFCA62"))
+	mappedValueStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CE36C"))
+	excludedValueStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8793"))
 	tableHeaderStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#7F8DA2")).Bold(true)
 	snippetStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0"))
 	fieldLabelStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#78869A")).Bold(true)

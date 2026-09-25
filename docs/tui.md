@@ -43,20 +43,35 @@ The Values pane displays each discovered value in a dense table. Wider terminals
 |:---|:---|
 | **Value Path** | Dot-notation value path, such as `image.repository`. Selected long paths scroll horizontally automatically with pauses at the beginning and end. |
 | **Value** | Chart default, legacy override, configured package input, or an explicit unresolved runtime marker. |
-| **Type** | `field`, `variable`, `override`, `inferred`, `package`, or `mapping`. |
+| **Type** | Helm usage type or a Package Value mapping status: `mapped`, `excluded`, `unmapped`, `runtime`, `mixed`, or `declared`. |
 | **Source** | Source file and line, or a consolidated location count. |
 
 Rows are grouped under a full-width component band, with muted sentence-case labels and a blank line separating **Zarf variables**, **UDS override values** (fixed by the bundle), **UDS variables** (configurable via `uds-config.yaml`), and **Helm chart values**. Package-wide Zarf variables and bundle-wide override summaries have their own bands. When scrolling into the middle of a component, its band and the current section label remain visible. Repeated template locations remain consolidated in the Values pane; Details lists every location.
 
-**Zarf Package Values** and **UDS Next bundle configuration** have separate groups in All Charts, including packages with no Helm charts. Package mapping rows show the source-to-target relationship rather than pretending the Package Value is a Helm default. Search includes package IDs, mapping targets, excluded paths, and values-file names.
+**Zarf Package Values** appear as configured leaf paths in All Charts, including packages with no Helm charts. The Type column labels their aggregate Helm mapping status: **mapped** (green), **excluded** (red), **unmapped** (grey), **runtime** (amber), or **mixed** (amber, when mappings differ). On narrow terminals the status prefixes the Value column. Labels, not color, carry meaning; **unmapped** does not rule out manifest/action uses. Chart mapping declarations are also directly selectable even when the configured source is `{}` or missing; multiple chart destinations have separate rows. Search includes package IDs, mapping targets, excluded paths, and values-file names.
 
 ### Details
 
 Selecting a value and pressing `Enter` opens a full-width Details view. Its labeled identity shows the component, chart, value path, and value type; unavailable levels (for example, component for a standalone chart) show `—`. Below are YAML default/effective values, the full variable description wrapped to the pane width (when available), chart-relative template locations with counts, and related values. UDS variables show the Helm path they control; UDS override values show both the chart default and the effective bundle value. Bundle authoring mode (`b` or `Space`) adds a UDS authoring snippet. Source paths remain absolute internally for editor jumps, but Details displays them relative to the chart.
 
-Package Values details show the package identity, ordered input files, JSON schema, configured structured value, and mapping exclusions/runtime status. Next details include bundle identity and package metadata. These are labeled **configured input**, not deployment-effective values; legacy authoring snippets are suppressed for Next bundles.
+Package Values with one chart mapping open the chart-first table directly on `Enter`, including inputs such as `istio-controlplane.base: {}`. Values with multiple mappings open Details so you can select a destination. You can also open declaration rows under **Chart mappings · explore configurable values**.
 
-Use `j` / `↓` and `k` / `↑` to scroll Details and select source locations or related values. The selection stays visible as you navigate long lists; scrolling continues into a UDS authoring snippet below the locations. `g` returns to the beginning; `G` moves to the end. Press `Enter` on a location to open it in `$EDITOR`, or on a related value to inspect it. `y` copies the value path, and `Esc` returns to the workspace.
+The table is scoped to the owning package, component/chart, and `sourcePath` → `targetPath` declaration. A root destination exposes all discovered chart value paths even when package input is empty or missing; a subtree destination exposes its discovered descendants.
+
+| Column/status | Meaning |
+|:---|:---|
+| **Chart path** | Destination Helm value path. Supplied-only paths absent from chart discovery are explicitly labeled. |
+| **Chart default** | Value known from chart inspection; `—` means unknown, not an empty override. |
+| **Package input** | Currently supplied package input, shown separately on wide terminals; `not supplied` is distinct from `null`, `false`, `0`, or an empty value. |
+| **Available** (green) | Reachable through this declaration, not necessarily supplied, schema-approved, or deployment-effective. |
+| **Excluded** (red) | Matches a fully prefixed package `excludePaths` entry. |
+| **Other** (grey) | A discovered chart path outside this mapping's destination. Press `a` to show/hide these rows. Root mappings already cover all chart paths. |
+
+Chart values and mapping-table rows open the **same Details view**: chart default, template locations, related values, and every mapping for that chart's owning package. Each mapping shows its exact package input path, supplied value (or absence), exclusion reason, and package input files in declared order. For Next bundles, the package label is the bundle package ID. Discovery and mapping do not simulate deployment or resolve runtime inputs.
+
+Use `j` / `↓` and `k` / `↑` to scroll Details and select mappings, source locations, or related values. `Enter` explores a selected mapping, opens a location in `$EDITOR`, or inspects a related value. `o` opens the first source location. The selection stays visible as you navigate long lists; scrolling continues into a UDS authoring snippet below the locations. `g` returns to the beginning; `G` moves to the end.
+
+In Details, `y` copies the chart value path; `p` copies the selected mapping's package input path. In the mapping table, `y` still copies the package input path. `Esc` returns to the originating table or workspace; nested mapping links preserve the preceding Details selection.
 
 ### Command palette
 
@@ -79,8 +94,8 @@ Action feedback in the footer returns to the default keyboard hints after about 
 | `n` / `N` (also `]` / `[`) | Jump to the next or previous component. |
 | `g` / `G` | Move to the first or last item in the focused pane. |
 | `PgDn` / `PgUp` | Move by the available viewport height. |
-| `Enter` | Select a component, open Details, open a location, or follow a cross-reference. |
-| `Esc` | Return to Values, close an overlay, or clear the active value filter. |
+| `Enter` | Select a component, open Details, follow a mapping link, inspect a mapping row, or open a location/cross-reference. |
+| `Esc` | Return from a mapping row to its table, then to the originating Details/Values; close an overlay or clear the active value filter. |
 
 ### Search and commands
 
@@ -98,11 +113,13 @@ Input modes preserve arrow keys for suggestions and selection. `Enter` applies t
 | Key | Action |
 |:---|:---|
 | `Space` | Select a component when Components is focused, or toggle bundle authoring in Details. |
+| `a` | In a Package Value mapping table, show/hide discovered chart paths outside the selected destination. |
 | `Z` | Toggle the Zarf package variable summary. |
 | `U` | Toggle the UDS bundle override summary. |
 | `b` | Toggle bundle authoring snippets in Details. |
 | `o` | Open the first source location for the selected value in `$EDITOR`. |
-| `y` | Copy the selected Helm value path using terminal OSC 52. |
+| `y` | Copy the selected value path using terminal OSC 52; mapping tables copy the package input path. |
+| `p` | In Details, copy the selected mapping's package input path. |
 | `q` / `Ctrl+C` | Quit. |
 
 OSC 52 copying works through compatible local terminals and SSH sessions without requiring a desktop clipboard service. Terminal policy may require enabling OSC 52 support.

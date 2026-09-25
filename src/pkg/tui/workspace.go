@@ -23,6 +23,7 @@ const (
 	FocusComponents FocusPane = iota
 	FocusValues
 	FocusInspector
+	FocusMapping
 )
 
 type layoutMode int
@@ -94,7 +95,13 @@ func (m Model) layout() layoutMode {
 }
 
 func (m *Model) moveFocus(delta int) {
+	if m.focusPane == FocusMapping {
+		return
+	}
 	if m.focusPane == FocusInspector {
+		if m.mappingRowDetail {
+			return
+		}
 		m.focusPane = FocusValues
 		m.pathScroll = 0
 		m.pathScrollPause = 2
@@ -135,6 +142,8 @@ func (m *Model) moveWithinFocusedPane(delta int) {
 		}
 		m.ensureCursorVisible()
 		m.buildDetailItems()
+	case FocusMapping:
+		m.moveMappingCursor(delta)
 	case FocusInspector:
 		m.detailCursor = clamp(m.detailCursor+delta, 0, len(m.detailItems)-1)
 		m.detailScrollOffset = clamp(m.detailScrollOffset+delta, 0, m.detailScrollLimit())
@@ -167,6 +176,8 @@ func (m *Model) moveFocusedToBoundary(last bool) {
 		}
 		m.ensureCursorVisible()
 		m.buildDetailItems()
+	case FocusMapping:
+		m.moveMappingBoundary(last)
 	case FocusInspector:
 		if last {
 			target = len(m.detailItems) - 1
@@ -246,23 +257,53 @@ func (m *Model) activateFocused() tea.Cmd {
 		if len(m.filteredValues) == 0 || m.filteredValues[m.cursor].IsEmptyState {
 			return nil
 		}
+		m.detailRef = nil
+		value := m.filteredValues[m.cursor]
+		if value.IsPackageMapping && value.ValueTarget != "" {
+			m.openMapping(value, FocusValues)
+			return nil
+		}
+		if value.IsPackageValue && value.Component == "Zarf Package Values" && len(value.Routes) == 1 {
+			route := value.Routes[0].Usage
+			if !route.Runtime && route.TargetPath != "" && route.ChartName != "" {
+				m.openMapping(packageMappingItem(route, value.Component, value.PackageName), FocusValues)
+				return nil
+			}
+		}
 		m.detailCursor = 0
 		m.detailScrollOffset = 0
 		m.buildDetailItems()
 		m.focusPane = FocusInspector
+	case FocusMapping:
+		if m.mapping != nil && m.mapping.cursor < len(m.mapping.rows) {
+			m.mappingRowDetail = true
+			m.detailRef = nil
+			m.detailCursor = 0
+			m.detailScrollOffset = 0
+			m.buildDetailItems()
+			m.focusPane = FocusInspector
+		}
 	case FocusInspector:
 		if m.detailCursor < 0 || m.detailCursor >= len(m.detailItems) {
 			return nil
 		}
 		detail := m.detailItems[m.detailCursor]
+		if detail.Kind == DetailItemMapping {
+			value, _ := m.detailValue()
+			packageName := value.PackageName
+			if detail.packageMapping != nil {
+				packageName = detail.packageMapping.pkg.PackageName
+			}
+			m.openMapping(packageMappingItem(detail.Mapping, value.Component, packageName), FocusInspector)
+			return nil
+		}
 		if detail.Kind == DetailItemLocation {
 			return openEditor(detail.Location.File, detail.Location.Line, detail.Location.Column)
 		}
-		if detail.RefIndex >= 0 && detail.RefIndex < len(m.filteredValues) {
-			m.cursor = detail.RefIndex
-			m.detailCursor = 0
+		if detail.relatedValue != nil {
+			m.detailRef = detail.relatedValue
+			m.detailCursor, m.detailScrollOffset = 0, 0
 			m.buildDetailItems()
-			m.ensureCursorVisible()
 		}
 	}
 	return nil
@@ -390,7 +431,7 @@ func (m Model) selectedValue() (DisplayItem, bool) {
 }
 
 func (m *Model) openSelectedSource() tea.Cmd {
-	value, ok := m.selectedValue()
+	value, ok := m.detailValue()
 	if !ok {
 		m.setStatus("No source location for the selected value")
 		return nil
@@ -411,7 +452,7 @@ func (m *Model) openSelectedSource() tea.Cmd {
 }
 
 func (m *Model) copySelectedPath() tea.Cmd {
-	value, ok := m.selectedValue()
+	value, ok := m.detailValue()
 	if !ok {
 		m.setStatus("No value path to copy")
 		return nil
@@ -462,7 +503,9 @@ func (m Model) workspaceView() string {
 	}
 
 	var body string
-	if m.focusPane == FocusInspector {
+	if m.focusPane == FocusMapping {
+		body = m.mappingPane(width, bodyHeight)
+	} else if m.focusPane == FocusInspector {
 		body = m.inspectorPane(width, bodyHeight)
 	} else if m.layout() == layoutCompact {
 		if m.focusPane == FocusComponents {
@@ -509,9 +552,12 @@ func (m Model) workspaceFooter(width int) string {
 	case InputModeChartSelect:
 		primary = m.chartInput.View() + helpStyle.Render("  ↑↓ choose  enter apply  esc cancel")
 	default:
-		if m.focusPane == FocusInspector {
-			primary = helpStyle.Render("j/k scroll & select  enter open  y copy path  b authoring  esc back  ? help")
-		} else {
+		switch {
+		case m.focusPane == FocusMapping:
+			primary = helpStyle.Render("j/k move  enter details  a other chart paths  y copy package path  esc back")
+		case m.focusPane == FocusInspector:
+			primary = helpStyle.Render("j/k scroll & select  enter open  y chart path  p package path  o source  esc back")
+		default:
 			primary = helpStyle.Render("tab/arrows panes  j/k move  J/K 5-lines  n/N comp  enter details  / search  : cmd  ? help  q quit")
 		}
 	}
@@ -776,14 +822,15 @@ func (m Model) valuesPane(width, height int) string {
 	lastSection := ""
 	for index := start; index < len(m.filteredValues); index++ {
 		value := m.filteredValues[index]
-		if index == start || value.Component != lastComponent {
+		group := valueGroupKey(value)
+		if index == start || group != lastComponent {
 			if linesUsed+2 > maxLines {
 				break
 			}
 			content.WriteString(componentBandStyle.Render(componentBand(m.valueComponentLabel(value, innerWidth), innerWidth)))
 			content.WriteByte('\n')
 			linesUsed++
-			lastComponent = value.Component
+			lastComponent = group
 			lastSection = ""
 		}
 		section := valueSection(value)
@@ -814,7 +861,11 @@ func (m Model) valuesPane(width, height int) string {
 		if index == m.cursor && m.pathScroll > 0 {
 			path = scrollCell(value.Path, m.pathScroll, pathWidth)
 		}
-		defaultValue := truncateCell(displayValue(value), valWidth)
+		defaultValue := displayValue(value)
+		if !showMetadata && value.IsPackageValue && value.MappingStatus != "" {
+			defaultValue = value.MappingStatus + ": " + defaultValue
+		}
+		defaultValue = truncateCell(defaultValue, valWidth)
 		kind := displayKind(value)
 		var line string
 		if showMetadata {
@@ -874,17 +925,27 @@ func componentBand(label string, width int) string {
 	return title
 }
 
+func valueGroupKey(value DisplayItem) string {
+	if value.IsPackageValue || value.IsPackageMapping {
+		return value.Component + "/" + value.PackageName
+	}
+	return value.Component
+}
+
 func valueSection(value DisplayItem) string {
 	switch {
 	case value.IsBundleVariable:
 		return "UDS Next variables · configured input"
 	case value.IsPackageMapping:
-		return "Zarf Package Values · mappings"
+		if value.Runtime {
+			return "Zarf Package Values · runtime references"
+		}
+		return "Chart mappings · explore configurable values"
 	case value.IsPackageValue:
 		if value.Component == "UDS Next bundle" {
 			return "UDS Next values files · operator input"
 		}
-		return "Zarf Package Values · configured input"
+		return "Zarf Package Values · configured paths"
 	case value.IsPkgVar || value.IsZarfVar:
 		return "Zarf variables"
 	case value.IsUDSOverrideVar:
@@ -906,9 +967,10 @@ func (m Model) valueLineCount(start, end int) int {
 	lastSection := ""
 	for index := start; index <= end; index++ {
 		value := m.filteredValues[index]
-		if index == start || value.Component != lastComponent {
+		group := valueGroupKey(value)
+		if index == start || group != lastComponent {
 			lines++
-			lastComponent = value.Component
+			lastComponent = group
 			lastSection = ""
 		}
 		section := valueSection(value)
@@ -951,8 +1013,11 @@ func displayKind(value DisplayItem) string {
 	case value.IsBundleVariable:
 		return "variable"
 	case value.IsPackageMapping:
-		return "mapping"
+		return "declared"
 	case value.IsPackageValue:
+		if value.MappingStatus != "" {
+			return value.MappingStatus
+		}
 		return "package"
 	case value.IsPkgVar || value.IsZarfVar:
 		return "variable"
@@ -969,6 +1034,17 @@ func displayKind(value DisplayItem) string {
 
 func kindStyleFor(value DisplayItem) lipgloss.Style {
 	switch {
+	case value.IsPackageValue:
+		switch value.MappingStatus {
+		case "mapped":
+			return mappedValueStyle
+		case "excluded":
+			return excludedValueStyle
+		case "unmapped":
+			return helpStyle
+		case "mixed", "runtime":
+			return zarfVarStyle
+		}
 	case value.IsPkgVar || value.IsZarfVar:
 		return zarfVarStyle
 	case value.IsUDSOverrideValue:
@@ -977,15 +1053,14 @@ func kindStyleFor(value DisplayItem) lipgloss.Style {
 		return udsOverrideVarStyle
 	case value.IsEmptyState:
 		return helpStyle
-	default:
-		return codeStyle
 	}
+	return codeStyle
 }
 
 func (m Model) inspectorPane(width, height int) string {
 	focused := m.focusPane == FocusInspector
 	innerWidth := max(1, width-4)
-	if _, ok := m.selectedValue(); !ok {
+	if _, ok := m.detailValue(); !ok {
 		return paneFrame(width, height, focused).Render(paneHeadingStyle.Render("DETAILS") + "\n" + helpStyle.Render("Select a value to inspect it."))
 	}
 	content, _ := m.inspectorContent(innerWidth, focused)
@@ -1030,7 +1105,7 @@ func (m *Model) ensureDetailCursorVisible() {
 
 // inspectorContent returns the scrollable body and the selected action's line.
 func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
-	value, ok := m.selectedValue()
+	value, ok := m.detailValue()
 	if !ok {
 		return "", -1
 	}
@@ -1066,6 +1141,12 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 	if value.Chart != "" {
 		chart = value.Chart
 	}
+	if value.Component == "Zarf Package Values" {
+		component, chart = "", ""
+		if value.IsPackageMapping {
+			component, chart = value.MappingComponent, value.MappingChart
+		}
+	}
 	identity := func(label, text string) {
 		if text == "" {
 			text = "—"
@@ -1096,11 +1177,17 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 		valueType = "UDS variable · configurable"
 	}
 	identity("Value type", valueType)
+	if m.mappingRowDetail && m.detailRef == nil && m.mapping.rows[m.mapping.cursor].undiscovered {
+		identity("Discovery", "Supplied package path; not discovered in chart")
+	}
 	if value.IsUDSOverrideVar && value.UDSVarPath != "" {
 		identity("Controls", value.UDSVarPath)
 	}
 
 	if value.PackageName != "" {
+		if value.IsPackageValue && value.MappingStatus != "" {
+			identity("Helm mapping", value.MappingStatus)
+		}
 		identity("Package", value.PackageName)
 	}
 	if value.IsPackageValue || value.IsPackageMapping || value.IsBundleVariable {
@@ -1118,17 +1205,31 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 			}
 		}
 		if value.IsPackageMapping {
-			identity("Mapping component", value.MappingComponent)
-			identity("Mapping chart", value.MappingChart)
-		}
-		if value.IsPackageMapping {
+			identity("Mapping chart", value.MappingComponent+"/"+value.MappingChart)
 			identity("Source path", value.ValueSource)
 			identity("Target path", value.ValueTarget)
-			identity("Excludes", strings.Join(value.ExcludedPaths, ", "))
-			if value.Runtime {
-				identity("Resolution", "runtime · no effective value inferred")
-			} else {
-				identity("Resolution", "mapping declaration · not an effective chart value")
+			identity("Resolution", "declared route · not an effective chart value")
+		}
+		if value.IsPackageValue && value.ValuePresent && len(value.Routes) > 0 {
+			section("CHART MAPPINGS · ENTER TO INSPECT")
+			linkIndex := 0
+			for _, route := range value.Routes {
+				owner := route.Usage.ComponentName
+				if route.Usage.ChartName != "" {
+					owner += "/" + route.Usage.ChartName
+				}
+				if route.Usage.TargetPath == "" || route.Usage.ChartName == "" {
+					add(wrapCell(owner+" · runtime/template reference", innerWidth))
+					continue
+				}
+				text := owner + " · " + route.Status + " · " + route.Usage.Path + " → " + route.Usage.TargetPath
+				if focused && linkIndex == m.detailCursor {
+					selectedLine = lineNumber
+					add(selectedRowStyle.Render("> " + truncateCell(text, max(1, innerWidth-2))))
+				} else {
+					add("  " + wrapCell(text, max(1, innerWidth-2)))
+				}
+				linkIndex++
 			}
 		}
 		if len(value.ValueFiles) > 0 {
@@ -1166,17 +1267,66 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 		add(wrapCell(description, innerWidth))
 	}
 
+	mappingHeading := false
+	for index, detail := range m.detailItems {
+		if detail.packageMapping == nil {
+			continue
+		}
+		if !mappingHeading {
+			section("PACKAGE MAPPINGS · ENTER TO EXPLORE · P TO COPY INPUT PATH")
+			mappingHeading = true
+		}
+		mapping := detail.packageMapping
+		row := mapping.row
+		label := mapping.pkg.PackageName + " · " + detail.Mapping.Path + " → " + detail.Mapping.TargetPath + " · " + row.status
+		if focused && index == m.detailCursor {
+			selectedLine = lineNumber
+			add(selectedRowStyle.Render("> " + wrapCell(label, max(1, innerWidth-2))))
+		} else {
+			add("  " + wrapCell(label, max(1, innerWidth-2)))
+		}
+		if row.packagePath != "" {
+			identity("Input path", row.packagePath)
+		}
+		if row.exclusion != "" {
+			identity("Excluded by", row.exclusion)
+		}
+		if row.status == "other" {
+			add(helpStyle.Render("Outside this mapping's destination targetPath."))
+		} else if !row.present {
+			identity("Input", "not supplied")
+		} else if row.input == nil {
+			identity("Input", "null")
+		} else {
+			add(fieldLabelStyle.Render("Configured input:"))
+			add(codeStyle.Render(wrapCell(formatYAMLValue(row.input), innerWidth)))
+		}
+		if len(mapping.pkg.Files) > 0 {
+			add(fieldLabelStyle.Render("Package input files · declared order:"))
+			for _, file := range mapping.pkg.Files {
+				add(wrapCell(file, innerWidth))
+			}
+		}
+		add("")
+	}
+	if mappingHeading {
+		add(helpStyle.Render(wrapCell("Declared mappings only; schema approval, runtime inputs, later mappings and deployment-effective values are not inferred.", innerWidth)))
+	}
+
 	locations, refs := 0, 0
 	for _, item := range m.detailItems {
-		if item.Kind == DetailItemLocation {
+		switch item.Kind {
+		case DetailItemLocation:
 			locations++
-		} else {
+		case DetailItemCrossRef:
 			refs++
 		}
 	}
-	section(fmt.Sprintf("TEMPLATE LOCATIONS  ·  %d", locations))
-	if locations == 0 {
-		add(helpStyle.Render("No template locations found."))
+	if locations > 0 || !value.IsPackageValue {
+		section(fmt.Sprintf("TEMPLATE LOCATIONS  ·  %d", locations))
+		if locations == 0 {
+			add(helpStyle.Render("No template locations found."))
+		}
 	}
 	for index, detail := range m.detailItems {
 		if detail.Kind != DetailItemLocation {
@@ -1296,13 +1446,15 @@ func (m Model) helpView(width, height int) string {
 		"J / K             jump 5 lines in focused pane\n" +
 		"n / N, ] / [     jump next / previous component\n" +
 		"g / G             first / last item\n" +
-		"Enter             open full-width details\n" +
+		"Enter             details / mapping / mapped value\n" +
 		"/                 filter values\n" +
 		"f                 select component\n" +
 		":                 command palette\n" +
 		"Space             select component / Details authoring\n" +
+		"a                 toggle other paths in mapping\n" +
 		"o                 open source in $EDITOR\n" +
 		"y                 copy value path\n" +
+		"p                 copy selected mapping input path\n" +
 		"Z / U             summary toggles\n" +
 		"b                 bundle authoring\n" +
 		"Esc               back / clear\n" +
@@ -1555,6 +1707,21 @@ func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.focusPane == FocusMapping || m.mappingRowDetail {
+		switch msg.String() {
+		case "q", "ctrl+c", "j", "k", "J", "K", "up", "down", "g", "G", "pgup", "pgdown", "enter", "esc", "?", "y":
+		case "p", "o", "b", " ", "space":
+			if m.focusPane != FocusInspector {
+				return m, nil
+			}
+		case "a":
+			if m.focusPane != FocusMapping {
+				return m, nil
+			}
+		default:
+			return m, nil
+		}
+	}
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -1563,26 +1730,23 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab":
 		m.moveFocus(-1)
 	case "h", "left":
+		if m.focusPane == FocusMapping || m.mappingRowDetail {
+			break
+		}
 		if m.focusPane == FocusInspector {
 			m.focusPane = FocusValues
-			m.pathScroll = 0
-			m.pathScrollPause = 2
 		} else {
 			m.focusPane = FocusComponents
-			m.pathScroll = 0
-			m.compScroll = 0
-			m.compScrollPause = 2
 		}
+		m.pathScroll = 0
+		m.pathScrollPause = 2
 	case "l", "right":
-		if m.focusPane == FocusInspector {
-			m.focusPane = FocusValues
-			m.pathScroll = 0
-			m.pathScrollPause = 6
-		} else {
-			m.focusPane = FocusValues
-			m.pathScroll = 0
-			m.pathScrollPause = 2
+		if m.focusPane == FocusMapping || m.mappingRowDetail {
+			break
 		}
+		m.focusPane = FocusValues
+		m.pathScroll = 0
+		m.pathScrollPause = 2
 	case "j", "down":
 		m.moveWithinFocusedPane(1)
 	case "k", "up":
@@ -1606,6 +1770,12 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		cmd := m.activateFocused()
 		return m, cmd
+	case "a":
+		if m.focusPane == FocusMapping && m.mapping != nil {
+			m.mapping.showOthers = !m.mapping.showOthers
+			m.mapping.buildRows()
+			m.ensureMappingCursorVisible()
+		}
 	case "/":
 		m.beginFilter()
 	case "f":
@@ -1615,7 +1785,24 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.showHelp = true
 	case "esc":
-		if m.focusPane == FocusInspector {
+		if m.focusPane == FocusInspector && m.detailRef != nil {
+			m.detailRef = nil
+			m.detailCursor, m.detailScrollOffset = 0, 0
+			m.buildDetailItems()
+		} else if m.mappingRowDetail {
+			m.mappingRowDetail = false
+			m.detailScrollOffset = 0
+			m.focusPane = FocusMapping
+		} else if m.focusPane == FocusMapping {
+			screen := m.mapping
+			m.focusPane = screen.origin
+			m.mapping = screen.previous
+			m.mappingRowDetail = screen.returnRowDetail
+			m.detailRef = screen.returnDetailRef
+			m.detailCursor = screen.returnDetailCursor
+			m.detailScrollOffset = screen.returnDetailOffset
+			m.buildDetailItems()
+		} else if m.focusPane == FocusInspector {
 			m.focusPane = FocusValues
 			m.detailScrollOffset = 0
 		} else if m.filterInput.Value() != "" {
@@ -1647,7 +1834,24 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		cmd := m.openSelectedSource()
 		return m, cmd
+	case "p":
+		if m.focusPane == FocusInspector && m.detailCursor >= 0 && m.detailCursor < len(m.detailItems) {
+			if detail := m.detailItems[m.detailCursor].packageMapping; detail != nil && detail.row.packagePath != "" {
+				m.setStatus("Copied " + detail.row.packagePath)
+				return m, osc52Copy(detail.row.packagePath)
+			}
+		}
+		m.setStatus("Select a package mapping to copy its input path")
 	case "y":
+		if m.mapping != nil && m.mapping.cursor < len(m.mapping.rows) && m.focusPane == FocusMapping {
+			path := m.mapping.rows[m.mapping.cursor].packagePath
+			if path == "" {
+				m.setStatus("No package path outside this mapping")
+				return m, nil
+			}
+			m.setStatus("Copied " + path)
+			return m, osc52Copy(path)
+		}
 		cmd := m.copySelectedPath()
 		return m, cmd
 	}
@@ -1665,5 +1869,9 @@ func (m *Model) syncComponentCursor() {
 
 func osc52Copy(value string) tea.Cmd {
 	payload := base64.StdEncoding.EncodeToString([]byte(value))
-	return tea.Printf("\x1b]52;c;%s\a", payload)
+	return func() tea.Msg {
+		// tea.Printf suppresses output in the TUI's alternate screen.
+		fmt.Printf("\x1b]52;c;%s\a", payload)
+		return nil
+	}
 }

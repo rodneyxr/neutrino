@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -894,17 +895,17 @@ func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.
 			}},
 		}},
 	})
-	if len(model.filteredValues) != 2 {
-		t.Fatalf("package values should appear without charts: %+v", model.filteredValues)
+	if len(model.filteredValues) != 1 || model.filteredValues[0].Path != "database.host" {
+		t.Fatalf("package leaf should appear once without charts: %+v", model.filteredValues)
 	}
 	model.filterInput.SetValue("database.hostname")
 	model.updateFilteredValues()
-	if len(model.filteredValues) != 1 || !model.filteredValues[0].IsPackageMapping {
-		t.Fatalf("mapping target should be searchable: %+v", model.filteredValues)
+	if len(model.filteredValues) != 1 || model.filteredValues[0].MappingStatus != "runtime" {
+		t.Fatalf("mapping target should find its configured value: %+v", model.filteredValues)
 	}
 	model.buildDetailItems()
 	body, _ := model.inspectorContent(100, true)
-	for _, want := range []string{".database.host", "database.hostname", "secret", "runtime · no effective value inferred", "server", "app"} {
+	for _, want := range []string{"database.host", "runtime", "server/app", "NOT DEPLOYMENT EFFECTIVE"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in mapping details: %s", want, body)
 		}
@@ -920,6 +921,206 @@ func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in package values details: %s", want, body)
 		}
+	}
+}
+
+func TestMappingChartFirstRootAndSubtree(t *testing.T) {
+	root := introspect.PackageValueUsage{Path: ".istio-controlplane.base", TargetPath: ".", ComponentName: "istio-controlplane", ChartName: "base",
+		ExcludePaths: []string{".istio-controlplane.base._internal_defaults_do_not_set", ".istio-controlplane.base.global.hub"}}
+	subtree := introspect.PackageValueUsage{Path: ".app", TargetPath: ".config", ComponentName: "server", ChartName: "web"}
+	model := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{
+			"core/istio-controlplane/base": {Values: []introspect.ValueUsage{
+				{Path: "base.enableCRDTemplates", DefaultValue: false}, {Path: "global.hub", DefaultValue: "docker.io"},
+				{Path: "_internal_defaults_do_not_set.flag", DefaultValue: true},
+			}},
+			"core/server/web": {Values: []introspect.ValueUsage{
+				{Path: "config.replicas", DefaultValue: 1}, {Path: "config.enabled", DefaultValue: true},
+				{Path: "other.path", DefaultValue: "outside"},
+			}},
+		},
+		PackageValues: []introspect.PackageValues{{PackageName: "core",
+			Values: map[string]interface{}{"istio-controlplane": map[string]interface{}{"base": map[string]interface{}{}},
+				"app": map[string]interface{}{"replicas": 0, "enabled": false, "undiscovered": "supplied"}},
+			Files: []string{"packaged.yaml", "operator.yaml"}, Usages: []introspect.PackageValueUsage{root, subtree},
+		}},
+	})
+	for i, item := range model.filteredValues {
+		if item.IsPackageValue && item.Path == "istio-controlplane.base" {
+			model.cursor = i
+			break
+		}
+	}
+	updated, _ := model.Update(key("enter"))
+	model = updated.(Model)
+	if model.focusPane != FocusMapping || model.mapping.inside != 3 {
+		t.Fatalf("empty source should expose three chart paths: %+v", model.mapping)
+	}
+	rows := map[string]mappingRow{}
+	for _, row := range model.mapping.rows {
+		rows[row.path] = row
+	}
+	if got := rows["base.enableCRDTemplates"]; got.status != "available" || got.present || got.defaultValue != false ||
+		got.packagePath != ".istio-controlplane.base.base.enableCRDTemplates" {
+		t.Fatalf("chart candidate with absent input: %+v", got)
+	}
+	if got := rows["global.hub"]; got.status != "excluded" || got.exclusion != ".istio-controlplane.base.global.hub" {
+		t.Fatalf("fully prefixed exclusion: %+v", got)
+	}
+	if rows["_internal_defaults_do_not_set.flag"].status != "excluded" {
+		t.Fatalf("excluded descendant: %+v", rows)
+	}
+	if strings.Contains(model.View(), "No configured paths") {
+		t.Fatal("empty object must not imply empty chart")
+	}
+	updated, _ = model.Update(key("esc"))
+	model = updated.(Model)
+	for i, item := range model.filteredValues {
+		if item.IsPackageMapping && item.MappingChart == "web" {
+			model.cursor = i
+			break
+		}
+	}
+	updated, _ = model.Update(key("enter"))
+	model = updated.(Model)
+	if model.mapping.inside != 3 {
+		t.Fatalf("two discovered subtree paths and one supplied-only path: %+v", model.mapping.rows)
+	}
+	rows = map[string]mappingRow{}
+	for _, row := range model.mapping.rows {
+		rows[row.path] = row
+	}
+	if got := rows["config.replicas"]; !got.present || got.input != 0 || got.defaultValue != 1 {
+		t.Fatalf("zero input vs chart default: %+v", got)
+	}
+	if got := rows["config.enabled"]; !got.present || got.input != false {
+		t.Fatalf("false input: %+v", got)
+	}
+	if !rows["config.undiscovered"].undiscovered || !rows["config.undiscovered"].present {
+		t.Fatalf("supplied input absent from discovery: %+v", rows)
+	}
+	updated, _ = model.Update(key("a"))
+	model = updated.(Model)
+	if len(model.mapping.rows) != 4 || model.mapping.rows[3].path != "other.path" || model.mapping.rows[3].status != "other" {
+		t.Fatalf("toggle reveals outside destination chart paths only: %+v", model.mapping.rows)
+	}
+	updated, _ = model.Update(key("G"))
+	model = updated.(Model)
+	model.windowWidth, model.windowHeight = 72, 14
+	model.ensureMappingCursorVisible()
+	if view := model.View(); !strings.Contains(view, "other.path") || !strings.Contains(view, "other") || lipgloss.Width(view) != 72 {
+		t.Fatalf("narrow table should keep status and selected row visible: %s", view)
+	}
+	model.windowHeight = 28
+	updated, _ = model.Update(key("enter"))
+	model = updated.(Model)
+	updated, _ = model.Update(key("esc"))
+	model = updated.(Model)
+	updated, _ = model.Update(key("a"))
+	model = updated.(Model)
+	if model.mapping.cursor >= len(model.mapping.rows) || model.mapping.rows[model.mapping.cursor].status == "other" {
+		t.Fatalf("hiding other rows should retain a valid selection: %+v", model.mapping)
+	}
+}
+
+func TestMappingInputDistinguishesAbsentAndExplicitValues(t *testing.T) {
+	values := map[string]interface{}{"nil": nil, "off": false, "zero": 0, "empty": "", "object": map[string]interface{}{}}
+	for path, want := range map[string]interface{}{"nil": nil, "off": false, "zero": 0, "empty": "", "object": map[string]interface{}{}} {
+		got, present := mappingInput(values, path)
+		if !present || !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %v, present %v; want %v", path, got, present, want)
+		}
+	}
+	for _, path := range []string{"absent", "object.child", "off.child"} {
+		if got, present := mappingInput(values, path); present {
+			t.Errorf("%s unexpectedly supplied: %v", path, got)
+		}
+	}
+}
+
+func TestMappingPackageOwnershipAndMissingSource(t *testing.T) {
+	usage := introspect.PackageValueUsage{Path: ".missing", TargetPath: ".config", ComponentName: "server", ChartName: "web"}
+	model := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{
+			"b/server/web": {Values: []introspect.ValueUsage{{Path: "config.enabled", DefaultValue: true}},
+				PackageValueMappings: []introspect.PackageValueUsage{usage}},
+		},
+		ComponentOrder: []string{"b/server/web"},
+		PackageValues: []introspect.PackageValues{
+			{PackageName: "a", Values: map[string]interface{}{"missing": map[string]interface{}{"enabled": false}}, Usages: []introspect.PackageValueUsage{usage}},
+			{PackageName: "b", Values: map[string]interface{}{}, Usages: []introspect.PackageValueUsage{usage}},
+		},
+	})
+	for i, item := range model.filteredValues {
+		if item.IsPackageMapping && item.PackageName == "b" {
+			model.cursor = i
+			break
+		}
+	}
+	updated, _ := model.Update(key("enter"))
+	model = updated.(Model)
+	if model.mapping == nil || model.mapping.pkg.PackageName != "b" || model.mapping.inside != 1 || model.mapping.rows[0].present {
+		t.Fatalf("missing-source declaration must reveal chart candidates owned by b: %+v", model.mapping)
+	}
+	if !strings.Contains(model.View(), "Source absent") {
+		t.Fatalf("missing source label: %s", model.View())
+	}
+	updated, _ = model.Update(key("enter"))
+	model = updated.(Model)
+	updated, _ = model.Update(key("esc"))
+	model = updated.(Model)
+	updated, _ = model.Update(key("esc"))
+	model = updated.(Model)
+	model.currentChart = "b/server/web"
+	model.updateFilteredValues()
+	for i, item := range model.filteredValues {
+		if item.IsPackageMapping {
+			model.cursor = i
+			break
+		}
+	}
+	updated, _ = model.Update(key("enter"))
+	model = updated.(Model)
+	if model.mapping == nil || model.mapping.pkg.PackageName != "b" {
+		t.Fatalf("chart mapping must resolve owning package: %+v", model.mapping)
+	}
+}
+
+func TestPackageValuesKeepPackageBandsDistinct(t *testing.T) {
+	model := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{},
+		PackageValues: []introspect.PackageValues{
+			{PackageName: "api", Values: map[string]interface{}{"port": 80}},
+			{PackageName: "worker", Values: map[string]interface{}{"port": 81}},
+		},
+	})
+	model.windowWidth, model.windowHeight = 140, 22
+	view := model.View()
+	if !strings.Contains(view, "Zarf Package Values · api") || !strings.Contains(view, "Zarf Package Values · worker") {
+		t.Fatalf("each package must have its own visible band:\n%s", view)
+	}
+}
+
+func TestPackageRoutesRespectRootAndPathSegments(t *testing.T) {
+	usages := []introspect.PackageValueUsage{
+		{Path: ".", TargetPath: ".config", ExcludePaths: []string{".app.secret"}},
+		{Path: ".app", TargetPath: ".", ExcludePaths: []string{".app.secret"}},
+	}
+	routes := packageRoutes("app.replicas", usages)
+	if len(routes) != 2 || routes[0].Target != "config.app.replicas" || routes[1].Target != "replicas" {
+		t.Fatalf("root and subtree targets: %+v", routes)
+	}
+	routes = packageRoutes("app.secretExtra", usages)
+	if len(routes) != 2 || packageStatus(routes) != "mapped" {
+		t.Fatalf("excludePaths must match whole segments: %+v", routes)
+	}
+	routes = packageRoutes("app.secret", usages)
+	if len(routes) != 2 || packageStatus(routes) != "excluded" {
+		t.Fatalf("excluded descendants: %+v", routes)
+	}
+	root := packageRoutes("app", []introspect.PackageValueUsage{{Path: ".app", TargetPath: "."}})
+	if len(root) != 1 || root[0].Target != "." {
+		t.Fatalf("chart root destination must be visible: %+v", root)
 	}
 }
 
@@ -996,5 +1197,173 @@ func key(value string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEsc}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}
+	}
+}
+
+func TestChartDetailsShareMappingContextAndRestoreEntryPoints(t *testing.T) {
+	usage := introspect.PackageValueUsage{Path: ".app", TargetPath: ".config", ComponentName: "server", ChartName: "web"}
+	excluded := usage
+	excluded.Path = ".fallback"
+	excluded.ExcludePaths = []string{".fallback.enabled"}
+	location := introspect.ValueUsageLocation{File: "/charts/web/templates/deployment.yaml", Line: 12, Column: 8}
+	model := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{
+			"b/server/web": {ChartName: "web", Source: "/charts/web", Values: []introspect.ValueUsage{
+				{Path: "config.enabled", DefaultValue: true, Locations: []introspect.ValueUsageLocation{location}},
+			}},
+		},
+		ComponentOrder: []string{"b/server/web"},
+		PackageValues: []introspect.PackageValues{
+			{PackageName: "a", Values: map[string]interface{}{"app": map[string]interface{}{"enabled": "foreign"}}, Usages: []introspect.PackageValueUsage{usage}},
+			{PackageName: "b", Values: map[string]interface{}{"app": map[string]interface{}{"enabled": false}, "fallback": map[string]interface{}{"enabled": nil}},
+				Files: []string{"packaged.yaml", "operator.yaml"}, Usages: []introspect.PackageValueUsage{usage, excluded}},
+		},
+	})
+	model.windowWidth, model.windowHeight = 120, 36
+	for i, item := range model.filteredValues {
+		if item.Component == "b/server/web" && item.Path == "config.enabled" && !item.IsPackageValue && !item.IsPackageMapping {
+			model.cursor = i
+			break
+		}
+	}
+	originCursor := model.cursor
+	press := func(k string) {
+		t.Helper()
+		updated, _ := model.Update(key(k))
+		model = updated.(Model)
+	}
+	press("enter")
+	if len(model.detailItems) != 3 {
+		t.Fatalf("want two owning-package mappings and one source location: %+v", model.detailItems)
+	}
+	first, second := model.detailItems[0].packageMapping, model.detailItems[1].packageMapping
+	if first.pkg.PackageName != "b" || !first.row.present || first.row.input != false ||
+		first.row.packagePath != ".app.enabled" || second.row.status != "excluded" ||
+		!second.row.present || second.row.input != nil || second.row.exclusion != ".fallback.enabled" {
+		t.Fatalf("mapping precedence/provenance lost: %+v %+v", first, second)
+	}
+	if !reflect.DeepEqual(first.pkg.Files, []string{"packaged.yaml", "operator.yaml"}) || model.detailItems[2].Location != location {
+		t.Fatal("ordered inputs or editor location lost")
+	}
+	direct, _ := model.inspectorContent(116, true)
+	press("enter")
+	if model.focusPane != FocusMapping {
+		t.Fatal("chart Details mapping link did not open the chart-first table")
+	}
+	table := model.mapping
+	press("enter")
+	viaMapping, _ := model.inspectorContent(116, true)
+	if direct != viaMapping {
+		t.Fatalf("same chart value differs by entry point:\nDIRECT:\n%s\nMAPPING:\n%s", direct, viaMapping)
+	}
+	press("j")
+	if model.detailCursor != 1 {
+		t.Fatal("mapping-origin Details cannot select another mapping")
+	}
+	press("enter")
+	if model.focusPane != FocusMapping || model.mapping.usage.Path != ".fallback" {
+		t.Fatal("alternative mapping link did not open its declaration")
+	}
+	press("esc")
+	if model.focusPane != FocusInspector || !model.mappingRowDetail || model.mapping != table || model.detailCursor != 1 {
+		t.Fatal("nested mapping did not restore originating Details selection")
+	}
+	press("j")
+	if model.detailItems[model.detailCursor].Location != location {
+		t.Fatal("mapping-origin Details cannot select the template location")
+	}
+	press("esc")
+	if model.focusPane != FocusMapping || model.mapping != table {
+		t.Fatal("mapping-origin Details did not return to its table")
+	}
+	press("esc")
+	if model.focusPane != FocusInspector || model.mapping != nil || model.mappingRowDetail || model.cursor != originCursor {
+		t.Fatal("table did not restore main chart Details")
+	}
+	press("esc")
+	if model.focusPane != FocusValues || model.cursor != originCursor {
+		t.Fatal("main chart Details did not preserve workspace selection")
+	}
+	for i, item := range model.filteredValues {
+		if item.IsPackageMapping && item.PackageName == "b" && item.ValueSource == ".app" {
+			model.cursor = i
+			break
+		}
+	}
+	packageCursor := model.cursor
+	press("enter")
+	press("enter")
+	fromPackage, _ := model.inspectorContent(116, true)
+	if fromPackage != direct {
+		t.Fatalf("package entry lost common chart Details:\n%s", fromPackage)
+	}
+	press("esc")
+	press("esc")
+	if model.focusPane != FocusValues || model.cursor != packageCursor {
+		t.Fatal("package entry did not preserve workspace selection")
+	}
+}
+
+func TestMappingDetailsKeepRelatedValuesOutsideWorkspaceFilter(t *testing.T) {
+	const component = "core/server/web"
+	model := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{component: {
+			Values: []introspect.ValueUsage{{Path: "config.enabled", DefaultValue: true,
+				Locations: []introspect.ValueUsageLocation{{File: "/web/templates/config.yaml", Line: 3, Column: 4}}}},
+			UDSOverrideValues:    []introspect.UDSOverrideValue{{Path: "config.enabled", Value: false, OriginalDefault: true}},
+			UDSOverrideVariables: []introspect.UDSOverrideVariable{{Name: "ENABLED", Path: "config.enabled", Default: true, Description: "Enable service"}},
+		}},
+		ComponentOrder: []string{component},
+		PackageValues: []introspect.PackageValues{{PackageName: "core",
+			Values: map[string]interface{}{"app": map[string]interface{}{}},
+			Usages: []introspect.PackageValueUsage{{Path: ".app", TargetPath: ".config", ComponentName: "server", ChartName: "web"}},
+		}},
+	})
+	press := func(k string) {
+		t.Helper()
+		updated, _ := model.Update(key(k))
+		model = updated.(Model)
+	}
+	model.filterInput.SetValue("config.enabled")
+	model.updateFilteredValues()
+	for i, value := range model.filteredValues {
+		if value.Path == "config.enabled" && !value.IsUDSOverrideValue && !value.IsUDSOverrideVar {
+			model.cursor = i
+			break
+		}
+	}
+	press("enter")
+	direct, _ := model.inspectorContent(116, true)
+	press("esc")
+	model.filterInput.SetValue("app")
+	model.updateFilteredValues()
+	model.cursor = 0
+	for _, value := range model.filteredValues {
+		if value.IsUDSOverrideValue || value.IsUDSOverrideVar {
+			t.Fatal("fixture must hide related values from workspace")
+		}
+	}
+	press("enter")
+	press("enter")
+	mapped, _ := model.inspectorContent(116, true)
+	if mapped != direct || len(model.detailItems) != 4 {
+		t.Fatalf("filter changed chart Details or hid related values:\n%s", mapped)
+	}
+	press("G")
+	press("enter")
+	value, ok := model.detailValue()
+	if !ok || !value.IsUDSOverrideVar || value.Path != "ENABLED" || value.UDSVarDescription != "Enable service" {
+		t.Fatalf("hidden variable target lost: %+v", value)
+	}
+	press("G")
+	press("enter")
+	value, ok = model.detailValue()
+	if !ok || value.IsUDSOverrideVar || value.Path != "config.enabled" || value.DefaultValue != true {
+		t.Fatalf("hidden chart backlink lost: %+v", value)
+	}
+	press("esc")
+	press("esc")
+	if model.focusPane != FocusMapping || model.filterInput.Value() != "app" || model.cursor != 0 {
+		t.Fatal("related navigation changed the mapping origin or workspace filter")
 	}
 }

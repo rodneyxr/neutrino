@@ -32,14 +32,17 @@ type DetailItemKind int
 const (
 	DetailItemLocation DetailItemKind = iota
 	DetailItemCrossRef
+	DetailItemMapping
 )
 
 // DetailItem represents a single navigable row in the detail view.
 type DetailItem struct {
-	Kind     DetailItemKind
-	Location introspect.ValueUsageLocation // valid when Kind == DetailItemLocation
-	RefIndex int                           // index into filteredValues for cross-ref jumps
-	Label    string                        // rendered label for cross-ref items
+	Kind           DetailItemKind
+	Location       introspect.ValueUsageLocation // valid when Kind == DetailItemLocation
+	relatedValue   *DisplayItem                  // target independent of workspace filtering
+	Label          string                        // rendered label for cross-ref items
+	Mapping        introspect.PackageValueUsage  // valid when Kind == DetailItemMapping
+	packageMapping *valueMappingDetail
 }
 
 type DisplayItem struct {
@@ -70,6 +73,94 @@ type DisplayItem struct {
 	ValueTarget        string
 	ExcludedPaths      []string
 	Runtime            bool
+	Routes             []packageRoute
+	MappingStatus      string
+}
+
+// packageRoute describes one declared use of a configured package path.
+// A path may have different outcomes in different charts.
+type packageRoute struct {
+	Usage  introspect.PackageValueUsage
+	Status string
+	Target string
+}
+
+func packagePath(path string) string {
+	return strings.Trim(strings.TrimPrefix(path, "."), ".")
+}
+
+func pathWithin(path, parent string) bool {
+	return parent == "" || path == parent || strings.HasPrefix(path, parent+".")
+}
+
+func packageRoutes(path string, usages []introspect.PackageValueUsage) []packageRoute {
+	path = packagePath(path)
+	var routes []packageRoute
+	for _, usage := range usages {
+		source := packagePath(usage.Path)
+		if !pathWithin(path, source) {
+			continue
+		}
+		route := packageRoute{Usage: usage, Status: "mapped"}
+		if usage.Runtime {
+			route.Status = "runtime"
+		} else if usage.TargetPath == "" {
+			// Manifest/action references are not chart mappings.
+			route.Status = "runtime"
+		} else {
+			for _, excluded := range usage.ExcludePaths {
+				if pathWithin(path, packagePath(excluded)) {
+					route.Status = "excluded"
+					break
+				}
+			}
+			if route.Status == "mapped" {
+				target := packagePath(usage.TargetPath)
+				suffix := strings.TrimPrefix(path, source)
+				if source == "" {
+					suffix = "." + path
+				}
+				route.Target = strings.Trim(target+suffix, ".")
+				if route.Target == "" {
+					route.Target = "."
+				}
+			}
+		}
+		routes = append(routes, route)
+	}
+	return routes
+}
+
+func packageStatus(routes []packageRoute) string {
+	if len(routes) == 0 {
+		return "unmapped"
+	}
+	first := routes[0].Status
+	for _, route := range routes[1:] {
+		if route.Status != first {
+			return "mixed"
+		}
+	}
+	return first
+}
+
+func packageLeaves(prefix string, values map[string]interface{}, visit func(string, interface{})) {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
+		}
+		if nested, ok := values[key].(map[string]interface{}); ok && len(nested) > 0 {
+			packageLeaves(path, nested, visit)
+		} else {
+			visit(path, values[key])
+		}
+	}
 }
 
 type Model struct {
@@ -93,6 +184,9 @@ type Model struct {
 	detailBundleMode   bool
 	detailItems        []DetailItem
 	viewportOffset     int
+	mapping            *mappingScreen
+	mappingRowDetail   bool
+	detailRef          *DisplayItem
 	pathScroll         int
 	pathScrollPause    int
 	compScroll         int
@@ -178,23 +272,35 @@ func (m *Model) updateFilteredValues() {
 	// visible even when a package contains no charts.
 	if m.currentChart == "All Charts" {
 		for _, pkg := range m.packageValues {
-			paths := make([]string, 0, len(pkg.Values))
-			for path := range pkg.Values {
-				paths = append(paths, path)
-			}
-			sort.Strings(paths)
-			for _, path := range paths {
+			var leafPaths []string
+			packageLeaves("", pkg.Values, func(path string, configured interface{}) {
+				leafPaths = append(leafPaths, path)
+				routes := packageRoutes(path, pkg.Usages)
 				item := DisplayItem{
-					ValueUsage: introspect.ValueUsage{Path: path, DefaultValue: pkg.Values[path]},
+					ValueUsage: introspect.ValueUsage{Path: path, DefaultValue: configured},
 					Component:  "Zarf Package Values", PackageName: pkg.PackageName,
 					IsPackageValue: true, ValuePresent: true, ValueFiles: pkg.Files,
-					ValueSchema: pkg.Schema,
+					ValueSchema: pkg.Schema, Routes: routes, MappingStatus: packageStatus(routes),
 				}
 				if matchesValueFilter(item, filter) {
 					newValues = append(newValues, item)
 				}
-			}
+			})
+			// A mapping remains navigable even when its source is an empty
+			// object or has no configured input. Chart discovery drives its rows.
 			for _, usage := range pkg.Usages {
+				if usage.Runtime || usage.TargetPath == "" || usage.ChartName == "" {
+					found := false
+					for _, path := range leafPaths {
+						if pathWithin(path, packagePath(usage.Path)) {
+							found = true
+							break
+						}
+					}
+					if found {
+						continue
+					}
+				}
 				item := packageMappingItem(usage, "Zarf Package Values", pkg.PackageName)
 				if matchesValueFilter(item, filter) {
 					newValues = append(newValues, item)
@@ -349,11 +455,13 @@ func (m *Model) updateFilteredValues() {
 			}
 		}
 
-		for _, mapping := range res.PackageValueMappings {
-			item := packageMappingItem(mapping, name, "")
-			if matchesValueFilter(item, filter) {
-				chartHasItems = true
-				newValues = append(newValues, item)
+		if m.currentChart != "All Charts" {
+			for _, mapping := range res.PackageValueMappings {
+				item := packageMappingItem(mapping, name, "")
+				if matchesValueFilter(item, filter) {
+					chartHasItems = true
+					newValues = append(newValues, item)
+				}
 			}
 		}
 
@@ -555,6 +663,10 @@ func matchesValueFilter(item DisplayItem, filter string) bool {
 	haystack := strings.Join([]string{item.Path, item.PackageName, item.Component,
 		item.ValueSource, item.ValueTarget, strings.Join(item.ValueFiles, " "),
 		strings.Join(item.ExcludedPaths, " ")}, " ")
+	for _, route := range item.Routes {
+		haystack += " " + route.Usage.ComponentName + " " + route.Usage.ChartName +
+			" " + route.Usage.TargetPath + " " + route.Target + " " + strings.Join(route.Usage.ExcludePaths, " ")
+	}
 	return strings.Contains(strings.ToLower(haystack), strings.ToLower(filter))
 }
 
@@ -627,8 +739,7 @@ func (m Model) View() string {
 	return m.workspaceView()
 }
 
-// findCrossRefs finds UDS overrides/variables that target a given Helm path within a component,
-// and template locations where a path is used. Returns detail items for cross-reference display.
+// findOverridesForPath resolves related values from the chart, not the filtered workspace.
 func (m Model) findOverridesForPath(component, path string) []DetailItem {
 	var items []DetailItem
 	res := m.components[component]
@@ -637,33 +748,28 @@ func (m Model) findOverridesForPath(component, path string) []DetailItem {
 	}
 	for _, ov := range res.UDSOverrideValues {
 		if ov.Path == path {
-			// Find matching DisplayItem in filteredValues
-			for idx, di := range m.filteredValues {
-				if di.IsUDSOverrideValue && !di.IsSummaryItem && di.Component == component && di.Path == path {
-					items = append(items, DetailItem{
-						Kind:     DetailItemCrossRef,
-						RefIndex: idx,
-						Label:    fmt.Sprintf("→ UDS Override Value: %s = %s", ov.Path, formatDefaultValue(ov.Value)),
-					})
-					break
-				}
-			}
+			items = append(items, DetailItem{
+				Kind:  DetailItemCrossRef,
+				Label: fmt.Sprintf("→ UDS Override Value: %s = %s", ov.Path, formatDefaultValue(ov.Value)),
+				relatedValue: &DisplayItem{
+					ValueUsage: introspect.ValueUsage{Path: ov.Path, DefaultValue: ov.OriginalDefault},
+					Component:  component, IsUDSOverrideValue: true,
+					OverrideValue: ov.Value, OriginalDefault: ov.OriginalDefault,
+				},
+			})
 		}
 	}
 	for _, ov := range res.UDSOverrideVariables {
 		if ov.Path == path {
-			for idx, di := range m.filteredValues {
-				if di.IsUDSOverrideVar && !di.IsSummaryItem && di.Component == component && di.UDSVarPath == path {
-					if di.Path == ov.Name {
-						items = append(items, DetailItem{
-							Kind:     DetailItemCrossRef,
-							RefIndex: idx,
-							Label:    fmt.Sprintf("→ UDS Variable: %s → %s", ov.Name, ov.Path),
-						})
-						break
-					}
-				}
-			}
+			items = append(items, DetailItem{
+				Kind:  DetailItemCrossRef,
+				Label: fmt.Sprintf("→ UDS Variable: %s → %s", ov.Name, ov.Path),
+				relatedValue: &DisplayItem{
+					ValueUsage: introspect.ValueUsage{Path: ov.Name, DefaultValue: ov.Default},
+					Component:  component, IsUDSOverrideVar: true, UDSVarPath: ov.Path,
+					UDSVarDescription: ov.Description, OriginalDefault: ov.OriginalDefault,
+				},
+			})
 		}
 	}
 	return items
@@ -684,17 +790,11 @@ func (m Model) findLocationsForOverridePath(component, path string) []DetailItem
 					Location: loc,
 				})
 			}
-			// Also add a cross-ref link to the value item itself
-			for idx, di := range m.filteredValues {
-				if !di.IsZarfVar && !di.IsUDSOverrideValue && !di.IsUDSOverrideVar && !di.IsPkgVar && !di.IsSummaryItem && di.Component == component && di.Path == path {
-					items = append(items, DetailItem{
-						Kind:     DetailItemCrossRef,
-						RefIndex: idx,
-						Label:    fmt.Sprintf("→ Helm Value: %s (%d locations)", path, len(v.Locations)),
-					})
-					break
-				}
-			}
+			items = append(items, DetailItem{
+				Kind:         DetailItemCrossRef,
+				Label:        fmt.Sprintf("→ Helm Value: %s (%d locations)", path, len(v.Locations)),
+				relatedValue: &DisplayItem{ValueUsage: v, Component: component},
+			})
 			break
 		}
 	}
@@ -703,12 +803,22 @@ func (m Model) findLocationsForOverridePath(component, path string) []DetailItem
 
 // buildDetailItems constructs the unified navigable list for the detail view of the current item.
 func (m *Model) buildDetailItems() {
-	if len(m.filteredValues) == 0 {
+	v, ok := m.detailValue()
+	if !ok {
 		m.detailItems = nil
 		return
 	}
-	v := m.filteredValues[m.cursor]
 	var items []DetailItem
+	if !v.IsZarfVar && !v.IsPkgVar && !v.IsPackageValue && !v.IsPackageMapping && !v.IsBundleVariable && !v.IsUDSOverrideValue && !v.IsUDSOverrideVar {
+		items = append(items, m.chartMappingDetails(v)...)
+	}
+	if v.IsPackageValue && v.ValuePresent && v.Component == "Zarf Package Values" {
+		for _, route := range v.Routes {
+			if route.Usage.TargetPath != "" && route.Usage.ChartName != "" {
+				items = append(items, DetailItem{Kind: DetailItemMapping, Mapping: route.Usage})
+			}
+		}
+	}
 
 	if v.IsUDSOverrideValue || v.IsUDSOverrideVar {
 		// For UDS overrides, show template locations where the overridden path is used

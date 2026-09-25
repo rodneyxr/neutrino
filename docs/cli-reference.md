@@ -92,7 +92,9 @@ Next bundle reports include package IDs, sources, dependencies, namespaces, opti
 
 No deployment actions run. Cluster state, action-produced values, and Zarf Go templates remain runtime inputs. An unavailable manifest/file payload is identified as an unresolved template, not silently treated as unused. Inspection never claims that configured inputs are the final deployment-effective values.
 
-JSON/YAML add `packageValues` and `bundle` alongside the existing report fields, plus chart-level `packageValueMappings`. Legacy fields retain their meanings. The TUI gives Package Values and Next configuration their own searchable groups and details; it does not generate legacy `uds-bundle.yaml` snippets for Next bundles.
+JSON/YAML add `packageValues` and `bundle` alongside the existing report fields, plus chart-level `packageValueMappings`. Legacy fields retain their meanings. In the TUI, each mapping declaration opens a chart-first table of discovered destination chart values, including candidates under empty or missing package input. Rows separate chart defaults from actually supplied package inputs and distinguish available mapping paths from explicit exclusions; the `a` toggle shows other discovered chart paths outside the selected destination. Supplied package paths absent from chart discovery remain labeled. Next bundle package IDs remain distinct from chart identity; legacy `uds-bundle.yaml` snippets are suppressed for Next bundles. Mapping reachability does not establish schema validity or final deployment values.
+
+Main chart values and mapping-table rows share one Details view, including chart defaults, template locations, and all mappings for the owning package with supplied inputs, exclusions, and ordered input files. `Enter` follows mapping links or opens template locations in `$EDITOR`; `Esc` restores the originating view. In Details, `y` copies the chart path and `p` copies the selected mapping's package input path.
 
 #### JSON output for CI
 
