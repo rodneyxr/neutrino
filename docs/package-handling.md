@@ -31,10 +31,13 @@ Legacy UDS bundles use `uds-bundle.yaml`; Next bundles use `bundle.uds.hcl` and 
 
 Neutrino fetches only the root manifest layers from the OCI registry to locate the `uds-bundle.yaml`. It does **not** download the actual multi-gigabyte bundle blobs. Once it reads the manifest, it pulls only the lightweight layers containing the metadata needed for introspection.
 
+Legacy bundle roots can advertise either the UDS config media type or Zarf's layer blob media type; Neutrino selects the `uds-bundle.yaml` descriptor in either case. Embedded Zarf package roots still require the Zarf config media type.
+
 For each Zarf package referenced in the bundle, Neutrino:
 
 1. Resolves the package reference from the bundle manifest.
 2. Pulls the Zarf package metadata (using the same selective-layer strategy).
+   The embedded package manifest comes from the bundle. Selected package layers come from the package's declared `repository` when present, or from the bundle repository otherwise. Every selected layer is verified against its embedded descriptor.
 3. Extracts each embedded Helm chart.
 4. Runs the [Helm introspection](helm-introspection.md) pipeline against every chart.
 5. Processes all `overrides` stanzas from `uds-bundle.yaml` for each chart (see [Bundle Overrides](#bundle-overrides) below).

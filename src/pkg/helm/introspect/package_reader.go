@@ -95,7 +95,10 @@ func (r *packageReader) ReadFile(ctx context.Context, configMediaType string, ti
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve package root: %w", err)
 	}
-	if root.Manifest.Config.MediaType != configMediaType {
+	// Legacy UDS bundle roots also appear with Zarf's blob media type as config.
+	// Keep this exception scoped to bundle control planes, not embedded packages.
+	if root.Manifest.Config.MediaType != configMediaType &&
+		!(configMediaType == UDSBundleMediaType && root.Manifest.Config.MediaType == zarfLayerMediaType) {
 		return nil, fmt.Errorf("unsupported package root config media type %q", root.Manifest.Config.MediaType)
 	}
 	var selected ocispec.Descriptor
@@ -121,7 +124,7 @@ func (r *packageReader) ReadFile(ctx context.Context, configMediaType string, ti
 	}, nil
 }
 
-func (r *packageReader) ReadEmbedded(ctx context.Context, descriptor ocispec.Descriptor) (*packageView, error) {
+func (r *packageReader) ReadEmbedded(ctx context.Context, descriptor ocispec.Descriptor, packageFetch func(context.Context, ocispec.Descriptor) ([]byte, error)) (*packageView, error) {
 	if descriptor.MediaType != ocispec.MediaTypeImageManifest && descriptor.MediaType != zarfLayerMediaType {
 		return nil, fmt.Errorf("unsupported selected embedded package manifest media type %q", descriptor.MediaType)
 	}
@@ -135,7 +138,7 @@ func (r *packageReader) ReadEmbedded(ctx context.Context, descriptor ocispec.Des
 	}
 	embedded := newPackageReader(resolvedPackageRemote{
 		root:  packageRoot{Descriptor: descriptor, Manifest: manifest},
-		fetch: r.remote.Fetch,
+		fetch: packageFetch,
 	}, r.platform, r.cacheDir, r.noCache)
 	return embedded.Read(ctx)
 }

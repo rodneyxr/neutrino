@@ -596,7 +596,7 @@ func inspectNextIndex(ctx context.Context, indexBytes []byte, source, version, a
 	reader := newPackageReader(resolvedPackageRemote{fetch: fetch}, oci.PlatformForArch(config.GetArch(arch)), blobCache, opts.NoCache)
 	paths := map[string]string{}
 	for _, pkg := range order {
-		view, err := reader.ReadEmbedded(ctx, packages[pkg.ID])
+		view, err := reader.ReadEmbedded(ctx, packages[pkg.ID], fetch)
 		if err != nil {
 			return nil, fmt.Errorf("package %q Package View: %w", pkg.ID, err)
 		}

@@ -163,7 +163,16 @@ func inspectRemoteUDSBundle(ctx context.Context, source string, version string, 
 		if manifestDescriptor.Digest == "" {
 			return nil, fmt.Errorf("failed to form Package View for UDS package %q: embedded package manifest %q is missing", pkg.Name, targetDigest)
 		}
-		view, err := reader.ReadEmbedded(ctx, manifestDescriptor)
+		packageFetch := remote.Fetch
+		if pkg.Repository != "" {
+			packageSource := "oci://" + strings.TrimPrefix(pkg.Repository, "oci://") + "@" + targetDigest.String()
+			packageRemote, err := oci.NewOrasRemote(packageSource, platform)
+			if err != nil {
+				return nil, fmt.Errorf("failed to open repository for UDS package %q: %w", pkg.Name, err)
+			}
+			packageFetch = packageRemote.FetchLayer
+		}
+		view, err := reader.ReadEmbedded(ctx, manifestDescriptor, packageFetch)
 		if err != nil {
 			return nil, fmt.Errorf("failed to form Package View for UDS package %q: %w", pkg.Name, err)
 		}
