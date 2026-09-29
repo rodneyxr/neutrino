@@ -554,6 +554,16 @@ func declaredChartCount(packageViewPath string) (int, error) {
 	}
 	var count int
 	for _, component := range pkg.Components {
+		if len(component.Charts) == 0 {
+			continue
+		}
+		title := filepath.Join(packageViewPath, "components", component.Name+".tar")
+		if _, err := os.Stat(title); err != nil {
+			if os.IsNotExist(err) && component.Required != nil && !*component.Required {
+				continue
+			}
+			return 0, fmt.Errorf("missing selected chart component %q: %w", component.Name, err)
+		}
 		count += len(component.Charts)
 	}
 	return count, nil

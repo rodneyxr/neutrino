@@ -173,3 +173,106 @@ func TestNextRemoteIndexDoesNotFetchImageBlob(t *testing.T) {
 	defer mu.Unlock()
 	require.Zero(t, requested[unused.String()], "embedded image blob must not be fetched")
 }
+
+func TestNextRemoteCompletesSparseOCIPackageFromVerifiedSource(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	bundleBlobs := map[string][]byte{}
+	packageBlobs := map[string][]byte{}
+	blob := func(blobs map[string][]byte, mediaType, title string, data []byte) ocispec.Descriptor {
+		d := ocispec.Descriptor{MediaType: mediaType, Digest: digest.FromBytes(data), Size: int64(len(data))}
+		if title != "" {
+			d.Annotations = map[string]string{ocispec.AnnotationTitle: title}
+		}
+		blobs[d.Digest.String()] = data
+		return d
+	}
+	zarf := blob(bundleBlobs, zarfLayerMediaType, "zarf.yaml", []byte("kind: ZarfPackageConfig\nmetadata:\n  name: app\n  version: 1.0.0\ncomponents:\n  - name: git-server\n    charts:\n      - name: gitea\n        version: 1.0.0\n"))
+	component := blob(packageBlobs, zarfLayerMediaType, "components/git-server.tar", tarArchive(t, map[string][]byte{
+		"charts/gitea-1.0.0.tgz": chartArchive(t, "gitea", []byte("replicaCount: 1\n")),
+	}))
+	image := blob(packageBlobs, zarfLayerMediaType, "images/unused", []byte("do not fetch image"))
+	cfg := blob(bundleBlobs, zarfConfigMediaType, "", []byte("{}"))
+	sparse := ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest, Config: cfg, Layers: []ocispec.Descriptor{zarf, image}}
+	full := sparse
+	full.Layers = []ocispec.Descriptor{zarf, component, image}
+	sparseBytes, err := json.Marshal(sparse)
+	require.NoError(t, err)
+	packageDesc := blob(bundleBlobs, ocispec.MediaTypeImageManifest, "", sparseBytes)
+	packageDesc.Annotations = map[string]string{nextPackageAnnotation: "app"}
+	fullBytes, err := json.Marshal(full)
+	require.NoError(t, err)
+	packageBlobs[zarf.Digest.String()] = bundleBlobs[zarf.Digest.String()]
+
+	var index, defBytes []byte
+	var requested []string
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v2/":
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(r.URL.Path, "/manifests/"):
+			data, media := index, ocispec.MediaTypeImageIndex
+			if strings.Contains(r.URL.Path, "/example/package/") {
+				data, media = fullBytes, ocispec.MediaTypeImageManifest
+			}
+			if strings.HasSuffix(r.URL.Path, "/"+digest.FromBytes(sparseBytes).String()) {
+				data, media = sparseBytes, ocispec.MediaTypeImageManifest
+			}
+			if len(defBytes) > 0 && strings.HasSuffix(r.URL.Path, "/"+digest.FromBytes(defBytes).String()) {
+				data, media = defBytes, ocispec.MediaTypeImageManifest
+			}
+			w.Header().Set("Content-Type", media)
+			w.Header().Set("Docker-Content-Digest", digest.FromBytes(data).String())
+			_, _ = w.Write(data)
+		case strings.Contains(r.URL.Path, "/blobs/"):
+			key := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			if !strings.HasPrefix(key, "sha256:") {
+				key = "sha256:" + key
+			}
+			blobs := bundleBlobs
+			if strings.Contains(r.URL.Path, "/example/package/") {
+				blobs = packageBlobs
+			}
+			data, ok := blobs[key]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			requested = append(requested, r.URL.Path)
+			w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+			_, _ = w.Write(data)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	server.StartTLS()
+	defer server.Close()
+	old := http.DefaultTransport
+	http.DefaultTransport = server.Client().Transport
+	defer func() { http.DefaultTransport = old }()
+
+	source := "oci://" + strings.TrimPrefix(server.URL, "https://")
+	empty := blob(bundleBlobs, "application/vnd.oci.empty.v1+json", "", []byte("{}"))
+	empty.Data = []byte("{}")
+	hcl := blob(bundleBlobs, nextHCLType, nextBundleFile, []byte("uds { bundle_api_version = \"uds.dev/v1alpha1\" }\nmetadata { name = \"test\" }\npackage \"app\" { source = \""+source+"/example/package:latest\" }\n"))
+	def := ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest, Config: empty, Layers: []ocispec.Descriptor{hcl}}
+	defBytes, err = json.Marshal(def)
+	require.NoError(t, err)
+	defDesc := blob(bundleBlobs, ocispec.MediaTypeImageManifest, "", defBytes)
+	defDesc.ArtifactType = nextDefinitionType
+	idx := ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, ArtifactType: nextBundleType, Manifests: []ocispec.Descriptor{defDesc, packageDesc}, Annotations: map[string]string{nextArchAnnotation: "amd64"}}
+	index, err = json.Marshal(idx)
+	require.NoError(t, err)
+	bundleBlobs[digest.FromBytes(index).String()] = index
+
+	got, err := InspectUDSBundle(context.Background(), source+"/example/next:latest", "", "amd64", IntrospectOptions{NoCache: true})
+	require.NoError(t, err)
+	require.NotNil(t, got.ChartResults["app/git-server/gitea"])
+	require.Contains(t, requested, "/v2/example/package/blobs/"+component.Digest.String())
+	require.NotContains(t, requested, "/v2/example/package/blobs/"+image.Digest.String())
+
+	full.Config.Digest = digest.FromString("different package config")
+	fullBytes, err = json.Marshal(full)
+	require.NoError(t, err)
+	_, err = InspectUDSBundle(context.Background(), source+"/example/next:latest", "", "amd64", IntrospectOptions{NoCache: true})
+	require.ErrorContains(t, err, "config differs from embedded package")
+}

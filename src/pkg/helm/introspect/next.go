@@ -575,6 +575,7 @@ func inspectNextIndex(ctx context.Context, indexBytes []byte, source, version, a
 			}
 		}
 	}
+	remoteBundle := root == "" && IsRemote(source)
 	root, err = getPackageViewDir(source, digest.FromBytes(indexBytes).String())
 	if err != nil {
 		return nil, err
@@ -596,7 +597,12 @@ func inspectNextIndex(ctx context.Context, indexBytes []byte, source, version, a
 	reader := newPackageReader(resolvedPackageRemote{fetch: fetch}, oci.PlatformForArch(config.GetArch(arch)), blobCache, opts.NoCache)
 	paths := map[string]string{}
 	for _, pkg := range order {
-		view, err := reader.ReadEmbedded(ctx, packages[pkg.ID], fetch)
+		var view *packageView
+		if remoteBundle && strings.HasPrefix(pkg.Source, "oci://") {
+			view, err = readNextOCIPackage(ctx, pkg.Source, packages[pkg.ID], fetch, oci.PlatformForArch(config.GetArch(arch)), blobCache, opts.NoCache)
+		} else {
+			view, err = reader.ReadEmbedded(ctx, packages[pkg.ID], fetch)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("package %q Package View: %w", pkg.ID, err)
 		}
@@ -611,6 +617,57 @@ func inspectNextIndex(ctx context.Context, indexBytes []byte, source, version, a
 	}
 	return inspectNextPackages(ctx, def, order, controlRoot, paths, version, arch, opts)
 }
+
+func readNextOCIPackage(ctx context.Context, source string, embeddedDescriptor ocispec.Descriptor, bundleFetch func(context.Context, ocispec.Descriptor) ([]byte, error), platform ocispec.Platform, blobCache string, noCache bool) (*packageView, error) {
+	embeddedBytes, err := nextFetch(ctx, bundleFetch, embeddedDescriptor)
+	if err != nil {
+		return nil, fmt.Errorf("read embedded package manifest: %w", err)
+	}
+	var embedded ocispec.Manifest
+	if err := json.Unmarshal(embeddedBytes, &embedded); err != nil {
+		return nil, fmt.Errorf("parse embedded package manifest: %w", err)
+	}
+	remote := newRegistryPackageRemote(source)
+	sourceRoot, err := remote.Resolve(ctx, platform)
+	if err != nil {
+		return nil, fmt.Errorf("resolve package source %q: %w", source, err)
+	}
+	if embedded.SchemaVersion != 2 || embedded.MediaType != ocispec.MediaTypeImageManifest ||
+		embedded.Config.Digest != sourceRoot.Manifest.Config.Digest ||
+		embedded.Config.Size != sourceRoot.Manifest.Config.Size ||
+		embedded.Config.MediaType != sourceRoot.Manifest.Config.MediaType {
+		return nil, fmt.Errorf("package source %q config differs from embedded package", source)
+	}
+	sourceLayers := make(map[string]ocispec.Descriptor, len(sourceRoot.Manifest.Layers))
+	for _, d := range sourceRoot.Manifest.Layers {
+		title := d.Annotations[ocispec.AnnotationTitle]
+		if title != "" {
+			if _, exists := sourceLayers[title]; exists {
+				return nil, fmt.Errorf("package source %q has duplicate descriptor title %q", source, title)
+			}
+			sourceLayers[title] = d
+		}
+	}
+	hasZarf := false
+	for _, d := range embedded.Layers {
+		title := d.Annotations[ocispec.AnnotationTitle]
+		if title == "" {
+			continue
+		}
+		sourceDescriptor, exists := sourceLayers[title]
+		if !exists || d.Digest != sourceDescriptor.Digest || d.Size != sourceDescriptor.Size || d.MediaType != sourceDescriptor.MediaType {
+			return nil, fmt.Errorf("package source %q descriptor %q differs from embedded package", source, title)
+		}
+		if title == "zarf.yaml" {
+			hasZarf = true
+		}
+	}
+	if !hasZarf {
+		return nil, fmt.Errorf("embedded package lacks zarf.yaml descriptor for source %q", source)
+	}
+	return newPackageReader(resolvedPackageRemote{root: sourceRoot, fetch: remote.Fetch}, platform, blobCache, noCache).Read(ctx)
+}
+
 func inspectNextPackages(ctx context.Context, def *nextDefinition, order []nextPackage, root string, paths map[string]string, version, arch string, opts IntrospectOptions) (*ZarfPackageIntrospection, error) {
 	defaults := map[string]interface{}{}
 	if data, err := nextReadControl(filepath.Join(root, nextDefaultsFile)); err == nil {

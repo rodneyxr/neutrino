@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/opencontainers/go-digest"
@@ -145,6 +146,58 @@ components:
 	assert.NotContains(t, view.Files, "images/index.json")
 }
 
+func TestPackageReaderOmitsUnpackagedOptionalChartComponent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var optionalRequested atomic.Bool
+	chartServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		optionalRequested.Store(true)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer chartServer.Close()
+	zarfYAML := []byte(`kind: ZarfPackageConfig
+metadata:
+  name: core-base
+  version: 1.0.0
+components:
+  - name: uds-crds
+    required: true
+    charts:
+      - name: crds
+        version: 1.0.0
+  - name: istio-passthrough-gateway
+    required: false
+    charts:
+      - name: gateway
+        version: 1.0.0
+        url: ` + chartServer.URL + `
+`)
+	component := tarArchive(t, map[string][]byte{"charts/crds-1.0.0.tgz": chartArchive(t, "crds", []byte("replicaCount: 1\n"))})
+	zarfDescriptor := packageDescriptor("zarf.yaml", zarfYAML)
+	componentDescriptor := packageDescriptor("components/uds-crds.tar", component)
+	remote := &fakePackageRemote{
+		root: packageRoot{Manifest: ocispec.Manifest{
+			Config: ocispec.Descriptor{MediaType: zarfConfigMediaType},
+			Layers: []ocispec.Descriptor{zarfDescriptor, componentDescriptor},
+		}},
+		blobs: map[digest.Digest][]byte{zarfDescriptor.Digest: zarfYAML, componentDescriptor.Digest: component},
+	}
+	reader := newPackageReader(remote, ocispec.Platform{OS: "multi", Architecture: "amd64"}, t.TempDir(), true)
+	view, err := reader.Read(context.Background())
+	require.NoError(t, err)
+	require.NotContains(t, view.Files, "components/istio-passthrough-gateway.tar")
+	require.Equal(t, []string{"zarf.yaml", "components/uds-crds.tar"}, remote.fetched)
+	viewDir := t.TempDir()
+	require.NoError(t, view.materialize(viewDir))
+	expectedCharts, err := declaredChartCount(viewDir)
+	require.NoError(t, err)
+	require.Equal(t, 1, expectedCharts)
+	report, err := inspectLocalZarfPackage(context.Background(), viewDir, "", "amd64", IntrospectOptions{}, true)
+	require.NoError(t, err)
+	require.Equal(t, []string{"uds-crds/crds"}, report.ComponentOrder)
+	require.Len(t, report.ComponentOrder, expectedCharts)
+	require.False(t, optionalRequested.Load(), "omitted component must not trigger a chart URL fetch")
+}
+
 func TestPackageReaderRejectsIncompleteOrUnverifiableSelectedDescriptors(t *testing.T) {
 	zarfYAML := []byte(`kind: ZarfPackageConfig
 metadata:
@@ -152,6 +205,7 @@ metadata:
   version: 1.0.0
 components:
   - name: apps
+    required: true
     charts:
       - name: alpha
         version: 1.0.0

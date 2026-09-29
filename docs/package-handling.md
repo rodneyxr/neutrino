@@ -50,6 +50,10 @@ If a bundle is presented as a `.tar.zst` archive, Neutrino extracts it to an int
 
 Next inspection supports HCL source definitions, created `.tar.zst` artifacts, unpacked `oci/` layouts, and remote OCI indexes. It reads the bundle-definition manifest and ordered values layers, resolves the selected architecture, and forms each embedded package's verified Package View. It does not fetch embedded image blobs. Archive inspection reads selected entries without extracting the full OCI image payload.
 
+For a remote Next bundle whose package source is OCI, Neutrino checks the source manifest against the embedded package config and every overlapping titled descriptor, then selects needed package layers from that source. This completes sparse embedded manifests (for example, an omitted chart component) without fetching `images/**`. Non-OCI and local artifact packages continue to use their embedded descriptors.
+
+A package artifact can omit a chart-bearing component explicitly marked `required: false` in `zarf.yaml`. Neutrino excludes such components from the Package View, chart inspection, and expected chart count; it does not fetch their chart URLs. A missing required (or unspecified) chart component remains an incomplete package error.
+
 HCL locals, package references, and dependencies are resolved before inspection. Duplicate package IDs, missing dependencies, cycles, missing selected descriptors, or digest/size failures stop Next Bundle Inspection. Source packages are inspected in deterministic dependency-first order.
 
 `defaults.uds.hcl` variables are overlaid by an explicit `--config` file. Bundle values files use the standard Go template `.vars` context. Known inputs are rendered and merged into Package Values in declaration order; missing template inputs are identified as unresolved. These remain configuration inputs, not a simulated deployment.

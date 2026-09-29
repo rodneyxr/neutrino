@@ -117,10 +117,14 @@ func inspectLocalZarfPackage(ctx context.Context, path string, version string, a
 	for _, component := range pkg.Components {
 		// Check for component tarball (components/<name>.tar)
 		compTarPath := filepath.Join(cacheDir, layout.ComponentsDir, component.Name+".tar")
+		_, compTarErr := os.Stat(compTarPath)
+		if packageView && os.IsNotExist(compTarErr) && component.Required != nil && !*component.Required {
+			continue // A packaged, explicitly optional component was not selected.
+		}
 
 		var chartsBaseDir string
 		var valuesBaseDir string
-		if _, err := os.Stat(compTarPath); err == nil {
+		if compTarErr == nil {
 			compExtractDir := filepath.Join(cacheDir, "extracted-components", component.Name)
 			os.MkdirAll(compExtractDir, 0755)
 			err = archive.Decompress(ctx, compTarPath, compExtractDir, archive.DecompressOpts{})

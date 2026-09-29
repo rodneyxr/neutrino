@@ -212,6 +212,9 @@ func (r *packageReader) Read(ctx context.Context) (*packageView, error) {
 		}
 		descriptor, ok := byTitle[title]
 		if !ok {
+			if component.Required != nil && !*component.Required {
+				continue // Explicitly optional component was not included in this package artifact.
+			}
 			return nil, fmt.Errorf("incomplete package layout: missing selected descriptor %q for component %q", title, component.Name)
 		}
 		contents, err := r.fetchVerified(ctx, descriptor)
