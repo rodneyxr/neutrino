@@ -15,11 +15,12 @@ neutrino inspect oci://ghcr.io/zarf-dev/packages/init:v0.74.0 -i
 
 ## Workspace
 
-The interactive inspector uses a keyboard-first two-pane workspace and a full-width details view:
+The interactive inspector uses a keyboard-first workspace and a full-width details view:
 
 | Surface | Purpose |
 |:---|:---|
-| **Components** | Select all components or narrow the workspace to one component. Expands when focused to show full package and component names. |
+| **Categories (Next bundles)** | Keep bundle variables, Next values files, Zarf variables, Zarf Package Values, chart mappings, Helm values, and legacy overrides in separate lists. Counts reflect the current component and search filter. |
+| **Components (other sources)** | Select all components or narrow the workspace to one component. Expands when focused to show full package and component names. |
 | **Values** | Search and navigate discovered paths, values, types, and source locations. This pane has focus when the TUI opens. |
 | **Details** | Open the selected value full-width to inspect defaults, effective overrides, template locations, cross-references, and optional UDS authoring snippets. |
 
@@ -31,9 +32,13 @@ Neutrino changes layout based on available terminal width:
 
 | Width | Layout |
 |:---|:---|
-| **120 columns or wider** | Components and a wide Values table are visible together. |
-| **80–119 columns** | Components and Values remain visible with a narrower Values table. |
-| **Below 80 columns** | One workspace pane is visible at a time. Use `Tab`, `Shift+Tab`, `h`, or `l` to switch between Components and Values. |
+| **80 columns or wider, Next bundle** | A category rail beside the Values table. `1`–`7` opens a category; `Tab` focuses the rail to move through categories with `j`/`k`. |
+| **Below 80 columns, Next bundle** | Categories stack above the Values table. Both remain visible. |
+| **120 columns or wider, other sources** | Components and a wide Values table are visible together. |
+| **80–119 columns, other sources** | Components and Values remain visible with a narrower Values table. |
+| **Below 80 columns, other sources** | One workspace pane is visible at a time. Use `Tab`, `Shift+Tab`, `h`, or `l` to switch between Components and Values. |
+
+For Next bundles, `f` scopes to a component; choose **All components** to see bundle variables, Next values-file declarations, and configured Zarf Package Values. Category selection does not merge configuration owners or claim inputs are deployment-effective. Empty categories remain visible and explain that the selected scope has no items. Filtering with `/` searches within the selected category.
 
 ### Values
 
@@ -99,16 +104,17 @@ Action feedback in the footer returns to the default keyboard hints after about 
 
 | Key | Action |
 |:---|:---|
-| `Tab` / `Shift+Tab` | Switch between Components and Values. |
-| `h` / `←` | Focus the Components pane (expands the left column). |
-| `l` / `→` | Focus the Values pane (collapses the left column). |
+| `Tab` / `Shift+Tab` | Switch between Categories and Values for Next bundles, or Components and Values for other sources. |
+| `h` / `←` | Focus the Categories or Components pane. |
+| `l` / `→` | Focus the Values pane. |
+| `1`–`7` | In a Next bundle workspace, select a category and focus its Values list. |
 | `j` / `↓` | Move down 1 row in the focused pane. |
 | `k` / `↑` | Move up 1 row in the focused pane. |
 | `J` / `K` | Move 5 rows down or up in the focused pane. |
-| `n` / `N` (also `]` / `[`) | Jump to the next or previous component. |
+| `n` / `N` (also `]` / `[`) | Jump to the next or previous component in Values; in a focused Next category rail, move between categories. |
 | `g` / `G` | Move to the first or last item in the focused pane. |
 | `PgDn` / `PgUp` | Move by the available viewport height. |
-| `Enter` | Select a component, open Details, follow a mapping link, inspect a mapping row, or open a location/cross-reference. |
+| `Enter` | Focus Values from the Next category rail, select a component in other sources, open Details, or follow a mapping/location link. |
 | `Esc` | Return from a mapping row to its table, then to the originating Details/Values; close an overlay or clear the active value filter. |
 
 ### Search and commands
@@ -126,7 +132,7 @@ Input modes preserve arrow keys for suggestions and selection. `Enter` applies t
 
 | Key | Action |
 |:---|:---|
-| `Space` | Select a component when Components is focused, or toggle authoring snippets in Details. |
+| `Space` | Focus Values from the Next category rail, select a component in other sources, or toggle authoring snippets in Details. |
 | `a` | In a Package Value mapping table, show/hide discovered chart paths outside the selected destination. |
 | `Z` | Toggle the Zarf package variable summary. |
 | `U` | Toggle the UDS bundle override summary. |

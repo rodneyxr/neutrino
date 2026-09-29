@@ -1143,26 +1143,128 @@ func TestNextBundleMetadataNeverSuggestsLegacyAuthoring(t *testing.T) {
 			}},
 		},
 	})
-	if len(model.filteredValues) != 3 {
-		t.Fatalf("Next defaults, package inputs, and chart should coexist: %+v", model.filteredValues)
+	if !model.nextRail || model.category != 0 || model.categoryCounts[0] != 1 ||
+		model.categoryCounts[1] != 1 || model.categoryCounts[5] != 1 {
+		t.Fatalf("Next metadata and Helm defaults must have separate categories: %+v", model.categoryCounts)
 	}
-	for _, value := range model.filteredValues {
-		if value.IsPackageValue {
-			model.filterInput.SetValue("values/api/0.yaml")
-			model.updateFilteredValues()
-			model.buildDetailItems()
-			body, _ := model.inspectorContent(100, true)
-			for _, want := range []string{"platform 2", "oci://registry/api", "values/api/0.yaml", "base", "team", "server"} {
-				if !strings.Contains(body, want) {
-					t.Errorf("missing %q in Next package details: %s", want, body)
-				}
-			}
-			break
+	model.selectNextCategory(1)
+	model.filterInput.SetValue("values/api/0.yaml")
+	model.updateFilteredValues()
+	model.buildDetailItems()
+	if len(model.filteredValues) != 1 || model.filteredValues[0].Path != "api" {
+		t.Fatalf("values file provenance should remain searchable: %+v", model.filteredValues)
+	}
+	body, _ := model.inspectorContent(100, true)
+	for _, want := range []string{"platform 2", "oci://registry/api", "values/api/0.yaml", "base", "team", "server"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in Next package details: %s", want, body)
 		}
 	}
 	model.detailBundleMode = true
 	if snippet := model.generateBundleSnippetForItem(DisplayItem{Component: chart, ValueUsage: introspect.ValueUsage{Path: "image.tag"}}); snippet != "" {
 		t.Fatalf("Next chart must not suggest legacy uds-bundle.yaml: %s", snippet)
+	}
+}
+
+func TestNextCategoryRailKeepsConfigurationOwnersSeparate(t *testing.T) {
+	const chart = "api/server/app"
+	m := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{chart: {
+			Values:               []introspect.ValueUsage{{Path: "image.tag", DefaultValue: "1"}},
+			ZarfVars:             []introspect.ZarfVariableUsage{{Name: "REGISTRY"}},
+			UDSOverrideValues:    []introspect.UDSOverrideValue{{Path: "replicas", Value: 3}},
+			PackageValueMappings: []introspect.PackageValueUsage{{Path: ".image.tag", TargetPath: "image.tag", ChartName: "app"}},
+		}},
+		ComponentOrder: []string{chart},
+		PackageValues: []introspect.PackageValues{{
+			PackageName: "api", Values: map[string]interface{}{"image": map[string]interface{}{"tag": "2"}},
+			Usages: []introspect.PackageValueUsage{{Path: ".image.tag", TargetPath: "image.tag", ChartName: "app"}},
+		}},
+		Bundle: &introspect.BundleMetadata{
+			Format: "next", Name: "platform",
+			Variables: map[string]interface{}{"cluster": "dev"},
+			Packages:  []introspect.BundlePackageMetadata{{ID: "api", ValuesFiles: []string{"values/api/0.yaml"}}},
+		},
+	})
+	if !m.nextRail || m.categoryCounts != [7]int{1, 1, 1, 1, 1, 1, 1} {
+		t.Fatalf("configuration owners should each have a visible category: %+v", m.categoryCounts)
+	}
+	for _, tc := range []struct {
+		key  string
+		path string
+	}{
+		{"1", "cluster"}, {"2", "api"}, {"3", "REGISTRY"}, {"4", "image.tag"},
+		{"5", ".image.tag"}, {"6", "image.tag"}, {"7", "replicas"},
+	} {
+		updated, _ := m.Update(key(tc.key))
+		m = updated.(Model)
+		if len(m.filteredValues) != 1 || m.filteredValues[0].Path != tc.path ||
+			nextCategory(m.filteredValues[0]) != int(tc.key[0]-'1') {
+			t.Fatalf("category %s mixed input kinds: %+v", tc.key, m.filteredValues)
+		}
+	}
+	updated, _ := m.Update(key("6"))
+	m = updated.(Model)
+	updated, _ = m.Update(key("enter"))
+	m = updated.(Model)
+	if m.focusPane != FocusInspector || !strings.Contains(m.View(), "image.tag") {
+		t.Fatal("chart value must still open Details")
+	}
+	updated, _ = m.Update(key("esc"))
+	m = updated.(Model)
+	if m.focusPane != FocusValues || m.category != 5 || m.filteredValues[0].Path != "image.tag" {
+		t.Fatal("Details must return to the selected category")
+	}
+}
+
+func TestNextRailResponsiveAndComponentScope(t *testing.T) {
+	m := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{"api/server/app": {
+			Values: []introspect.ValueUsage{{Path: "image.tag"}},
+		}},
+		ComponentOrder: []string{"api/server/app"},
+		Bundle: &introspect.BundleMetadata{
+			Format: "next", Variables: map[string]interface{}{"cluster": "dev"},
+		},
+	})
+	for _, width := range []int{100, 72} {
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+		m = updated.(Model)
+		view := m.View()
+		if lipgloss.Width(view) != width || lipgloss.Height(view) != 30 ||
+			!strings.Contains(view, "CATEGORIES") || !strings.Contains(view, "VALUES") {
+			t.Fatalf("category rail %d cols rendered %d x %d: %s", width, lipgloss.Width(view), lipgloss.Height(view), view)
+		}
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	if m.focusPane != FocusComponents || m.category != 1 {
+		t.Fatal("focused rail should navigate categories")
+	}
+	updated, _ = m.Update(key("6"))
+	m = updated.(Model)
+	if m.focusPane != FocusValues || m.filteredValues[0].Path != "image.tag" {
+		t.Fatal("digit shortcut should open chosen category")
+	}
+	m.currentChart = "api/server/app"
+	m.updateFilteredValues()
+	m.selectNextCategory(0)
+	if len(m.filteredValues) != 0 || !strings.Contains(m.View(), "No items in this category") {
+		t.Fatal("component scope must not leak bundle-wide inputs into chart category")
+	}
+}
+
+func TestNextRailStartsOnFirstPopulatedCategory(t *testing.T) {
+	m := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{},
+		Bundle: &introspect.BundleMetadata{
+			Format: "next", Packages: []introspect.BundlePackageMetadata{{ID: "api", ValuesFiles: []string{"values.yaml"}}},
+		},
+	})
+	if m.category != 1 || len(m.filteredValues) != 1 || m.filteredValues[0].Path != "api" {
+		t.Fatalf("bundles without variables should open on their first available input: %+v", m.filteredValues)
 	}
 }
 

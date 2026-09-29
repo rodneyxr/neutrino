@@ -176,6 +176,10 @@ type Model struct {
 	udsOverrideVariables []introspect.UDSOverrideVariableWithContext
 	packageValues        []introspect.PackageValues
 	bundle               *introspect.BundleMetadata
+	nextRail             bool
+	category             int
+	categoryCounts       [7]int
+	categoryRows         [7][]DisplayItem
 
 	// State
 	inputMode          InputMode
@@ -259,9 +263,20 @@ func NewModel(report introspect.InspectionReport) Model {
 		udsOverrideVariables: report.UDSOverrideVariables,
 		packageValues:        report.PackageValues,
 		bundle:               report.Bundle,
+		nextRail:             report.Bundle != nil && report.Bundle.Format == "next",
+		showZarfSummary:      report.Bundle != nil && report.Bundle.Format == "next",
 	}
 
 	m.updateFilteredValues()
+	if m.nextRail && m.categoryCounts[m.category] == 0 {
+		for i, count := range m.categoryCounts {
+			if count > 0 {
+				m.category = i
+				m.filteredValues = m.categoryRows[i]
+				break
+			}
+		}
+	}
 	m.buildDetailItems()
 	return m
 }
@@ -605,7 +620,26 @@ func (m *Model) updateFilteredValues() {
 		return newValues[i].Path < newValues[j].Path
 	})
 
-	m.filteredValues = newValues
+	if m.nextRail {
+		for i := range m.categoryCounts {
+			m.categoryCounts[i] = 0
+		}
+		for _, item := range newValues {
+			m.categoryCounts[nextCategory(item)]++
+		}
+		sort.SliceStable(newValues, func(i, j int) bool {
+			return nextCategory(newValues[i]) < nextCategory(newValues[j])
+		})
+		start := 0
+		for i, count := range m.categoryCounts {
+			m.categoryRows[i] = newValues[start : start+count]
+			start += count
+		}
+		m.filteredValues = m.categoryRows[m.category]
+	} else {
+		m.filteredValues = newValues
+	}
+	newValues = m.filteredValues
 
 	// Set Autocomplete suggestions
 	if m.inputMode == InputModeFilter {

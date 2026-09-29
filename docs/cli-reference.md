@@ -86,6 +86,8 @@ neutrino inspect ./next-bundle --config ./next-bundle/config.uds.hcl -o json
 neutrino inspect ./uds-bundle-app-amd64-1.0.0.tar.zst -i
 ```
 
+Next bundle interactive inspection opens a category rail by default. Use `1`–`7` to separate bundle variables, Next values-file declarations, Zarf variables, Zarf Package Values, chart mappings, Helm values, and legacy overrides; `f` scopes to a component. Other sources retain the Components pane.
+
 Package Values are separate from Helm defaults and legacy `###ZARF_VAR_*###` variables. The report includes merged package inputs, their file order, the package JSON schema, chart `sourcePath` → `targetPath` mappings and exclusions, and discovered template/action references. `--values` files have higher precedence than packaged inputs. Schemas are exposed for inspection, not used to claim deployment validation.
 
 Next bundle reports include package IDs, sources, dependencies, namespaces, optional-component declarations, ordered values files, and bundle variables. Known bundle `.vars` templates are rendered from `defaults.uds.hcl` plus `--config`; missing template inputs remain explicitly unresolved. Package Values mappings are reported as provenance rather than applied to Helm chart defaults. Inspection includes declared charts; it does not reproduce deployment component selection.

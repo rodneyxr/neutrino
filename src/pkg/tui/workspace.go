@@ -114,6 +114,9 @@ func (m *Model) moveFocus(delta int) {
 	}
 	if m.focusPane == FocusValues {
 		m.focusPane = FocusComponents
+		if m.nextRail {
+			return
+		}
 		m.pathScroll = 0
 		m.pathScrollPause = 0
 		m.compScroll = 0
@@ -130,6 +133,10 @@ func (m *Model) moveFocus(delta int) {
 func (m *Model) moveWithinFocusedPane(delta int) {
 	switch m.focusPane {
 	case FocusComponents:
+		if m.nextRail {
+			m.selectNextCategory(clamp(m.category+delta, 0, len(nextCategories)-1))
+			return
+		}
 		prevComp := m.componentCursor
 		m.componentCursor = clamp(m.componentCursor+delta, 0, len(m.chartNames)-1)
 		if m.componentCursor != prevComp {
@@ -158,6 +165,14 @@ func (m *Model) moveFocusedToBoundary(last bool) {
 	target := 0
 	switch m.focusPane {
 	case FocusComponents:
+		if m.nextRail {
+			if last {
+				m.selectNextCategory(len(nextCategories) - 1)
+			} else {
+				m.selectNextCategory(0)
+			}
+			return
+		}
 		prevComp := m.componentCursor
 		if last {
 			target = len(m.chartNames) - 1
@@ -195,6 +210,10 @@ func (m *Model) moveFocusedToBoundary(last bool) {
 func (m *Model) jumpComponent(delta int) {
 	switch m.focusPane {
 	case FocusComponents:
+		if m.nextRail {
+			m.selectNextCategory(clamp(m.category+delta, 0, len(nextCategories)-1))
+			return
+		}
 		previous := m.componentCursor
 		m.componentCursor = clamp(m.componentCursor+delta, 0, len(m.chartNames)-1)
 		if m.componentCursor != previous {
@@ -244,6 +263,10 @@ func (m *Model) jumpComponent(delta int) {
 func (m *Model) activateFocused() tea.Cmd {
 	switch m.focusPane {
 	case FocusComponents:
+		if m.nextRail {
+			m.focusPane = FocusValues
+			return nil
+		}
 		if len(m.chartNames) == 0 {
 			return nil
 		}
@@ -528,6 +551,8 @@ func (m Model) workspaceView() string {
 		body = m.mappingPane(width, bodyHeight)
 	} else if m.focusPane == FocusInspector {
 		body = m.inspectorPane(width, bodyHeight)
+	} else if m.nextRail {
+		body = m.nextCategoryWorkspace(width, bodyHeight)
 	} else if m.layout() == layoutCompact {
 		if m.focusPane == FocusComponents {
 			body = m.componentPane(width, bodyHeight)
@@ -552,6 +577,9 @@ func (m Model) workspaceHeader(width int) string {
 	}
 	left := titleStyle.Render("◇ NEUTRINO") + "  " + headerStyle.Render(chart)
 	right := fmt.Sprintf("%d values  •  %s", len(m.filteredValues), layoutLabel(m.layout()))
+	if m.nextRail {
+		right = fmt.Sprintf("%d values  •  category rail", len(m.filteredValues))
+	}
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 1 {
 		return headerBarStyle.Width(width).Render(truncateCell(left, width-2))
@@ -592,7 +620,11 @@ func (m Model) workspaceFooter(width int) string {
 			}
 			primary = helpStyle.Render("j/k move  " + action + "  y copy path  esc back  ? help")
 		default:
-			primary = helpStyle.Render("tab/arrows panes  j/k move  J/K 5-lines  n/N comp  enter details  / search  : cmd  ? help  q quit")
+			if m.nextRail {
+				primary = helpStyle.Render("1-7 category  tab panes  j/k move  f component  enter details  / search  : cmd  ? help  q quit")
+			} else {
+				primary = helpStyle.Render("tab/arrows panes  j/k move  J/K 5-lines  n/N comp  enter details  / search  : cmd  ? help  q quit")
+			}
 		}
 	}
 	if m.inputMode == InputModeNormal && m.statusMessage != "" {
@@ -927,7 +959,11 @@ func (m Model) valuesPane(width, height int) string {
 		linesUsed++
 	}
 	if len(m.filteredValues) == 0 {
-		content.WriteString(helpStyle.Render("No values match the current filters."))
+		message := "No values match the current filters."
+		if m.nextRail && m.filterInput.Value() == "" {
+			message = "No items in this category for this component."
+		}
+		content.WriteString(helpStyle.Render(truncateCell(message, innerWidth)))
 	}
 	return paneFrame(width, height, focused).Render(strings.TrimSuffix(content.String(), "\n"))
 }
@@ -1560,18 +1596,28 @@ func (m Model) commandPaletteView(width, height int) string {
 }
 
 func (m Model) helpView(width, height int) string {
-	content := titleStyle.Render("KEYBOARD HELP") + "\n\n" +
-		"Tab / Shift+Tab   switch Components / Values\n" +
-		"h / l, ← / →      focus left / right pane\n" +
+	content := titleStyle.Render("KEYBOARD HELP") + "\n\n"
+	navigation := "jump next / previous component"
+	space := "select component / Details authoring"
+	enter := "details / mapping / mapped value"
+	if m.nextRail {
+		content += "1–7               select category\nTab / Shift+Tab   switch Categories / Values\n"
+		navigation = "next / previous group or category"
+		space = "focus values / Details authoring"
+		enter = "focus values / details / mapping"
+	} else {
+		content += "Tab / Shift+Tab   switch Components / Values\n"
+	}
+	content += "h / l, ← / →      focus left / right pane\n" +
 		"j / k, ↑ / ↓      move 1 line in focused pane\n" +
 		"J / K             jump 5 lines in focused pane\n" +
-		"n / N, ] / [     jump next / previous component\n" +
+		"n / N, ] / [     " + navigation + "\n" +
 		"g / G             first / last item\n" +
-		"Enter             details / mapping / mapped value\n" +
+		"Enter             " + enter + "\n" +
 		"/                 filter values\n" +
 		"f                 select component\n" +
 		":                 command palette\n" +
-		"Space             select component / Details authoring\n" +
+		"Space             " + space + "\n" +
 		"a                 toggle other paths in mapping\n" +
 		"o                 open source in $EDITOR\n" +
 		"y                 copy value path\n" +
@@ -1829,6 +1875,14 @@ func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.nextRail && (m.focusPane == FocusComponents || m.focusPane == FocusValues) {
+		key := msg.String()
+		if len(key) == 1 && key[0] >= '1' && key[0] <= '7' {
+			m.selectNextCategory(int(key[0] - '1'))
+			m.focusPane = FocusValues
+			return m, nil
+		}
+	}
 	if m.focusPane == FocusMapping || m.mappingRowDetail {
 		switch msg.String() {
 		case "q", "ctrl+c", "j", "k", "J", "K", "up", "down", "g", "G", "pgup", "pgdown", "enter", "esc", "?", "y":
