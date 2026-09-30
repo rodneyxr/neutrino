@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
 )
 
 const (
@@ -830,7 +831,7 @@ func (m *Model) stepValuePathScroll() {
 		m.pathScrollPause = 0
 		return
 	}
-	runes := []rune(value.Path)
+	runes := []rune(m.valueListPath(value))
 	pathWidth := m.currentPathWidth()
 	if len(runes) <= pathWidth {
 		m.pathScroll = 0
@@ -926,9 +927,10 @@ func (m Model) valuesPane(width, height int) string {
 		if index == m.cursor {
 			marker = "> "
 		}
-		path := truncateCell(value.Path, pathWidth)
+		displayPath := m.valueListPath(value)
+		path := truncateCell(displayPath, pathWidth)
 		if index == m.cursor && m.pathScroll > 0 {
-			path = scrollCell(value.Path, m.pathScroll, pathWidth)
+			path = scrollCell(displayPath, m.pathScroll, pathWidth)
 		}
 		defaultValue := displayValue(value)
 		if !showMetadata && value.IsPackageValue && value.MappingStatus != "" {
@@ -939,10 +941,18 @@ func (m Model) valuesPane(width, height int) string {
 		var line string
 		if showMetadata {
 			source := ""
-			if len(value.Locations) > 1 {
-				source = fmt.Sprintf("%d locations", len(value.Locations))
-			} else if len(value.Locations) == 1 {
-				source = fmt.Sprintf("%s:%d", filepath.Base(value.Locations[0].File), value.Locations[0].Line)
+			count := len(value.Locations)
+			first := introspect.ValueUsageLocation{}
+			if count > 0 {
+				first = value.Locations[0]
+			}
+			if len(value.ZarfReferences) > 0 {
+				count, first = value.ZarfLocationCount, value.ZarfFirstLocation
+			}
+			if count > 1 {
+				source = fmt.Sprintf("%d locations", count)
+			} else if count == 1 {
+				source = fmt.Sprintf("%s:%d", filepath.Base(first.File), first.Line)
 			}
 			source = truncateCell(source, srcWidth)
 			line = fmt.Sprintf("%s%-*s %-*s %-*s %s", marker, pathWidth, path, valWidth, defaultValue, typeWidth, kind, source)
@@ -968,7 +978,19 @@ func (m Model) valuesPane(width, height int) string {
 	return paneFrame(width, height, focused).Render(strings.TrimSuffix(content.String(), "\n"))
 }
 
+// The package band carries the owner; keep the full path on DisplayItem for
+// searching, Details, and copying.
+func (m Model) valueListPath(value DisplayItem) string {
+	if m.nextRail && (value.IsPkgVar || value.IsZarfVar) && value.PackageName != "" {
+		return strings.TrimPrefix(value.Path, value.PackageName+".")
+	}
+	return value.Path
+}
+
 func (m Model) valueComponentLabel(value DisplayItem, width int) string {
+	if m.nextRail && (value.IsPkgVar || value.IsZarfVar) && value.PackageName != "" {
+		return "Zarf package · " + value.PackageName
+	}
 	if value.IsPkgVar {
 		return "Zarf package"
 	}
@@ -999,6 +1021,9 @@ func componentBand(label string, width int) string {
 }
 
 func valueGroupKey(value DisplayItem) string {
+	if (value.IsPkgVar || value.IsZarfVar) && value.PackageName != "" {
+		return "Zarf package/" + value.PackageName
+	}
 	if value.IsPackageValue || value.IsPackageMapping {
 		return value.Component + "/" + value.PackageName
 	}
@@ -1434,6 +1459,10 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 			continue
 		}
 		file := m.chartRelativeLocation(value, detail.Location.File)
+		if detail.sourceComponent != "" {
+			file = strings.TrimPrefix(detail.sourceComponent, value.PackageName+"/") + " · " +
+				m.chartRelativeLocationFor(detail.sourceComponent, detail.Location.File)
+		}
 		label := fmt.Sprintf("%s:%d:%d", file, detail.Location.Line, detail.Location.Column)
 		if focused && index == m.detailCursor {
 			selectedLine = lineNumber
@@ -1529,6 +1558,10 @@ func (m Model) chartRelativeLocation(value DisplayItem, file string) string {
 	if value.IsSummaryItem {
 		key = value.SummaryComponent
 	}
+	return m.chartRelativeLocationFor(key, file)
+}
+
+func (m Model) chartRelativeLocationFor(key, file string) string {
 	if filepath.IsAbs(file) {
 		if result := m.components[key]; result != nil && result.Source != "" {
 			if relative, err := filepath.Rel(result.Source, file); err == nil &&

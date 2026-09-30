@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
 )
 
 // Categories keep bundle inputs, package inputs and chart defaults separate.
@@ -31,6 +32,77 @@ func nextCategory(item DisplayItem) int {
 	default:
 		return 5
 	}
+}
+
+// Next inspection prefixes declared variables with "<package ID>." and chart
+// identities with "<package ID>/". Match the longest ID to handle dotted IDs.
+func (m Model) nextPackageFor(value, separator string) string {
+	if !m.nextRail {
+		return ""
+	}
+	owner := ""
+	for _, pkg := range m.bundle.Packages {
+		if len(pkg.ID) > len(owner) && strings.HasPrefix(value, pkg.ID+separator) {
+			owner = pkg.ID
+		}
+	}
+	return owner
+}
+
+func (item *DisplayItem) addZarfReference(component string, locations []introspect.ValueUsageLocation) {
+	if item.ZarfLocationCount == 0 && len(locations) > 0 {
+		item.ZarfFirstLocation = locations[0]
+	}
+	item.ZarfLocationCount += len(locations)
+	item.ZarfReferences = append(item.ZarfReferences,
+		zarfVariableReference{component: component, locations: locations})
+}
+
+// One package variable can have a declaration and references in several charts.
+// Collapse only the Next workspace rows; the inspection report remains intact.
+func (m Model) consolidateNextZarfVariables(values []DisplayItem, filter string) []DisplayItem {
+	type variableKey struct{ pkg, name string }
+	seen := make(map[variableKey]int)
+	var declarations map[string]int
+	if filter != "" {
+		declarations = make(map[string]int, len(m.pkgVariables))
+		for i := range m.pkgVariables {
+			declarations[m.pkgVariables[i].Name] = i
+		}
+	}
+	grouped := values[:0]
+	for _, item := range values {
+		if item.PackageName == "" || (!item.IsPkgVar && !item.IsZarfVar) {
+			grouped = append(grouped, item)
+			continue
+		}
+		name := item.Path
+		if item.IsPkgVar {
+			name = strings.TrimPrefix(name, item.PackageName+".")
+		}
+		key := variableKey{item.PackageName, name}
+		if index, ok := seen[key]; ok && item.IsZarfVar {
+			grouped[index].addZarfReference(item.Component, item.Locations)
+			continue
+		}
+		if item.IsZarfVar {
+			component := item.Component
+			if i, ok := declarations[item.PackageName+"."+name]; ok {
+				pv := m.pkgVariables[i]
+				item.Path, item.DefaultValue, item.PkgVarDesc = pv.Name, pv.Default, pv.Description
+				item.IsPkgVar, item.IsZarfVar = true, false
+				item.Component = "Zarf Package Variables"
+			}
+			item.addZarfReference(component, item.Locations)
+			item.Locations = nil
+			item.Chart = "" // references may span charts; Details identifies each source
+		}
+		if _, ok := seen[key]; !ok {
+			seen[key] = len(grouped)
+		}
+		grouped = append(grouped, item)
+	}
+	return grouped
 }
 
 func (m *Model) selectNextCategory(index int) {

@@ -38,13 +38,14 @@ const (
 
 // DetailItem represents a single navigable row in the detail view.
 type DetailItem struct {
-	Kind           DetailItemKind
-	Location       introspect.ValueUsageLocation // valid when Kind == DetailItemLocation
-	relatedValue   *DisplayItem                  // target independent of workspace filtering
-	Label          string                        // rendered label for cross-ref items
-	Mapping        introspect.PackageValueUsage  // valid when Kind == DetailItemMapping
-	packageMapping *valueMappingDetail
-	File           string // resolved path when Kind == DetailItemFile
+	Kind            DetailItemKind
+	Location        introspect.ValueUsageLocation // valid when Kind == DetailItemLocation
+	sourceComponent string                        // owning chart when a package variable links to chart usage
+	relatedValue    *DisplayItem                  // target independent of workspace filtering
+	Label           string                        // rendered label for cross-ref items
+	Mapping         introspect.PackageValueUsage  // valid when Kind == DetailItemMapping
+	packageMapping  *valueMappingDetail
+	File            string // resolved path when Kind == DetailItemFile
 }
 
 type DisplayItem struct {
@@ -53,6 +54,9 @@ type DisplayItem struct {
 	IsZarfVar          bool
 	IsPkgVar           bool
 	PkgVarDesc         string
+	ZarfReferences     []zarfVariableReference
+	ZarfLocationCount  int
+	ZarfFirstLocation  introspect.ValueUsageLocation
 	IsEmptyState       bool
 	IsUDSOverrideValue bool
 	IsUDSOverrideVar   bool
@@ -78,6 +82,11 @@ type DisplayItem struct {
 	Runtime            bool
 	Routes             []packageRoute
 	MappingStatus      string
+}
+
+type zarfVariableReference struct {
+	component string
+	locations []introspect.ValueUsageLocation
 }
 
 // packageRoute describes one declared use of a configured package path.
@@ -372,16 +381,18 @@ func (m *Model) updateFilteredValues() {
 	// Add package variables at the top if the Zarf summary toggle is on
 	if m.showZarfSummary {
 		for _, pv := range m.pkgVariables {
+			item := DisplayItem{
+				ValueUsage: introspect.ValueUsage{
+					Path:         pv.Name,
+					DefaultValue: pv.Default,
+				},
+				Component:   "Zarf Package Variables",
+				PackageName: m.nextPackageFor(pv.Name, "."),
+				IsPkgVar:    true,
+				PkgVarDesc:  pv.Description,
+			}
 			if filter == "" || strings.Contains(strings.ToLower(pv.Name), strings.ToLower(filter)) {
-				newValues = append(newValues, DisplayItem{
-					ValueUsage: introspect.ValueUsage{
-						Path:         pv.Name,
-						DefaultValue: pv.Default,
-					},
-					Component:  "Zarf Package Variables",
-					IsPkgVar:   true,
-					PkgVarDesc: pv.Description,
-				})
+				newValues = append(newValues, item)
 			}
 		}
 	}
@@ -468,13 +479,15 @@ func (m *Model) updateFilteredValues() {
 				DefaultValue: zv.DefaultValue,
 			}
 
-			if filter == "" || strings.Contains(strings.ToLower(v.Path), strings.ToLower(filter)) {
+			item := DisplayItem{
+				ValueUsage:  v,
+				Component:   name,
+				PackageName: m.nextPackageFor(name, "/"),
+				IsZarfVar:   true,
+			}
+			if filter == "" || (m.nextRail && matchesValueFilter(item, filter)) ||
+				(!m.nextRail && strings.Contains(strings.ToLower(v.Path), strings.ToLower(filter))) {
 				chartHasItems = true
-				item := DisplayItem{
-					ValueUsage: v,
-					Component:  name,
-					IsZarfVar:  true,
-				}
 				newValues = append(newValues, item)
 			}
 		}
@@ -621,6 +634,9 @@ func (m *Model) updateFilteredValues() {
 	})
 
 	if m.nextRail {
+		newValues = m.consolidateNextZarfVariables(newValues, filter)
+	}
+	if m.nextRail {
 		for i := range m.categoryCounts {
 			m.categoryCounts[i] = 0
 		}
@@ -628,7 +644,11 @@ func (m *Model) updateFilteredValues() {
 			m.categoryCounts[nextCategory(item)]++
 		}
 		sort.SliceStable(newValues, func(i, j int) bool {
-			return nextCategory(newValues[i]) < nextCategory(newValues[j])
+			left, right := nextCategory(newValues[i]), nextCategory(newValues[j])
+			if left != right {
+				return left < right
+			}
+			return left == 2 && newValues[i].PackageName < newValues[j].PackageName
 		})
 		start := 0
 		for i, count := range m.categoryCounts {
@@ -874,9 +894,15 @@ func (m *Model) buildDetailItems() {
 			targetComponent = v.SummaryComponent
 		}
 		items = append(items, m.findLocationsForOverridePath(targetComponent, targetPath)...)
-	} else if v.IsPkgVar {
-		// No cross-refs for package variables currently
-	} else {
+	} else if len(v.ZarfReferences) > 0 {
+		for _, ref := range v.ZarfReferences {
+			for _, loc := range ref.locations {
+				items = append(items, DetailItem{
+					Kind: DetailItemLocation, Location: loc, sourceComponent: ref.component,
+				})
+			}
+		}
+	} else if !v.IsPkgVar {
 		// Regular Helm value or Zarf var: show locations, then cross-refs to UDS overrides
 		for _, loc := range v.Locations {
 			items = append(items, DetailItem{

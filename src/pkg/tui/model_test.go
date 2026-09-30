@@ -1268,6 +1268,67 @@ func TestNextRailStartsOnFirstPopulatedCategory(t *testing.T) {
 	}
 }
 
+func TestNextZarfVariablesGroupByOwningPackage(t *testing.T) {
+	m := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{
+			"api/server/app": {ZarfVars: []introspect.ZarfVariableUsage{{
+				Name: "ADMIN_DOMAINS", Locations: []introspect.ValueUsageLocation{{File: "/tmp/server/deployment.yaml", Line: 5, Column: 1}},
+			}}},
+			"api/worker/app": {ZarfVars: []introspect.ZarfVariableUsage{{
+				Name: "ADMIN_DOMAINS", Locations: []introspect.ValueUsageLocation{{File: "/tmp/worker/worker.yaml", Line: 9, Column: 2}},
+			}}},
+			"api.v2/server/app": {ZarfVars: []introspect.ZarfVariableUsage{{Name: "ADMIN_DOMAINS"}}},
+		},
+		ComponentOrder: []string{"api/server/app", "api/worker/app", "api.v2/server/app"},
+		Variables: []v1alpha1.InteractiveVariable{
+			{Variable: v1alpha1.Variable{Name: "api.ADMIN_DOMAINS"}, Default: "api.example", Description: "Admin domains"},
+			{Variable: v1alpha1.Variable{Name: "api.v2.ADMIN_DOMAINS"}, Default: "v2.example"},
+		},
+		Bundle: &introspect.BundleMetadata{
+			Format: "next", Packages: []introspect.BundlePackageMetadata{{ID: "api"}, {ID: "api.v2"}},
+		},
+	})
+	m.windowWidth, m.windowHeight = 100, 30
+	m.selectNextCategory(2)
+	if len(m.filteredValues) != 2 {
+		t.Fatalf("one selectable ADMIN_DOMAINS per package, got %+v", m.filteredValues)
+	}
+	first, second := m.filteredValues[0], m.filteredValues[1]
+	if first.PackageName != "api" || first.Path != "api.ADMIN_DOMAINS" ||
+		first.DefaultValue != "api.example" || first.PkgVarDesc != "Admin domains" ||
+		first.ZarfLocationCount != 2 || len(first.ZarfReferences) != 2 ||
+		second.PackageName != "api.v2" || second.Path != "api.v2.ADMIN_DOMAINS" || second.DefaultValue != "v2.example" {
+		t.Fatalf("grouping must retain package identity, declaration and both chart references: %+v", m.filteredValues)
+	}
+	view := m.View()
+	for _, band := range []string{"━━ Zarf package · api ", "━━ Zarf package · api.v2 "} {
+		if strings.Count(view, band) != 1 {
+			t.Fatalf("expected exactly one package section %q:\n%s", band, view)
+		}
+	}
+	if strings.Contains(view, "api.ADMIN_DOMAINS") || strings.Count(view, "ADMIN_DOMAINS") != 2 {
+		t.Fatalf("the column should show one local name per package:\n%s", view)
+	}
+	updated, _ := m.Update(key("enter"))
+	details := updated.(Model).View()
+	for _, want := range []string{"api.ADMIN_DOMAINS", "Admin domains", "server/app · deployment.yaml:5:1", "worker/app · worker.yaml:9:2"} {
+		if !strings.Contains(details, want) {
+			t.Fatalf("variable Details lost %q:\n%s", want, details)
+		}
+	}
+	m.filterInput.SetValue("api.v2")
+	m.updateFilteredValues()
+	if len(m.filteredValues) != 1 || m.filteredValues[0].Path != "api.v2.ADMIN_DOMAINS" {
+		t.Fatalf("searching a package must retain only its variable: %+v", m.filteredValues)
+	}
+	m.filterInput.SetValue("worker/app")
+	m.updateFilteredValues()
+	if len(m.filteredValues) != 1 || m.filteredValues[0].Path != "api.ADMIN_DOMAINS" ||
+		m.filteredValues[0].DefaultValue != "api.example" || m.filteredValues[0].ZarfLocationCount != 1 {
+		t.Fatalf("chart-only search must retain declaration and matching chart reference: %+v", m.filteredValues)
+	}
+}
+
 func testWorkspaceModel() Model {
 	const component = "core-base/istio-controlplane/istiod"
 	return NewModel(introspect.InspectionReport{

@@ -40,6 +40,8 @@ Neutrino changes layout based on available terminal width:
 
 For Next bundles, `f` scopes to a component; choose **All components** to see bundle variables, Next values-file declarations, and configured Zarf Package Values. Category selection does not merge configuration owners or claim inputs are deployment-effective. Empty categories remain visible and explain that the selected scope has no items. Filtering with `/` searches within the selected category.
 
+In a Next bundle's **Zarf variables** category, each Zarf package has its own band. A variable has one row per package, combining its declaration with chart-level `###ZARF_VAR_*###` references; the same name in another package remains separate. The **Value Path** column omits the package prefix already shown in the band (`api.REGISTRY` appears as `REGISTRY` under `api`). The row retains the declared default and description; Details lists each referencing chart and template location. Filtering by package ID finds its variables, while Details and copied paths retain the fully qualified declared name.
+
 ### Values
 
 The Values pane displays each discovered value in a dense table. Wider terminals show:
