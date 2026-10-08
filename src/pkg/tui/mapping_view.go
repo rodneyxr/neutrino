@@ -8,20 +8,10 @@ import (
 	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
 )
 
-type mappingRow struct {
-	path         string // destination chart path
-	defaultValue interface{}
-	packagePath  string
-	input        interface{}
-	present      bool
-	status       string
-	exclusion    string
-	undiscovered bool
-}
 type mappingScreen struct {
+	table              *mappingTable
 	usage              introspect.PackageValueUsage
 	pkg                *introspect.PackageValues
-	chart              *introspect.IntrospectResult
 	bundle             *introspect.BundleMetadata
 	origin             FocusPane
 	rows               []mappingRow
@@ -38,126 +28,35 @@ type mappingScreen struct {
 	returnDetailRef    *DisplayItem
 }
 
-func (m *Model) openMapping(item DisplayItem, origin FocusPane) {
-	usage := introspect.PackageValueUsage{
-		Path: item.ValueSource, ComponentName: item.MappingComponent,
-		ChartName: item.MappingChart, TargetPath: item.ValueTarget,
-		ExcludePaths: item.ExcludedPaths, Runtime: item.Runtime,
-	}
-	packageName := item.PackageName
-	if packageName == "" && item.Component != "Zarf Package Values" {
-		packageName, _, _ = parseComponentKey(item.Component)
-	}
-	var pkg *introspect.PackageValues
-	for i := range m.packageValues {
-		candidate := &m.packageValues[i]
-		if packageName != "" && candidate.PackageName != packageName {
-			continue
-		}
-		for _, declared := range candidate.Usages {
-			if declared.Path == usage.Path && declared.ComponentName == usage.ComponentName &&
-				declared.ChartName == usage.ChartName && declared.TargetPath == usage.TargetPath &&
-				strings.Join(declared.ExcludePaths, "\x00") == strings.Join(usage.ExcludePaths, "\x00") {
-				pkg = candidate
-				break
-			}
-		}
-		if pkg != nil {
-			break
-		}
-	}
-	if pkg == nil {
-		m.setStatus("Package for this mapping is unavailable")
+func (m *Model) openMapping(ref *valueMapping, origin FocusPane) {
+	table, err := m.valuePolicy.open(ref)
+	if err != nil {
+		m.setStatus(err.Error())
 		return
 	}
-	key := usage.ComponentName + "/" + usage.ChartName
-	if pkg.PackageName != "" {
-		if _, ok := m.components[pkg.PackageName+"/"+key]; ok {
-			key = pkg.PackageName + "/" + key
-		}
-	}
-	chart := m.components[key]
-	if chart == nil {
-		m.setStatus("Destination chart for this mapping is unavailable")
-		return
-	}
-	screen := &mappingScreen{usage: usage, pkg: pkg, chart: chart, chartKey: key, bundle: m.bundle, origin: origin,
+	screen := &mappingScreen{
+		table: table, usage: ref.usage, pkg: ref.pkg,
+		chartKey: ref.chartKey, sourcePresent: table.sourcePresent, inside: table.inside,
+		bundle: m.bundle, origin: origin,
 		previous: m.mapping, returnRowDetail: m.mappingRowDetail,
 		returnDetailCursor: m.detailCursor, returnDetailOffset: m.detailScrollOffset,
-		returnDetailRef: m.detailRef}
+		returnDetailRef: m.detailRef,
+	}
 	m.mapping = screen
 	m.mappingRowDetail = false
 	m.detailRef = nil
-	m.mapping.buildRows()
+	m.mapping.selectRows()
 	m.focusPane = FocusMapping
 }
 
-// mappingInput looks up a supplied path without conflating absent, null, false,
-// zero, and empty objects. A scalar ancestor cannot supply a descendant path.
-func mappingInput(values map[string]interface{}, path string) (interface{}, bool) {
-	if path == "" {
-		return values, values != nil
-	}
-	var current interface{} = values
-	for _, segment := range strings.Split(path, ".") {
-		object, ok := current.(map[string]interface{})
-		if !ok {
-			return nil, false
-		}
-		current, ok = object[segment]
-		if !ok {
-			return nil, false
-		}
-	}
-	return current, true
-}
-
-func (screen *mappingScreen) buildRows() {
+func (screen *mappingScreen) selectRows() {
 	selectedPath := ""
 	if screen.cursor < len(screen.rows) {
 		selectedPath = screen.rows[screen.cursor].path
 	}
-	screen.rows = nil
-	screen.inside = 0
-	source := packagePath(screen.usage.Path)
-	target := packagePath(screen.usage.TargetPath)
-	_, screen.sourcePresent = mappingInput(screen.pkg.Values, source)
-	seen := make(map[string]bool, len(screen.chart.Values))
-	var other []mappingRow
-	for _, value := range screen.chart.Values {
-		path := packagePath(value.Path)
-		if seen[path] {
-			continue
-		}
-		seen[path] = true
-		row := chartMappingRow(value, screen.pkg, screen.usage)
-		if pathWithin(path, target) {
-			screen.rows = append(screen.rows, row)
-		} else {
-			other = append(other, row)
-		}
-	}
-	// Inputs can be supplied even when their path is not in chart discovery.
-	// Keep these visible without claiming they are chart defaults or schema-valid.
-	packageLeaves("", screen.pkg.Values, func(path string, input interface{}) {
-		if !pathWithin(path, source) || path == source && len(screen.chart.Values) > 0 {
-			return // A source object is not itself a discovered chart leaf.
-		}
-		suffix := strings.TrimPrefix(path, source)
-		if suffix != "" && !strings.HasPrefix(suffix, ".") && target != "" {
-			suffix = "." + suffix
-		}
-		chartPath := strings.Trim(target+suffix, ".")
-		if seen[chartPath] {
-			return
-		}
-		row := chartMappingRow(introspect.ValueUsage{Path: chartPath}, screen.pkg, screen.usage)
-		row.undiscovered = true
-		screen.rows = append(screen.rows, row)
-	})
-	screen.inside = len(screen.rows)
-	if screen.showOthers {
-		screen.rows = append(screen.rows, other...)
+	screen.rows = screen.table.rows
+	if !screen.showOthers {
+		screen.rows = screen.rows[:screen.table.inside]
 	}
 	if len(screen.rows) == 0 {
 		screen.cursor, screen.offset = 0, 0

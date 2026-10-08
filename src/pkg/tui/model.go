@@ -45,6 +45,7 @@ type DetailItem struct {
 	Label           string                        // rendered label for cross-ref items
 	Mapping         introspect.PackageValueUsage  // valid when Kind == DetailItemMapping
 	packageMapping  *valueMappingDetail
+	mappingRef      *valueMapping
 	File            string // resolved path when Kind == DetailItemFile
 }
 
@@ -82,97 +83,13 @@ type DisplayItem struct {
 	Runtime            bool
 	Routes             []packageRoute
 	MappingStatus      string
+	mappingRef         *valueMapping
+	authoring          *valueAuthoring
 }
 
 type zarfVariableReference struct {
 	component string
 	locations []introspect.ValueUsageLocation
-}
-
-// packageRoute describes one declared use of a configured package path.
-// A path may have different outcomes in different charts.
-type packageRoute struct {
-	Usage  introspect.PackageValueUsage
-	Status string
-	Target string
-}
-
-func packagePath(path string) string {
-	return strings.Trim(strings.TrimPrefix(path, "."), ".")
-}
-
-func pathWithin(path, parent string) bool {
-	return parent == "" || path == parent || strings.HasPrefix(path, parent+".")
-}
-
-func packageRoutes(path string, usages []introspect.PackageValueUsage) []packageRoute {
-	path = packagePath(path)
-	var routes []packageRoute
-	for _, usage := range usages {
-		source := packagePath(usage.Path)
-		if !pathWithin(path, source) {
-			continue
-		}
-		route := packageRoute{Usage: usage, Status: "mapped"}
-		if usage.Runtime {
-			route.Status = "runtime"
-		} else if usage.TargetPath == "" {
-			// Manifest/action references are not chart mappings.
-			route.Status = "runtime"
-		} else {
-			for _, excluded := range usage.ExcludePaths {
-				if pathWithin(path, packagePath(excluded)) {
-					route.Status = "excluded"
-					break
-				}
-			}
-			if route.Status == "mapped" {
-				target := packagePath(usage.TargetPath)
-				suffix := strings.TrimPrefix(path, source)
-				if source == "" {
-					suffix = "." + path
-				}
-				route.Target = strings.Trim(target+suffix, ".")
-				if route.Target == "" {
-					route.Target = "."
-				}
-			}
-		}
-		routes = append(routes, route)
-	}
-	return routes
-}
-
-func packageStatus(routes []packageRoute) string {
-	if len(routes) == 0 {
-		return "unmapped"
-	}
-	first := routes[0].Status
-	for _, route := range routes[1:] {
-		if route.Status != first {
-			return "mixed"
-		}
-	}
-	return first
-}
-
-func packageLeaves(prefix string, values map[string]interface{}, visit func(string, interface{})) {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		path := key
-		if prefix != "" {
-			path = prefix + "." + key
-		}
-		if nested, ok := values[key].(map[string]interface{}); ok && len(nested) > 0 {
-			packageLeaves(path, nested, visit)
-		} else {
-			visit(path, values[key])
-		}
-	}
 }
 
 type Model struct {
@@ -183,7 +100,7 @@ type Model struct {
 	filteredValues       []DisplayItem
 	udsOverrideValues    []introspect.UDSOverrideValueWithContext
 	udsOverrideVariables []introspect.UDSOverrideVariableWithContext
-	packageValues        []introspect.PackageValues
+	valuePolicy          *packageValuesPolicy
 	bundle               *introspect.BundleMetadata
 	nextRail             bool
 	category             int
@@ -270,7 +187,7 @@ func NewModel(report introspect.InspectionReport) Model {
 		pkgVariables:         pkgVariables,
 		udsOverrideValues:    report.UDSOverrideValues,
 		udsOverrideVariables: report.UDSOverrideVariables,
-		packageValues:        report.PackageValues,
+		valuePolicy:          newPackageValuesPolicy(report),
 		bundle:               report.Bundle,
 		nextRail:             report.Bundle != nil && report.Bundle.Format == "next",
 		showZarfSummary:      report.Bundle != nil && report.Bundle.Format == "next",
@@ -299,52 +216,10 @@ func (m *Model) updateFilteredValues() {
 	// Package Values are package-level inputs, not chart defaults. Keep them
 	// visible even when a package contains no charts.
 	if m.currentChart == "All Charts" {
-		for _, pkg := range m.packageValues {
-			var schema interface{}
-			if len(pkg.Schema) > 0 {
-				schema = pkg.Schema
-			}
-			var leafPaths []string
-			packageLeaves("", pkg.Values, func(path string, configured interface{}) {
-				leafPaths = append(leafPaths, path)
-				routes := packageRoutes(path, pkg.Usages)
-				item := DisplayItem{
-					ValueUsage: introspect.ValueUsage{Path: path, DefaultValue: configured},
-					Component:  "Zarf Package Values", PackageName: pkg.PackageName,
-					IsPackageValue: true, ValuePresent: true, ValueFiles: pkg.Files, ValueFileSources: pkg.FileSources,
-					ValueSchema: schema, Routes: routes, MappingStatus: packageStatus(routes),
-				}
-				if matchesValueFilter(item, filter) {
-					newValues = append(newValues, item)
-				}
-			})
-			// A mapping remains navigable even when its source is an empty
-			// object or has no configured input. Chart discovery drives its rows.
-			for _, usage := range pkg.Usages {
-				if usage.Runtime || usage.TargetPath == "" || usage.ChartName == "" {
-					found := false
-					for _, path := range leafPaths {
-						if pathWithin(path, packagePath(usage.Path)) {
-							found = true
-							break
-						}
-					}
-					if found {
-						continue
-					}
-				}
-				item := packageMappingItem(usage, "Zarf Package Values", pkg.PackageName)
-				if matchesValueFilter(item, filter) {
-					newValues = append(newValues, item)
-				}
-			}
-			if len(pkg.Values) == 0 && (len(pkg.Files) > 0 || len(pkg.Schema) > 0) {
-				item := DisplayItem{ValueUsage: introspect.ValueUsage{Path: "(package values)"}, Component: "Zarf Package Values",
-					PackageName: pkg.PackageName, IsPackageValue: true, ValueFiles: pkg.Files,
-					ValueFileSources: pkg.FileSources, ValueSchema: schema}
-				if matchesValueFilter(item, filter) {
-					newValues = append(newValues, item)
-				}
+		for _, entry := range m.valuePolicy.catalog().packages {
+			item := packageValueItem(entry, "Zarf Package Values")
+			if matchesValueFilter(item, filter) {
+				newValues = append(newValues, item)
 			}
 		}
 		if m.bundle != nil {
@@ -493,8 +368,8 @@ func (m *Model) updateFilteredValues() {
 		}
 
 		if m.currentChart != "All Charts" {
-			for _, mapping := range res.PackageValueMappings {
-				item := packageMappingItem(mapping, name, "")
+			for _, entry := range m.valuePolicy.catalog().charts[name] {
+				item := packageValueItem(entry, name)
 				if matchesValueFilter(item, filter) {
 					chartHasItems = true
 					newValues = append(newValues, item)
@@ -709,13 +584,33 @@ func (m *Model) updateFilteredValues() {
 	}
 }
 
-func packageMappingItem(usage introspect.PackageValueUsage, component, packageName string) DisplayItem {
+func packageValueItem(entry packageValueEntry, component string) DisplayItem {
+	if entry.mapping != nil {
+		usage := entry.mapping.usage
+		packageName := ""
+		if entry.pkg != nil {
+			packageName = entry.pkg.PackageName
+		}
+		return DisplayItem{
+			ValueUsage: introspect.ValueUsage{Path: usage.Path, Locations: usage.Locations},
+			Component:  component, PackageName: packageName,
+			MappingComponent: usage.ComponentName, MappingChart: usage.ChartName,
+			IsPackageMapping: true, ValueSource: usage.Path,
+			ValueTarget: usage.TargetPath, ExcludedPaths: usage.ExcludePaths, Runtime: usage.Runtime,
+			mappingRef: entry.mapping,
+		}
+	}
+	var schema interface{}
+	if len(entry.pkg.Schema) > 0 {
+		schema = entry.pkg.Schema
+	}
 	return DisplayItem{
-		ValueUsage: introspect.ValueUsage{Path: usage.Path, Locations: usage.Locations},
-		Component:  component, PackageName: packageName,
-		MappingComponent: usage.ComponentName, MappingChart: usage.ChartName,
-		IsPackageMapping: true, ValueSource: usage.Path,
-		ValueTarget: usage.TargetPath, ExcludedPaths: usage.ExcludePaths, Runtime: usage.Runtime,
+		ValueUsage: introspect.ValueUsage{Path: entry.path, DefaultValue: entry.value},
+		Component:  component, PackageName: entry.pkg.PackageName,
+		IsPackageValue: true, ValuePresent: entry.present,
+		ValueFiles: entry.pkg.Files, ValueFileSources: entry.pkg.FileSources,
+		ValueSchema: schema, Routes: entry.routes, MappingStatus: entry.status,
+		authoring: entry.authoring,
 	}
 }
 
@@ -873,12 +768,21 @@ func (m *Model) buildDetailItems() {
 	}
 	var items []DetailItem
 	if !v.IsZarfVar && !v.IsPkgVar && !v.IsPackageValue && !v.IsPackageMapping && !v.IsBundleVariable && !v.IsUDSOverrideValue && !v.IsUDSOverrideVar {
-		items = append(items, m.chartMappingDetails(v)...)
+		details := m.valuePolicy.details(v.Component, v.ValueUsage)
+		for i := range details {
+			detail := &details[i]
+			items = append(items, DetailItem{
+				Kind: DetailItemMapping, Mapping: detail.mapping.usage,
+				packageMapping: detail, mappingRef: detail.mapping,
+			})
+		}
 	}
 	if v.IsPackageValue && v.ValuePresent && v.Component == "Zarf Package Values" {
 		for _, route := range v.Routes {
 			if route.Usage.TargetPath != "" && route.Usage.ChartName != "" {
-				items = append(items, DetailItem{Kind: DetailItemMapping, Mapping: route.Usage})
+				items = append(items, DetailItem{
+					Kind: DetailItemMapping, Mapping: route.Usage, mappingRef: route.mapping,
+				})
 			}
 		}
 	}

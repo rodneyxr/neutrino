@@ -287,13 +287,13 @@ func (m *Model) activateFocused() tea.Cmd {
 		m.detailRef = nil
 		value := m.filteredValues[m.cursor]
 		if value.IsPackageMapping && value.ValueTarget != "" {
-			m.openMapping(value, FocusValues)
+			m.openMapping(value.mappingRef, FocusValues)
 			return nil
 		}
 		if value.IsPackageValue && value.Component == "Zarf Package Values" && len(value.Routes) == 1 {
-			route := value.Routes[0].Usage
-			if !route.Runtime && route.TargetPath != "" && route.ChartName != "" {
-				m.openMapping(packageMappingItem(route, value.Component, value.PackageName), FocusValues)
+			route := value.Routes[0]
+			if !route.Usage.Runtime && route.Usage.TargetPath != "" && route.Usage.ChartName != "" {
+				m.openMapping(route.mapping, FocusValues)
 				return nil
 			}
 		}
@@ -320,12 +320,7 @@ func (m *Model) activateFocused() tea.Cmd {
 		}
 		detail := m.detailItems[m.detailCursor]
 		if detail.Kind == DetailItemMapping {
-			value, _ := m.detailValue()
-			packageName := value.PackageName
-			if detail.packageMapping != nil {
-				packageName = detail.packageMapping.pkg.PackageName
-			}
-			m.openMapping(packageMappingItem(detail.Mapping, value.Component, packageName), FocusInspector)
+			m.openMapping(detail.mappingRef, FocusInspector)
 			return nil
 		}
 		if detail.Kind == DetailItemLocation {
@@ -1982,7 +1977,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		if m.focusPane == FocusMapping && m.mapping != nil {
 			m.mapping.showOthers = !m.mapping.showOthers
-			m.mapping.buildRows()
+			m.mapping.selectRows()
 			m.ensureMappingCursorVisible()
 		}
 	case "/":

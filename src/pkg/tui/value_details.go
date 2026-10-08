@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
 	"github.com/goccy/go-yaml"
 )
 
@@ -23,30 +22,25 @@ func (m Model) packageValuesSnippet(value DisplayItem) string {
 			}
 		}
 	}
+	var plan *valueAuthoring
 	if mapping != nil {
-		row := mapping.row
-		if row.status != "available" || row.packagePath == "" {
-			return ""
-		}
-		input := row.input
-		note := "# Current package input"
-		if !row.present {
-			input = value.DefaultValue
-			note = "# Example using the chart default; edit before use"
-			if input == nil {
-				input = "<set-value>"
-				note = "# No known default; replace <set-value> before use"
-			}
-		}
-		return note + "\n" + packageValuesYAML(row.packagePath, input)
+		plan = mapping.row.authoring
+	} else {
+		plan = value.authoring
 	}
-	if value.IsPackageValue && value.ValuePresent && value.Component == "Zarf Package Values" && !value.Runtime {
-		if value.MappingStatus == "excluded" || value.MappingStatus == "runtime" || value.MappingStatus == "mixed" {
-			return ""
-		}
-		return "# Current package input\n" + packageValuesYAML(value.Path, value.DefaultValue)
+	if plan == nil {
+		return ""
 	}
-	return ""
+	note := "# Current package input"
+	input := plan.value
+	switch plan.basis {
+	case authoringDefault:
+		note = "# Example using the chart default; edit before use"
+	case authoringUnknown:
+		note = "# No known default; replace <set-value> before use"
+		input = "<set-value>"
+	}
+	return note + "\n" + packageValuesYAML(plan.path, input)
 }
 
 func packageValuesYAML(path string, input interface{}) string {
@@ -158,69 +152,5 @@ func (m Model) detailValue() (DisplayItem, bool) {
 		return DisplayItem{}, false
 	}
 	row := m.mapping.rows[m.mapping.cursor]
-	item := DisplayItem{Component: m.mapping.chartKey,
-		ValueUsage: introspect.ValueUsage{Path: row.path, DefaultValue: row.defaultValue}}
-	for _, value := range m.mapping.chart.Values {
-		if packagePath(value.Path) == row.path {
-			item.ValueUsage = value
-			break
-		}
-	}
-	return item, true
-}
-
-type valueMappingDetail struct {
-	pkg *introspect.PackageValues
-	row mappingRow
-}
-
-func chartMappingRow(value introspect.ValueUsage, pkg *introspect.PackageValues, usage introspect.PackageValueUsage) mappingRow {
-	path, source, target := packagePath(value.Path), packagePath(usage.Path), packagePath(usage.TargetPath)
-	row := mappingRow{path: path, defaultValue: value.DefaultValue, status: "other"}
-	if !pathWithin(path, target) {
-		return row
-	}
-	suffix := strings.TrimPrefix(path, target)
-	if suffix != "" && !strings.HasPrefix(suffix, ".") && source != "" {
-		suffix = "." + suffix
-	}
-	row.packagePath = "." + strings.Trim(source+suffix, ".")
-	row.input, row.present = mappingInput(pkg.Values, packagePath(row.packagePath))
-	row.status = "available"
-	for _, excluded := range usage.ExcludePaths {
-		if pathWithin(packagePath(row.packagePath), packagePath(excluded)) {
-			row.status, row.exclusion = "excluded", excluded
-			break
-		}
-	}
-	if usage.Runtime {
-		row.status = "runtime"
-	}
-	return row
-}
-
-func (m Model) chartMappingDetails(value DisplayItem) []DetailItem {
-	var items []DetailItem
-	for i := range m.packageValues {
-		pkg := &m.packageValues[i]
-		for _, usage := range pkg.Usages {
-			if usage.TargetPath == "" || usage.ChartName == "" {
-				continue
-			}
-			key := usage.ComponentName + "/" + usage.ChartName
-			if m.bundle != nil {
-				key = pkg.PackageName + "/" + key
-			}
-			if value.Component != key {
-				// Prefixed reports also occur without bundle metadata in consumers.
-				if value.Component != pkg.PackageName+"/"+usage.ComponentName+"/"+usage.ChartName {
-					continue
-				}
-			}
-			row := chartMappingRow(value.ValueUsage, pkg, usage)
-			items = append(items, DetailItem{Kind: DetailItemMapping, Mapping: usage,
-				packageMapping: &valueMappingDetail{pkg: pkg, row: row}})
-		}
-	}
-	return items
+	return DisplayItem{Component: m.mapping.chartKey, ValueUsage: row.value}, true
 }

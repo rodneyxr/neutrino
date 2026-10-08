@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -52,48 +51,6 @@ func TestPackageValuesAuthoringUsesNestedInputPath(t *testing.T) {
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("incorrect Package Values nesting: %#v", got)
-	}
-}
-
-func TestPackageValuesAuthoringPreservesSuppliedTypes(t *testing.T) {
-	for _, input := range []interface{}{nil, false, 0, "", "true", []interface{}{}, map[string]interface{}{}, "line one\nline two"} {
-		t.Run(fmt.Sprintf("%T_%v", input, input), func(t *testing.T) {
-			model := Model{detailItems: []DetailItem{{packageMapping: &valueMappingDetail{
-				row: mappingRow{packagePath: ".app.enabled", status: "available", present: true, input: input},
-			}}}}
-			snippet := model.packageValuesSnippet(DisplayItem{ValueUsage: introspect.ValueUsage{DefaultValue: "wrong-default"}})
-			want := "# Current package input\n" + packageValuesYAML(".app.enabled", input)
-			if snippet != want {
-				t.Fatalf("supplied value replaced with default: %s", snippet)
-			}
-			var got map[string]interface{}
-			if err := yaml.Unmarshal([]byte(snippet), &got); err != nil {
-				t.Fatalf("invalid snippet YAML: %v", err)
-			}
-			actual := got["app"].(map[string]interface{})["enabled"]
-			// Compare serialized values to tolerate the decoder's integer type.
-			if packageValuesYAML("", actual) != packageValuesYAML("", input) {
-				t.Fatalf("value changed during YAML round-trip: %#v -> %#v", input, actual)
-			}
-		})
-	}
-}
-
-func TestPackageValuesAuthoringFollowsSelectedMapping(t *testing.T) {
-	model := Model{detailItems: []DetailItem{
-		{packageMapping: &valueMappingDetail{row: mappingRow{packagePath: ".first.enabled", status: "available"}}},
-		{packageMapping: &valueMappingDetail{row: mappingRow{packagePath: ".second.enabled", status: "available"}}},
-	}}
-	model.detailCursor = 1
-	snippet := model.packageValuesSnippet(DisplayItem{})
-	if !strings.Contains(snippet, "second:") || strings.Contains(snippet, "first:") || !strings.Contains(snippet, "<set-value>") {
-		t.Fatalf("wrong mapping or unknown default handling: %s", snippet)
-	}
-	for _, status := range []string{"excluded", "other", "runtime"} {
-		model.detailItems[1].packageMapping.row.status = status
-		if snippet := model.packageValuesSnippet(DisplayItem{}); snippet != "" {
-			t.Fatalf("%s mapping should not offer a usable snippet: %s", status, snippet)
-		}
 	}
 }
 

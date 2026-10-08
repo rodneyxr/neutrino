@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -283,6 +285,8 @@ func TestNewStatusRefreshesExpiry(t *testing.T) {
 
 	updated, _ := model.Update(key("Z"))
 	model = updated.(Model)
+	// Simulate an earlier status without depending on wall-clock resolution.
+	model.statusExpiresAt = model.statusExpiresAt.Add(-time.Second)
 	oldExpiry := model.statusExpiresAt
 	updated, _ = model.Update(key("U"))
 	model = updated.(Model)
@@ -716,22 +720,23 @@ func TestDetailsLabelsIdentityAndUsesChartRelativeLocations(t *testing.T) {
 	model := testWorkspaceModel()
 	model.windowWidth = 110
 	model.windowHeight = 32
+	source := model.components["core-base/istio-controlplane/istiod"].Source
 	model.filteredValues[0].Locations = []introspect.ValueUsageLocation{
-		{File: "/tmp/istiod/values.yaml", Line: 4, Column: 1},
-		{File: "/tmp/istiod/charts/child/templates/workload.yaml", Line: 7, Column: 2},
-		{File: "/tmp/istiod/templates/deployment.yaml", Line: 148, Column: 12},
+		{File: filepath.Join(source, "values.yaml"), Line: 4, Column: 1},
+		{File: filepath.Join(source, "charts", "child", "templates", "workload.yaml"), Line: 7, Column: 2},
+		{File: filepath.Join(source, "templates", "deployment.yaml"), Line: 148, Column: 12},
 	}
 	model.focusPane = FocusInspector
 	model.buildDetailItems()
 	body, _ := model.inspectorContent(106, true)
 	for _, want := range []string{
-		"values.yaml:4:1", "charts/child/templates/workload.yaml:7:2", "templates/deployment.yaml:148:12",
+		"values.yaml:4:1", filepath.Join("charts", "child", "templates", "workload.yaml") + ":7:2", filepath.Join("templates", "deployment.yaml") + ":148:12",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("details missing %q:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "/tmp/istiod") {
+	if strings.Contains(body, source) {
 		t.Fatalf("details contains an absolute source path:\n%s", body)
 	}
 }
@@ -740,9 +745,10 @@ func TestDetailsKeepsSelectedLocationVisibleAcrossSections(t *testing.T) {
 	model := testWorkspaceModel()
 	model.windowWidth = 72
 	model.windowHeight = 14
+	source := model.components["core-base/istio-controlplane/istiod"].Source
 	for line := 1; line <= 15; line++ {
 		model.filteredValues[0].Locations = append(model.filteredValues[0].Locations, introspect.ValueUsageLocation{
-			File: fmt.Sprintf("/tmp/chart/templates/subdir/%02d.yaml", line), Line: line, Column: 2,
+			File: filepath.Join(source, "templates", "subdir", fmt.Sprintf("%02d.yaml", line)), Line: line, Column: 2,
 		})
 	}
 	updated, _ := model.Update(key("enter"))
@@ -754,14 +760,14 @@ func TestDetailsKeepsSelectedLocationVisibleAcrossSections(t *testing.T) {
 	if model.detailCursor != 15 {
 		t.Fatalf("selected action = %d, want 15", model.detailCursor)
 	}
-	if !strings.Contains(model.View(), "> templates/subdir/15.yaml:15:2") {
+	if !strings.Contains(model.View(), "> "+filepath.Join("templates", "subdir", "15.yaml")+":15:2") {
 		t.Fatalf("selected source should remain visible with its directory:\n%s", model.View())
 	}
 	for range 15 {
 		updated, _ = model.Update(key("k"))
 		model = updated.(Model)
 	}
-	if !strings.Contains(model.View(), "> templates/deployment.yaml:148:12") {
+	if !strings.Contains(model.View(), "> "+filepath.Join("templates", "deployment.yaml")+":148:12") {
 		t.Fatalf("first source should be visible again:\n%s", model.View())
 	}
 }
@@ -847,6 +853,8 @@ func TestValuesAlwaysConsolidateLocations(t *testing.T) {
 }
 
 func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.T) {
+	root := t.TempDir()
+	firstSource := filepath.Join(root, "src", "my-package", "zarf-values.yaml")
 	model := NewModel(introspect.InspectionReport{
 		Components: map[string]*introspect.IntrospectResult{},
 		PackageValues: []introspect.PackageValues{{
@@ -854,7 +862,7 @@ func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.
 			Values:      map[string]interface{}{"database": map[string]interface{}{"host": "db.internal"}},
 			Schema:      map[string]interface{}{"type": "object"},
 			Files:       []string{"../../src/my-package/zarf-values.yaml", "zarf-values.yaml"},
-			FileSources: []string{"/workspace/src/my-package/zarf-values.yaml", "/workspace/zarf-values.yaml"},
+			FileSources: []string{firstSource, filepath.Join(root, "zarf-values.yaml")},
 			Usages: []introspect.PackageValueUsage{{
 				Path: ".database.host", ComponentName: "server", ChartName: "app",
 				TargetPath: "database.hostname", ExcludePaths: []string{"secret"},
@@ -885,7 +893,7 @@ func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.
 	model.buildDetailItems()
 	model.focusPane = FocusInspector
 	body, _ = model.inspectorContent(100, true)
-	for _, want := range []string{"src/my-package/zarf-values.yaml", "zarf-values.yaml", "PACKAGE VALUES SCHEMA · HIDDEN", "db.internal"} {
+	for _, want := range []string{filepath.Join("src", "my-package", "zarf-values.yaml"), "zarf-values.yaml", "PACKAGE VALUES SCHEMA · HIDDEN", "db.internal"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in package values details: %s", want, body)
 		}
@@ -893,7 +901,7 @@ func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.
 	if strings.Contains(body, "type: object") || strings.Contains(body, "../..") {
 		t.Fatalf("schema should be collapsed and file paths should not traverse upward: %s", body)
 	}
-	if len(model.detailItems) != 3 || model.detailItems[1].Kind != DetailItemFile || model.detailItems[1].File != "/workspace/src/my-package/zarf-values.yaml" {
+	if len(model.detailItems) != 3 || model.detailItems[1].Kind != DetailItemFile || model.detailItems[1].File != firstSource {
 		t.Fatalf("values files should be selectable in declared order: %+v", model.detailItems)
 	}
 	updated, _ := model.Update(key("s"))
@@ -907,23 +915,6 @@ func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.
 func TestDefaultValueStyleHasNoBackground(t *testing.T) {
 	if _, ok := detailDefaultStyle.GetBackground().(lipgloss.NoColor); !ok {
 		t.Fatal("default values should not have a background color")
-	}
-}
-
-func TestSingleInputFileOmitsOrderingNote(t *testing.T) {
-	model := NewModel(introspect.InspectionReport{
-		Components: map[string]*introspect.IntrospectResult{},
-		PackageValues: []introspect.PackageValues{{
-			PackageName: "api",
-			Files:       []string{"values.yaml"},
-			FileSources: []string{"/cache/package/values.yaml"},
-		}},
-	})
-	model.focusPane = FocusInspector
-	model.buildDetailItems()
-	body, _ := model.inspectorContent(100, true)
-	if !strings.Contains(body, "values.yaml") || strings.Contains(body, "Declared order") || strings.Contains(body, "take precedence") {
-		t.Fatalf("single input file should not describe ordering or precedence: %s", body)
 	}
 }
 
@@ -1026,21 +1017,6 @@ func TestMappingChartFirstRootAndSubtree(t *testing.T) {
 	}
 }
 
-func TestMappingInputDistinguishesAbsentAndExplicitValues(t *testing.T) {
-	values := map[string]interface{}{"nil": nil, "off": false, "zero": 0, "empty": "", "object": map[string]interface{}{}}
-	for path, want := range map[string]interface{}{"nil": nil, "off": false, "zero": 0, "empty": "", "object": map[string]interface{}{}} {
-		got, present := mappingInput(values, path)
-		if !present || !reflect.DeepEqual(got, want) {
-			t.Errorf("%s: got %v, present %v; want %v", path, got, present, want)
-		}
-	}
-	for _, path := range []string{"absent", "object.child", "off.child"} {
-		if got, present := mappingInput(values, path); present {
-			t.Errorf("%s unexpectedly supplied: %v", path, got)
-		}
-	}
-}
-
 func TestMappingPackageOwnershipAndMissingSource(t *testing.T) {
 	usage := introspect.PackageValueUsage{Path: ".missing", TargetPath: ".config", ComponentName: "server", ChartName: "web"}
 	model := NewModel(introspect.InspectionReport{
@@ -1104,29 +1080,6 @@ func TestPackageValuesKeepPackageBandsDistinct(t *testing.T) {
 	}
 }
 
-func TestPackageRoutesRespectRootAndPathSegments(t *testing.T) {
-	usages := []introspect.PackageValueUsage{
-		{Path: ".", TargetPath: ".config", ExcludePaths: []string{".app.secret"}},
-		{Path: ".app", TargetPath: ".", ExcludePaths: []string{".app.secret"}},
-	}
-	routes := packageRoutes("app.replicas", usages)
-	if len(routes) != 2 || routes[0].Target != "config.app.replicas" || routes[1].Target != "replicas" {
-		t.Fatalf("root and subtree targets: %+v", routes)
-	}
-	routes = packageRoutes("app.secretExtra", usages)
-	if len(routes) != 2 || packageStatus(routes) != "mapped" {
-		t.Fatalf("excludePaths must match whole segments: %+v", routes)
-	}
-	routes = packageRoutes("app.secret", usages)
-	if len(routes) != 2 || packageStatus(routes) != "excluded" {
-		t.Fatalf("excluded descendants: %+v", routes)
-	}
-	root := packageRoutes("app", []introspect.PackageValueUsage{{Path: ".app", TargetPath: "."}})
-	if len(root) != 1 || root[0].Target != "." {
-		t.Fatalf("chart root destination must be visible: %+v", root)
-	}
-}
-
 func TestNextBundleMetadataNeverSuggestsLegacyAuthoring(t *testing.T) {
 	const chart = "api/server/app"
 	model := NewModel(introspect.InspectionReport{
@@ -1155,7 +1108,7 @@ func TestNextBundleMetadataNeverSuggestsLegacyAuthoring(t *testing.T) {
 		t.Fatalf("values file provenance should remain searchable: %+v", model.filteredValues)
 	}
 	body, _ := model.inspectorContent(100, true)
-	for _, want := range []string{"platform 2", "oci://registry/api", "values/api/0.yaml", "base", "team", "server"} {
+	for _, want := range []string{"platform 2", "oci://registry/api", filepath.FromSlash("values/api/0.yaml"), "base", "team", "server"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in Next package details: %s", want, body)
 		}
@@ -1269,13 +1222,14 @@ func TestNextRailStartsOnFirstPopulatedCategory(t *testing.T) {
 }
 
 func TestNextZarfVariablesGroupByOwningPackage(t *testing.T) {
+	serverSource, workerSource := t.TempDir(), t.TempDir()
 	m := NewModel(introspect.InspectionReport{
 		Components: map[string]*introspect.IntrospectResult{
-			"api/server/app": {ZarfVars: []introspect.ZarfVariableUsage{{
-				Name: "ADMIN_DOMAINS", Locations: []introspect.ValueUsageLocation{{File: "/tmp/server/deployment.yaml", Line: 5, Column: 1}},
+			"api/server/app": {Source: serverSource, ZarfVars: []introspect.ZarfVariableUsage{{
+				Name: "ADMIN_DOMAINS", Locations: []introspect.ValueUsageLocation{{File: filepath.Join(serverSource, "deployment.yaml"), Line: 5, Column: 1}},
 			}}},
-			"api/worker/app": {ZarfVars: []introspect.ZarfVariableUsage{{
-				Name: "ADMIN_DOMAINS", Locations: []introspect.ValueUsageLocation{{File: "/tmp/worker/worker.yaml", Line: 9, Column: 2}},
+			"api/worker/app": {Source: workerSource, ZarfVars: []introspect.ZarfVariableUsage{{
+				Name: "ADMIN_DOMAINS", Locations: []introspect.ValueUsageLocation{{File: filepath.Join(workerSource, "worker.yaml"), Line: 9, Column: 2}},
 			}}},
 			"api.v2/server/app": {ZarfVars: []introspect.ZarfVariableUsage{{Name: "ADMIN_DOMAINS"}}},
 		},
@@ -1331,20 +1285,21 @@ func TestNextZarfVariablesGroupByOwningPackage(t *testing.T) {
 
 func testWorkspaceModel() Model {
 	const component = "core-base/istio-controlplane/istiod"
+	source := filepath.Join(os.TempDir(), "istiod")
 	return NewModel(introspect.InspectionReport{
 		Components: map[string]*introspect.IntrospectResult{
 
 			component: {
 				ChartName:    "istiod",
 				ChartVersion: "1.27.1",
-				Source:       "/tmp/istiod",
+				Source:       source,
 				Values: []introspect.ValueUsage{
 					{
 						Path:         "global.proxy.resources.requests.memory",
 						Chart:        "istiod",
 						DefaultValue: "128Mi",
 						Locations: []introspect.ValueUsageLocation{
-							{File: "/tmp/istiod/templates/deployment.yaml", Line: 148, Column: 12, Kind: "field"},
+							{File: filepath.Join(source, "templates", "deployment.yaml"), Line: 148, Column: 12, Kind: "field"},
 						},
 					},
 					{Path: "pilot.autoscaleEnabled", Chart: "istiod", DefaultValue: true},

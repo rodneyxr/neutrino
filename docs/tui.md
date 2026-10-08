@@ -179,3 +179,11 @@ When you press `Enter` on a location in the detail view (or `y` in the list view
 
 !!! note
     For VS Code, Neutrino invokes `code --goto <file>:<line>:<column>` to jump directly to the source.
+
+## Package Values implementation seam
+
+The TUI-private `src/pkg/tui/package_values_policy.go` module owns [Zarf Package Values and their mappings](../GLOSSARY.md): package/chart identity, forward and reverse paths, exclusions, runtime classification, explicit input presence, ordered provenance, and authoring eligibility.
+
+Its interface is `catalog`, `open`, and `details`. The catalog is built once from the immutable inspection report; stable declaration references connect package rows, chart mapping tables, and Details without reconstructing ownership from display fields. Mapping tables are built on demand and reused; showing other chart paths selects a precomputed slice.
+
+Formatting, filtering, focus, cursors, scrolling, and nested return navigation remain outside the module. `package_values_policy_test.go` exercises policy through this interface; `model_test.go` and `value_details_test.go` retain keyboard-flow and authoring coverage. The CLI/report format and Package Reader behavior are unchanged.
