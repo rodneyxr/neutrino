@@ -446,15 +446,6 @@ func inspectMaterializedUDSBundle(ctx context.Context, path string, version stri
 			l.Warn(fmt.Sprintf("Failed to introspect package %s: %s", pkgName, err.Error()))
 			continue
 		}
-		if strict {
-			expectedChartCount, err := declaredChartCount(pkgSource)
-			if err != nil {
-				return nil, fmt.Errorf("failed to inspect UDS package %q from its Package View: %w", pkgName, err)
-			}
-			if len(pkgInspection.ComponentOrder) != expectedChartCount {
-				return nil, fmt.Errorf("failed to inspect UDS package %q from its Package View: inspected %d of %d declared charts", pkgName, len(pkgInspection.ComponentOrder), expectedChartCount)
-			}
-		}
 
 		// Prefix component keys with the package name to distinguish them
 		// And preserve their original ordering inside the bundle.
@@ -542,31 +533,6 @@ func inspectMaterializedUDSBundle(ctx context.Context, path string, version stri
 		UDSOverrideValues:    allOverrideValues,
 		UDSOverrideVariables: allOverrideVariables,
 	}, nil
-}
-func declaredChartCount(packageViewPath string) (int, error) {
-	zarfBytes, err := os.ReadFile(filepath.Join(packageViewPath, "zarf.yaml"))
-	if err != nil {
-		return 0, fmt.Errorf("failed to read zarf.yaml: %w", err)
-	}
-	var pkg v1alpha1.ZarfPackage
-	if err := yaml.Unmarshal(zarfBytes, &pkg); err != nil {
-		return 0, fmt.Errorf("failed to parse zarf.yaml: %w", err)
-	}
-	var count int
-	for _, component := range pkg.Components {
-		if len(component.Charts) == 0 {
-			continue
-		}
-		title := filepath.Join(packageViewPath, "components", component.Name+".tar")
-		if _, err := os.Stat(title); err != nil {
-			if os.IsNotExist(err) && component.Required != nil && !*component.Required {
-				continue
-			}
-			return 0, fmt.Errorf("missing selected chart component %q: %w", component.Name, err)
-		}
-		count += len(component.Charts)
-	}
-	return count, nil
 }
 
 // lookupOriginalDefault searches the introspection result's discovered values

@@ -752,15 +752,6 @@ func inspectNextPackages(ctx context.Context, def *nextDefinition, order []nextP
 		if err != nil {
 			return nil, fmt.Errorf("bundle package %q from %q: %w", pkg.ID, source, err)
 		}
-		if paths != nil {
-			expected, err := declaredChartCount(source)
-			if err != nil {
-				return nil, err
-			}
-			if len(inspected.ComponentOrder) != expected {
-				return nil, fmt.Errorf("bundle package %q inspected %d of %d charts", pkg.ID, len(inspected.ComponentOrder), expected)
-			}
-		}
 		for _, key := range inspected.ComponentOrder {
 			if chart, ok := inspected.ChartResults[key]; ok {
 				newKey := pkg.ID + "/" + key

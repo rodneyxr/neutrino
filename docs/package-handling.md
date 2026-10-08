@@ -110,14 +110,15 @@ Local `.tar.zst` archives are extracted to cache. If a local directory is provid
 
 ### Component Extraction
 
-Once a Zarf package is available locally, Neutrino:
+Packaged inspection uses one selected-chart layout implementation in `src/pkg/helm/introspect/packaged_charts.go`, shared by Package Reader validation and Zarf consumption. Direct Zarf, Legacy materialized packages, and Next materialized packages use the same consumption path; bundle callers do not recount charts.
 
-1. Reads `zarf.yaml` to catalog all components and their variables.
-2. Iterates through `.tar` archives in the `components/` directory.
-3. Unpacks the `charts/` directories from each component.
-4. Invokes the [Helm introspection](helm-introspection.md) pipeline against each discovered chart.
-5. Maps `###ZARF_VAR_*###` markers found in templates back to the variables defined in `zarf.yaml`.
-6. Reads package-level values and JSON schema, preserving input order and chart mappings independently of legacy variables. Built packages use assembled root `values.yaml` and `values.schema.json`; source directories use the declared source paths.
+1. Read `zarf.yaml` in declaration order. Select every chart-bearing component present as `components/<name>.tar`; omit an absent component only when explicitly `required: false`.
+2. Resolve chart archives (`<name>-<version>.tgz` or `<name>.tgz`) or chart directories containing `Chart.yaml`. Component archives may put `charts/` and `values/` at their root or under the component name.
+3. Require every selected chart and every managed static or templated values file. Consume static YAML inputs in declaration order; retain runtime templates as unresolved Package Values usages.
+4. Invoke [Helm introspection](helm-introspection.md) for every selected chart. Missing content, extraction failures, or chart-analysis failures stop packaged inspection; packaged charts never fall back to source paths or chart URLs.
+5. Map `###ZARF_VAR_*###` markers back to package variables, and retain Package Values mappings separately. Built packages use assembled root `values.yaml` and `values.schema.json`.
+
+Source directories retain their separate behavior: declared source values/schema paths, chart `localPath`, and chart URLs remain available. A component archive within a directory uses packaged chart layout rules rather than source fallback.
 
 !!! info "Component ordering"
     Components and packages are displayed in the order they are defined in `zarf.yaml` and `uds-bundle.yaml`, preserving the deployment sequence.

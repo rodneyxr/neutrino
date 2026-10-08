@@ -188,14 +188,30 @@ components:
 	require.Equal(t, []string{"zarf.yaml", "components/uds-crds.tar"}, remote.fetched)
 	viewDir := t.TempDir()
 	require.NoError(t, view.materialize(viewDir))
-	expectedCharts, err := declaredChartCount(viewDir)
-	require.NoError(t, err)
-	require.Equal(t, 1, expectedCharts)
 	report, err := inspectLocalZarfPackage(context.Background(), viewDir, "", "amd64", IntrospectOptions{}, true)
 	require.NoError(t, err)
 	require.Equal(t, []string{"uds-crds/crds"}, report.ComponentOrder)
-	require.Len(t, report.ComponentOrder, expectedCharts)
 	require.False(t, optionalRequested.Load(), "omitted component must not trigger a chart URL fetch")
+}
+
+func TestInspectZarfArchiveRejectsMissingRequiredChartComponent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	zarfYAML := []byte(`kind: ZarfPackageConfig
+metadata:
+  name: incomplete
+components:
+  - name: apps
+    required: true
+    charts:
+      - name: alpha
+        version: 1.0.0
+`)
+	source := filepath.Join(t.TempDir(), "zarf-package-incomplete.tar")
+	require.NoError(t, os.WriteFile(source, tarArchive(t, map[string][]byte{"zarf.yaml": zarfYAML}), 0600))
+	report, err := InspectZarfPackage(context.Background(), source, "", "amd64", IntrospectOptions{NoCache: true})
+	require.Error(t, err)
+	require.Nil(t, report)
+	require.ErrorContains(t, err, `components/apps.tar`)
 }
 
 func TestPackageReaderRejectsIncompleteOrUnverifiableSelectedDescriptors(t *testing.T) {
