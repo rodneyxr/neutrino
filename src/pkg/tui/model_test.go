@@ -827,7 +827,7 @@ func TestValuesAlwaysConsolidateLocations(t *testing.T) {
 	})
 	model.updateFilteredValues()
 
-	for _, shortcut := range []string{"c", " "} {
+	for _, shortcut := range []string{" "} {
 		updated, _ := model.Update(key(shortcut))
 		model = updated.(Model)
 		if len(model.filteredValues) != 2 || len(model.filteredValues[0].Locations) != 2 {
@@ -1354,19 +1354,21 @@ func TestChartDetailsShareMappingContextAndRestoreEntryPoints(t *testing.T) {
 		model = updated.(Model)
 	}
 	press("enter")
-	if len(model.detailItems) != 3 {
-		t.Fatalf("want two owning-package mappings and one source location: %+v", model.detailItems)
+	traceLinks := len(model.traceDetailItems(model.filteredValues[model.cursor]))
+	if len(model.detailItems) != traceLinks+3 {
+		t.Fatalf("want trace links, two owning-package mappings and one source location: %+v", model.detailItems)
 	}
-	first, second := model.detailItems[0].packageMapping, model.detailItems[1].packageMapping
+	first, second := model.detailItems[traceLinks].packageMapping, model.detailItems[traceLinks+1].packageMapping
 	if first.pkg.PackageName != "b" || !first.row.present || first.row.input != false ||
 		first.row.packagePath != ".app.enabled" || second.row.status != "excluded" ||
 		!second.row.present || second.row.input != nil || second.row.exclusion != ".fallback.enabled" {
 		t.Fatalf("mapping precedence/provenance lost: %+v %+v", first, second)
 	}
-	if !reflect.DeepEqual(first.pkg.Files, []string{"packaged.yaml", "operator.yaml"}) || model.detailItems[2].Location != location {
+	if !reflect.DeepEqual(first.pkg.Files, []string{"packaged.yaml", "operator.yaml"}) || model.detailItems[traceLinks+2].Location != location {
 		t.Fatal("ordered inputs or editor location lost")
 	}
 	direct, _ := model.inspectorContent(116, true)
+	model.detailCursor = traceLinks
 	press("enter")
 	if model.focusPane != FocusMapping {
 		t.Fatal("chart Details mapping link did not open the chart-first table")
@@ -1377,8 +1379,9 @@ func TestChartDetailsShareMappingContextAndRestoreEntryPoints(t *testing.T) {
 	if direct != viaMapping {
 		t.Fatalf("same chart value differs by entry point:\nDIRECT:\n%s\nMAPPING:\n%s", direct, viaMapping)
 	}
+	model.detailCursor = traceLinks
 	press("j")
-	if model.detailCursor != 1 {
+	if model.detailCursor != traceLinks+1 {
 		t.Fatal("mapping-origin Details cannot select another mapping")
 	}
 	press("enter")
@@ -1386,7 +1389,7 @@ func TestChartDetailsShareMappingContextAndRestoreEntryPoints(t *testing.T) {
 		t.Fatal("alternative mapping link did not open its declaration")
 	}
 	press("esc")
-	if model.focusPane != FocusInspector || !model.mappingRowDetail || model.mapping != table || model.detailCursor != 1 {
+	if model.focusPane != FocusInspector || !model.mappingRowDetail || model.mapping != table || model.detailCursor != traceLinks+1 {
 		t.Fatal("nested mapping did not restore originating Details selection")
 	}
 	press("j")
@@ -1467,7 +1470,7 @@ func TestMappingDetailsKeepRelatedValuesOutsideWorkspaceFilter(t *testing.T) {
 	press("enter")
 	press("enter")
 	mapped, _ := model.inspectorContent(116, true)
-	if mapped != direct || len(model.detailItems) != 4 {
+	if mapped != direct || len(model.detailItems) != 5 {
 		t.Fatalf("filter changed chart Details or hid related values:\n%s", mapped)
 	}
 	press("G")

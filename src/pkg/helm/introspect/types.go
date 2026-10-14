@@ -88,28 +88,80 @@ type PackageValueUsage struct {
 	ExcludePaths  []string             `json:"excludePaths,omitempty" yaml:"excludePaths,omitempty"`
 	Locations     []ValueUsageLocation `json:"locations,omitempty" yaml:"locations,omitempty"`
 	Runtime       bool                 `json:"runtime,omitempty" yaml:"runtime,omitempty"`
+	// Status describes inspection knowledge, not whether the chart mapping was applied.
+	Status     ValueStatus `json:"status,omitempty" yaml:"status,omitempty"`
+	Diagnostic string      `json:"diagnostic,omitempty" yaml:"diagnostic,omitempty"`
+}
+
+// ValueStatus records why a statically inspected input can or cannot be resolved.
+type ValueStatus string
+
+const (
+	ValueResolved    ValueStatus = "resolved"
+	ValueMissing     ValueStatus = "missing"
+	ValueDynamic     ValueStatus = "dynamic"
+	ValueParseError  ValueStatus = "parse-error"
+	ValueUnavailable ValueStatus = "unavailable"
+)
+
+// ValueDiagnostic contains an explanation without embedding source values or expressions.
+type ValueDiagnostic struct {
+	Status  ValueStatus `json:"status" yaml:"status"`
+	Path    string      `json:"path,omitempty" yaml:"path,omitempty"`
+	Message string      `json:"message" yaml:"message"`
+}
+
+// ValueReference is an observed input reference, never an inferred package dependency.
+type ValueReference struct {
+	Scope     string               `json:"scope" yaml:"scope"`
+	Path      string               `json:"path" yaml:"path"`
+	Status    ValueStatus          `json:"status" yaml:"status"`
+	Computed  bool                 `json:"computed,omitempty" yaml:"computed,omitempty"`
+	Locations []ValueUsageLocation `json:"locations,omitempty" yaml:"locations,omitempty"`
+}
+
+// ValueSource preserves one ordered input. Values is an independent parsed snapshot;
+// it is available to the UI but omitted from serialization to avoid copying secrets
+// into additional report fields. Name preserves the original declared file identity.
+type ValueSource struct {
+	ID               string                 `json:"id" yaml:"id"`
+	Kind             string                 `json:"kind" yaml:"kind"`
+	Name             string                 `json:"name" yaml:"name"`
+	Order            int                    `json:"order" yaml:"order"`
+	Status           ValueStatus            `json:"status" yaml:"status"`
+	Values           map[string]interface{} `json:"-" yaml:"-"`
+	MaterializedFile string                 `json:"-" yaml:"-"`
+	Diagnostics      []ValueDiagnostic      `json:"diagnostics,omitempty" yaml:"diagnostics,omitempty"`
+	References       []ValueReference       `json:"references,omitempty" yaml:"references,omitempty"`
 }
 
 // PackageValues separates packaged defaults, operator inputs, schema and runtime uses.
 type PackageValues struct {
 	PackageName string                 `json:"packageName,omitempty" yaml:"packageName,omitempty"`
+	APIVersion  string                 `json:"apiVersion,omitempty" yaml:"apiVersion,omitempty"`
 	Values      map[string]interface{} `json:"values,omitempty" yaml:"values,omitempty"`
 	Schema      map[string]interface{} `json:"schema,omitempty" yaml:"schema,omitempty"`
 	Files       []string               `json:"files,omitempty" yaml:"files,omitempty"`
 	FileSources []string               `json:"-" yaml:"-"`
 	Usages      []PackageValueUsage    `json:"usages,omitempty" yaml:"usages,omitempty"`
+	Sources     []ValueSource          `json:"sources,omitempty" yaml:"sources,omitempty"`
+	// Scope makes clear that Values is a merge of inspected files, not deploy-time output.
+	Scope string `json:"scope,omitempty" yaml:"scope,omitempty"`
 }
 
 type BundleMetadata struct {
-	Format    string                  `json:"format" yaml:"format"`
-	Name      string                  `json:"name" yaml:"name"`
-	Version   string                  `json:"version" yaml:"version"`
-	Variables map[string]interface{}  `json:"variables,omitempty" yaml:"variables,omitempty"`
-	Packages  []BundlePackageMetadata `json:"packages,omitempty" yaml:"packages,omitempty"`
+	Format          string                  `json:"format" yaml:"format"`
+	Name            string                  `json:"name" yaml:"name"`
+	Version         string                  `json:"version" yaml:"version"`
+	Variables       map[string]interface{}  `json:"variables,omitempty" yaml:"variables,omitempty"`
+	Packages        []BundlePackageMetadata `json:"packages,omitempty" yaml:"packages,omitempty"`
+	VariableSources []ValueSource           `json:"variableSources,omitempty" yaml:"variableSources,omitempty"`
+	Scope           string                  `json:"scope,omitempty" yaml:"scope,omitempty"`
 }
 
 type BundlePackageMetadata struct {
 	ID                 string   `json:"id" yaml:"id"`
+	APIVersion         string   `json:"apiVersion,omitempty" yaml:"apiVersion,omitempty"`
 	Source             string   `json:"source" yaml:"source"`
 	DependsOn          []string `json:"dependsOn,omitempty" yaml:"dependsOn,omitempty"`
 	ValuesFiles        []string `json:"valuesFiles,omitempty" yaml:"valuesFiles,omitempty"`
@@ -145,6 +197,8 @@ type UDSOverrideVariable struct {
 
 // IntrospectResult contains the full analysis result for a chart.
 type IntrospectResult struct {
+	// PackageAPIVersion identifies the owning Zarf package schema, when applicable.
+	PackageAPIVersion string `json:"packageAPIVersion,omitempty" yaml:"packageAPIVersion,omitempty"`
 	// ChartName is the name of the root chart.
 	ChartName string `json:"chartName"`
 	// ChartVersion is the version of the root chart.
@@ -203,6 +257,8 @@ type UDSOverrideVariableWithContext struct {
 
 // InspectionReport is the unified output structure for purely Helm, Zarf, and UDS introspection.
 type InspectionReport struct {
+	// PackageAPIVersion is populated for a directly inspected Zarf package.
+	PackageAPIVersion    string                           `json:"packageAPIVersion,omitempty" yaml:"packageAPIVersion,omitempty"`
 	Variables            []v1alpha1.InteractiveVariable   `json:"variables,omitempty" yaml:"variables,omitempty"`
 	Components           map[string]*IntrospectResult     `json:"components" yaml:"components"`
 	ComponentOrder       []string                         `json:"-" yaml:"-"`

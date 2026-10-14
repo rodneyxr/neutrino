@@ -35,7 +35,7 @@ neutrino inspect [PACKAGE_SOURCE] [flags]
 | `--output`, `-o` | `string` | `table` | Output format: `table`, `json`, `yaml`. |
 | `--include-subcharts` | `bool` | `true` | Recursively analyze dependencies found in `charts/`. |
 | `--architecture`, `-a` | `string` | | Architecture for OCI images and Zarf packages (e.g. `amd64`, `arm64`). |
-| `--interactive`, `-i` | `bool` | `false` | Enter interactive TUI mode. |
+| `--interactive`, `-i` | `bool` | auto | TUI when input and output are terminals; `--interactive=false` prints a report. |
 | `--sort-mode` | `string` | `path` | Sort mode for values: `path` or `discovery`. |
 | `--wildcards` | `bool` | `false` | Include wildcard/dynamic values (e.g. `ingress.hosts.*.host`) in output. |
 | `--absolute` | `bool` | `false` | Output absolute filepaths for locations. |
@@ -86,7 +86,9 @@ neutrino inspect ./next-bundle --config ./next-bundle/config.uds.hcl -o json
 neutrino inspect ./uds-bundle-app-amd64-1.0.0.tar.zst -i
 ```
 
-Next bundle interactive inspection opens a category rail by default. Use `1`–`7` to separate bundle variables, Next values-file declarations, Zarf variables, Zarf Package Values, chart mappings, Helm values, and legacy overrides; `f` scopes to a component. Other sources retain the Components pane.
+On an attached terminal, inspection opens the workspace automatically. Explicit `--output table`, `--output json`, `--output yaml`, or `--interactive=false` always produces a report. Pipes, redirected input/output, and `TERM=dumb` use reports. Explicit `-i` requires terminal input and output and cannot be combined with `--output`.
+
+Next bundles retain owner categories (`1`–`7`); `8` browses all inputs, `0` shows an overview, and `f` opens a searchable package/component/chart scope tree. `/` searches across categories. Use `c` for changed inputs and `u` for unresolved inputs. Details traces ordered source contributions and observed bundle-to-package dependencies without claiming a final deployment result. See [the TUI guide](tui.md).
 
 Package Values are separate from Helm defaults and legacy `###ZARF_VAR_*###` variables. The report includes merged package inputs, their file order, the package JSON schema, chart `sourcePath` → `targetPath` mappings and exclusions, and discovered template/action references. `--values` files have higher precedence than packaged inputs. Schemas are exposed for inspection, not used to claim deployment validation.
 

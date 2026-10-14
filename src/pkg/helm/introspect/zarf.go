@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	pkgoci "github.com/defenseunicorns/pkg/oci"
-	"github.com/goccy/go-yaml"
+	"github.com/zarf-dev/zarf/src/api"
+	"github.com/zarf-dev/zarf/src/api/convert"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	"github.com/zarf-dev/zarf/src/config"
 	"github.com/zarf-dev/zarf/src/pkg/archive"
@@ -17,6 +19,7 @@ import (
 
 // ZarfPackageIntrospection contains the results of introspecting a Zarf package.
 type ZarfPackageIntrospection struct {
+	APIVersion           string
 	ComponentOrder       []string
 	ChartResults         map[string]*IntrospectResult
 	Variables            []v1alpha1.InteractiveVariable
@@ -101,11 +104,11 @@ func inspectLocalZarfPackage(ctx context.Context, path string, version string, a
 		return nil, fmt.Errorf("failed to read zarf.yaml: %w", err)
 	}
 
-	var pkg v1alpha1.ZarfPackage
-	if err := yaml.Unmarshal(zarfBytes, &pkg); err != nil {
+	pkg, err := parseZarfDefinition(zarfBytes)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse zarf.yaml: %w", err)
 	}
-	packageValues, err := inspectPackageValues(ctx, cacheDir, path, !packageView && isDirectory, pkg, opts.ValuesFiles)
+	packageValues, err := inspectPackageValues(ctx, cacheDir, path, !packageView && isDirectory, pkg.Package, opts.ValuesFiles)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +125,7 @@ func inspectLocalZarfPackage(ctx context.Context, path string, version string, a
 		var compExtractDir string
 		var chartsBaseDir, valuesBaseDir string
 		if packaged && len(component.Charts) > 0 {
-			title, include, err := selectPackagedComponent(component, compTarErr == nil)
+			title, include, err := selectPackagedComponent(component, compTarErr == nil, pkg.optionalComponents[component.Name])
 			if err != nil {
 				return nil, err
 			}
@@ -165,7 +168,7 @@ func inspectLocalZarfPackage(ctx context.Context, path string, version string, a
 				chartsBaseDir = filepath.Dir(chartPath)
 			} else {
 				for _, candidate := range []string{
-					filepath.Join(chartsBaseDir, fmt.Sprintf("%s-%s.tgz", chart.Name, chart.Version)),
+					filepath.Join(chartsBaseDir, layout.ChartArchiveName(chart.Name, chart.LegacyVersion)),
 					filepath.Join(chartsBaseDir, chart.Name+".tgz"),
 					filepath.Join(chartsBaseDir, chart.Name),
 				} {
@@ -178,7 +181,7 @@ func inspectLocalZarfPackage(ctx context.Context, path string, version string, a
 
 			// Expand the chart to a subdirectory so we can point to it
 			// chartsBaseDir/<chartName-Version> (expanded)
-			expandedChartDir := filepath.Join(chartsBaseDir, fmt.Sprintf("%s-%s", chart.Name, chart.Version))
+			expandedChartDir := filepath.Join(chartsBaseDir, strings.TrimSuffix(layout.ChartArchiveName(chart.Name, chart.LegacyVersion), ".tgz"))
 			if chartPath != "" {
 				info, err := os.Stat(chartPath)
 				if err != nil {
@@ -208,12 +211,10 @@ func inspectLocalZarfPackage(ctx context.Context, path string, version string, a
 			var src ChartSource
 			if _, err := os.Stat(chartPath); err == nil {
 				src.LocalPath = chartPath
-			} else if !packaged && chart.LocalPath != "" && isDirectory {
-				src.LocalPath = filepath.Join(path, chart.LocalPath)
-			} else if !packaged && chart.URL != "" {
-				src.URL = chart.URL
-				src.RepoName = chart.Name
-				src.Version = chart.Version
+			} else if !packaged && chart.LocalPath() != "" && isDirectory {
+				src.LocalPath = filepath.Join(path, chart.LocalPath())
+			} else if !packaged && chart.SourceURL() != "" {
+				src = remoteChartSource(chart)
 			} else {
 				if packaged {
 					return nil, fmt.Errorf("incomplete selected component %q: chart %q could not be consumed", component.Name, chart.Name)
@@ -221,49 +222,25 @@ func inspectLocalZarfPackage(ctx context.Context, path string, version string, a
 				continue
 			}
 
-			// Only static chart values files are YAML. Templated files are inspected
-			// as unresolved runtime inputs, never passed to Helm's YAML parser.
+			// Keep the declaration order: v1beta1 can interleave plain and
+			// templated values files. Runtime templates remain unresolved.
 			var valuesFiles []string
 			for i, vf := range chart.ValuesFiles {
+				location := filepath.Join(valuesBaseDir, layout.ChartValuesFileName(chart.Name, chart.LegacyVersion, i))
 				if packaged {
-					valuesFiles = append(valuesFiles, filepath.Join(compExtractDir, filepath.FromSlash(selectedCharts[chartIndex].ValuesPaths[i])))
-					continue
-				}
-				if valuesBaseDir != "" {
-					vfPath := filepath.Join(valuesBaseDir, fmt.Sprintf("%s-%s-%d", chart.Name, chart.Version, i))
-					if _, err := os.Stat(vfPath); err == nil {
-						valuesFiles = append(valuesFiles, vfPath)
-						continue
-					}
-				}
-				if isDirectory {
-					vfPath := filepath.Join(path, vf)
-					if _, err := os.Stat(vfPath); err == nil {
-						valuesFiles = append(valuesFiles, vfPath)
-					}
-				}
-			}
-			for i, vf := range chart.TemplatedValuesFiles {
-				location := fmt.Sprintf("%s-%s-%d", chart.Name, chart.Version, len(chart.ValuesFiles)+i)
-				if packaged {
-					location = filepath.Join(compExtractDir, filepath.FromSlash(selectedCharts[chartIndex].ValuesPaths[len(chart.ValuesFiles)+i]))
-				}
-				if valuesBaseDir != "" {
-					location = filepath.Join(valuesBaseDir, location)
-				}
-				if _, err := os.Stat(location); err != nil && isDirectory {
-					location = filepath.Join(path, vf)
+					location = filepath.Join(compExtractDir, filepath.FromSlash(selectedCharts[chartIndex].ValuesPaths[i]))
+				} else if _, err := os.Stat(location); err != nil && isDirectory {
+					location = filepath.Join(path, vf.Path)
 				}
 				contents, err := os.ReadFile(location)
 				if err != nil {
-					return nil, fmt.Errorf("required templated values file %q: %w", location, err)
+					return nil, fmt.Errorf("required chart values file %q: %w", location, err)
 				}
-				if !bytes.Contains(contents, []byte("{{")) {
-					// Legacy marker substitution is static YAML and remains
-					// inspectable even when listed as a templated values file.
-					valuesFiles = append(valuesFiles, location)
-				} else {
+				if vf.EnableTemplating && bytes.Contains(contents, []byte("{{")) {
 					packageValues.Usages = append(packageValues.Usages, inspectTemplateText(string(contents), location, component.Name, chart.Name)...)
+				} else {
+					// Legacy markers and template-free YAML remain inspectable.
+					valuesFiles = append(valuesFiles, location)
 				}
 			}
 			src.ValuesFiles = valuesFiles
@@ -273,6 +250,7 @@ func inspectLocalZarfPackage(ctx context.Context, path string, version string, a
 			if err != nil {
 				return nil, fmt.Errorf("failed to introspect chart %s in component %s: %w", chart.Name, component.Name, err)
 			}
+			res.PackageAPIVersion = pkg.GetAPIVersion()
 
 			// Populate default values for Zarf variables
 			for i, zv := range res.ZarfVars {
@@ -300,14 +278,17 @@ func inspectLocalZarfPackage(ctx context.Context, path string, version string, a
 		packageValues.Usages = append(packageValues.Usages, inspectComponentRuntime(component, cacheDir, path, isDirectory)...)
 	}
 
+	finalizePackageValues(&packageValues)
 	report := &ZarfPackageIntrospection{
+		APIVersion:     pkg.GetAPIVersion(),
 		ComponentOrder: componentOrder,
 		ChartResults:   results,
-		Variables:      pkg.Variables,
+		Variables:      convert.PackageToV1alpha1(pkg.Package).Variables,
 	}
 	if len(packageValues.Files) > 0 || len(packageValues.Schema) > 0 || len(packageValues.Usages) > 0 || len(opts.ValuesFiles) > 0 {
 		report.PackageValues = []PackageValues{packageValues}
 	}
+	syncPackageValueMappings(report)
 	return report, nil
 }
 
@@ -331,4 +312,28 @@ func inspectRemoteZarfPackage(ctx context.Context, source string, arch string, o
 		return nil, err
 	}
 	return inspectLocalZarfPackage(ctx, viewDir, "", arch, opts, true)
+}
+
+// remoteChartSource preserves the reference form expected by Helm's downloader:
+// OCI digests belong in the URL, while tags and repository versions use Version.
+func remoteChartSource(chart api.Chart) ChartSource {
+	source := ChartSource{
+		URL:      chart.SourceURL(),
+		RepoName: chart.RepositoryName(),
+		Version:  chart.LegacyVersion,
+	}
+	if source.RepoName == "" {
+		source.RepoName = chart.Name
+	}
+	if chart.HelmRepository != nil {
+		source.Version = chart.HelmRepository.Version
+	} else if chart.OCI != nil && chart.OCI.Ref != nil {
+		if chart.OCI.Ref.Digest != "" {
+			source.URL += "@" + chart.OCI.Ref.Digest
+			source.Version = ""
+		} else {
+			source.Version = chart.OCI.Ref.Tag
+		}
+	}
+	return source
 }

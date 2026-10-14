@@ -4,14 +4,30 @@ Neutrino includes a full-screen interactive terminal UI built with [Bubble Tea](
 
 ## Launching the TUI
 
-Add the `-i` flag to any `inspect` command:
+Inspection opens the workspace automatically when both input and output are terminals. Use `-i` to require it:
 
 ```bash
-neutrino inspect oci://ghcr.io/zarf-dev/packages/init:v0.74.0 -i
+neutrino inspect ./my-package -i
 ```
 
 !!! tip
     The TUI automatically resolves all file paths to absolute paths so that the editor-jump feature works correctly.
+
+Explicit `--output table|json|yaml` and `--interactive=false` always print reports. Pipes, redirected streams, and `TERM=dumb` never enter the TUI automatically. `-i` fails early with a helpful message when no usable terminal is attached or `--output` is also supplied.
+
+## Follow an input through the workspace
+
+1. Press `0` for package/chart counts and the changed or unresolved investigations.
+2. Press `f` to select a package, component, or chart in the searchable scope tree. Package IDs stay distinct even when they contain identical charts or value names.
+3. Press `/` to search across configuration categories, or `8` to browse all inputs. Terms combine with AND: `pkg:api status:changed`, `chart:gateway replica`, `source:production.yaml`, or `kind:package`.
+4. Press `Enter` for Details. Bundle variables and Package Values show ordered input history, shadowed contributions, and the effective **inspected** input where all layers are known. Links follow observed `.vars` file references and Package Values mappings to Helm paths. `j`/`k` selects a link; `Enter` follows it or opens its source.
+5. Press `c` to focus changed inputs or `u` for unresolved inputs. These filters include missing inputs, runtime producers/consumers, unsupported computed templates, parse failures, and unavailable files. Press the same shortcut again to clear its filter.
+
+Bundle `.vars`, Zarf Package `.Values`, and Helm `.Values` remain different identities. A bundle dependency (`depends_on`) specifies ordering, not value transfer. Computed bundle templates and Zarf runtime actions are not executed. A template reference identifies a file dependency; it does not prove which output leaf was generated.
+
+Source history is limited to inspected files. Created Zarf artifacts expose one assembled `values.yaml`; their original file-level history cannot be recovered. Unknown layers prevent a definitive winner. Mapping declarations and exclusions are shown separately from the final Helm result, which also depends on chart files, runtime templates, legacy substitution, and deployment flags. Schema presence does not mean validation ran. Credential-shaped values, explicitly sensitive legacy variables, and schema-marked secret values are masked in the TUI; copying a path never copies its value. Masking follows local schema references and composition conservatively. Remote, unresolved, or cyclic schema references are not fetched and their affected values are redacted.
+
+The inspector uses Zarf **v0.87.0** and displays each package's selected API version. Legacy v1alpha1 variables/constants remain separate from beta Package Values. v1alpha1 chart values files precede its templated files; v1beta1 uses a single ordered list and can interleave the two. UDS Next inspection includes `defaults.uds.hcl` and the supplied `--config`; it does not accept or simulate UDS v0.39's higher-precedence deploy `--set` layer. See [Zarf v0.87.0](https://github.com/zarf-dev/zarf/releases/tag/v0.87.0) and the [UDS v0.39 configuration reference](https://docs.defenseunicorns.com/cli/v0-39/reference/next/config-uds-hcl/).
 
 ## Workspace
 
@@ -33,12 +49,12 @@ Neutrino changes layout based on available terminal width:
 | Width | Layout |
 |:---|:---|
 | **80 columns or wider, Next bundle** | A category rail beside the Values table. `1`–`7` opens a category; `Tab` focuses the rail to move through categories with `j`/`k`. |
-| **Below 80 columns, Next bundle** | Categories stack above the Values table. Both remain visible. |
+| **Below 80 columns, Next bundle** | Categories stack above Values when height permits; short terminals show the focused pane. `Tab` switches panes. |
 | **120 columns or wider, other sources** | Components and a wide Values table are visible together. |
 | **80–119 columns, other sources** | Components and Values remain visible with a narrower Values table. |
 | **Below 80 columns, other sources** | One workspace pane is visible at a time. Use `Tab`, `Shift+Tab`, `h`, or `l` to switch between Components and Values. |
 
-For Next bundles, `f` scopes to a component; choose **All components** to see bundle variables, Next values-file declarations, and configured Zarf Package Values. Category selection does not merge configuration owners or claim inputs are deployment-effective. Empty categories remain visible and explain that the selected scope has no items. Filtering with `/` searches within the selected category.
+For Next bundles, `f` selects a package, component, or chart; choose **All components** to see bundle variables, Next values-file declarations, and configured Zarf Package Values. Category selection does not merge configuration owners or claim inputs are deployment-effective. Empty categories remain visible. Filtering with `/` searches all categories within the selected scope; `1`–`7` narrows the category again.
 
 In a Next bundle's **Zarf variables** category, each Zarf package has its own band. A variable has one row per package, combining its declaration with chart-level `###ZARF_VAR_*###` references; the same name in another package remains separate. The **Value Path** column omits the package prefix already shown in the band (`api.REGISTRY` appears as `REGISTRY` under `api`). The row retains the declared default and description; Details lists each referencing chart and template location. Filtering by package ID finds its variables, while Details and copied paths retain the fully qualified declared name.
 
@@ -48,7 +64,7 @@ The Values pane displays each discovered value in a dense table. Wider terminals
 
 | Column | Description |
 |:---|:---|
-| **Value Path** | Dot-notation value path, such as `image.repository`. Selected long paths scroll horizontally automatically with pauses at the beginning and end. |
+| **Value Path** | Dot-notation value path, such as `image.repository`. Long paths truncate in the list and wrap in Details, keeping the workspace still. |
 | **Value** | Chart default, legacy override, configured package input, or an explicit unresolved runtime marker. |
 | **Type** | Helm usage type or a Package Value mapping status: `mapped`, `excluded`, `unmapped`, `runtime`, `mixed`, or `declared`. |
 | **Source** | Source file and line, or a consolidated location count. |
@@ -110,6 +126,8 @@ Action feedback in the footer returns to the default keyboard hints after about 
 | `h` / `←` | Focus the Categories or Components pane. |
 | `l` / `→` | Focus the Values pane. |
 | `1`–`7` | In a Next bundle workspace, select a category and focus its Values list. |
+| `0` / `8` | Show the inspection overview / browse all configuration categories. |
+| `c` / `u` | Focus changed / unresolved inputs; repeat to clear. |
 | `j` / `↓` | Move down 1 row in the focused pane. |
 | `k` / `↑` | Move up 1 row in the focused pane. |
 | `J` / `K` | Move 5 rows down or up in the focused pane. |
@@ -123,8 +141,8 @@ Action feedback in the footer returns to the default keyboard hints after about 
 
 | Key | Action |
 |:---|:---|
-| `/` | Filter values by path. |
-| `f` | Filter and select a component. |
+| `/` | Search paths across categories; combine `pkg:`, `chart:`, `source:`, `kind:`, and `status:` terms. |
+| `f` | Search and select a package, component, or chart scope. |
 | `:` | Open the searchable command palette. |
 | `?` | Open context-sensitive keyboard help. |
 
@@ -175,7 +193,7 @@ In the detail view, both override types show which template files reference the 
 
 ## Editor Integration
 
-When you press `Enter` on a location in the detail view (or `y` in the list view), Neutrino opens the file in your default editor at the exact line and column. It looks for the `EDITOR` environment variable and falls back to common editors (`code`, `vim`, `nano`).
+When you press `Enter` on a location in the detail view (or `o` in the list view), Neutrino opens the file in your default editor at the exact line and column. `y` copies the selected path. It looks for the `EDITOR` environment variable and falls back to common editors (`code`, `vim`, `nano`).
 
 !!! note
     For VS Code, Neutrino invokes `code --goto <file>:<line>:<column>` to jump directly to the source.

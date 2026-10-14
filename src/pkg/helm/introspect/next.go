@@ -1,7 +1,6 @@
 package introspect
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"text/template"
 
 	"github.com/defenseunicorns/pkg/oci"
 	"github.com/hashicorp/hcl/v2"
@@ -670,11 +668,14 @@ func readNextOCIPackage(ctx context.Context, source string, embeddedDescriptor o
 
 func inspectNextPackages(ctx context.Context, def *nextDefinition, order []nextPackage, root string, paths map[string]string, version, arch string, opts IntrospectOptions) (*ZarfPackageIntrospection, error) {
 	defaults := map[string]interface{}{}
+	var variableSources []ValueSource
 	if data, err := nextReadControl(filepath.Join(root, nextDefaultsFile)); err == nil {
 		defaults, err = nextVariables(data, nextDefaultsFile)
 		if err != nil {
 			return nil, err
 		}
+		variableSources = append(variableSources, ValueSource{ID: "bundle-defaults:1", Kind: "bundle-defaults", Name: nextDefaultsFile,
+			Order: 1, Status: ValueResolved, Values: cloneNextValues(defaults), MaterializedFile: filepath.Join(root, nextDefaultsFile)})
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -687,9 +688,11 @@ func inspectNextPackages(ctx context.Context, def *nextDefinition, order []nextP
 		if err != nil {
 			return nil, err
 		}
+		variableSources = append(variableSources, ValueSource{ID: "bundle-config:2", Kind: "bundle-config", Name: opts.BundleConfig,
+			Order: len(variableSources) + 1, Status: ValueResolved, Values: cloneNextValues(vars), MaterializedFile: opts.BundleConfig})
 		defaults = nextMerge(defaults, vars)
 	}
-	result := &ZarfPackageIntrospection{ChartResults: map[string]*IntrospectResult{}, Bundle: &BundleMetadata{Format: "next", Name: def.Metadata.Name, Version: def.Metadata.Version, Variables: defaults}}
+	result := &ZarfPackageIntrospection{ChartResults: map[string]*IntrospectResult{}, Bundle: &BundleMetadata{Format: "next", Name: def.Metadata.Name, Version: def.Metadata.Version, Variables: defaults, VariableSources: variableSources, Scope: "Inspected defaults.uds.hcl and explicit bundle config only; no deploy-time --set inputs or runtime state."}}
 	for _, pkg := range order {
 		source := pkg.Source
 		if paths != nil {
@@ -698,7 +701,7 @@ func inspectNextPackages(ctx context.Context, def *nextDefinition, order []nextP
 			source = filepath.Join(root, source)
 		}
 		values := make([]string, 0, len(pkg.ValuesFiles)+len(opts.ValuesFiles))
-		var pending []string
+		var bundleSources []ValueSource
 		for i, name := range pkg.ValuesFiles {
 			if paths != nil {
 				name = fmt.Sprintf("values/%s/%d.yaml", pkg.ID, i)
@@ -713,17 +716,15 @@ func inspectNextPackages(ctx context.Context, def *nextDefinition, order []nextP
 			if err != nil {
 				return nil, fmt.Errorf("package %q values file: %w", pkg.ID, err)
 			}
+			rendered, layer := inspectNextValuesTemplate(data, name, defaults)
+			layer.ID = fmt.Sprintf("bundle-values:%d", i+1)
+			layer.Order = i + 1
+			if layer.Status != ValueResolved {
+				bundleSources = append(bundleSources, layer)
+				continue
+			}
 			if strings.Contains(string(data), "{{") {
-				tmpl, err := template.New(name).Option("missingkey=error").Parse(string(data))
-				if err != nil {
-					return nil, fmt.Errorf("package %q template %q: %w", pkg.ID, name, err)
-				}
-				var rendered bytes.Buffer
-				if err := tmpl.Execute(&rendered, map[string]interface{}{"vars": defaults}); err != nil {
-					pending = append(pending, name)
-					continue
-				}
-				viewDir, err := getPackageViewDir(source, fmt.Sprintf("values-%s-%d-%x", pkg.ID, i, digest.FromBytes(rendered.Bytes())))
+				viewDir, err := getPackageViewDir(source, fmt.Sprintf("values-%s-%d-%x", pkg.ID, i, digest.FromBytes(rendered)))
 				if err != nil {
 					return nil, err
 				}
@@ -731,11 +732,13 @@ func inspectNextPackages(ctx context.Context, def *nextDefinition, order []nextP
 				if err := os.MkdirAll(viewDir, 0700); err != nil {
 					return nil, err
 				}
-				if err := os.WriteFile(materialized, rendered.Bytes(), 0600); err != nil {
+				if err := os.WriteFile(materialized, rendered, 0600); err != nil {
 					return nil, err
 				}
 				name = materialized
 			}
+			layer.MaterializedFile = name
+			bundleSources = append(bundleSources, layer)
 			values = append(values, name)
 		}
 		values = append(values, opts.ValuesFiles...)
@@ -763,33 +766,18 @@ func inspectNextPackages(ctx context.Context, def *nextDefinition, order []nextP
 			variable.Name = pkg.ID + "." + variable.Name
 			result.Variables = append(result.Variables, variable)
 		}
-		if len(inspected.PackageValues) == 0 && len(pending) > 0 {
-			inspected.PackageValues = []PackageValues{{PackageName: pkg.ID}}
+		if len(inspected.PackageValues) == 0 && len(bundleSources) > 0 {
+			inspected.PackageValues = []PackageValues{{PackageName: pkg.ID, Values: map[string]interface{}{}}}
 		}
-		for _, item := range inspected.PackageValues {
+		for i, item := range inspected.PackageValues {
 			item.PackageName = pkg.ID
-			prefix := len(item.Files) - len(values)
-			if prefix < 0 {
-				prefix = 0
-			}
-			files := append([]string(nil), item.Files[:prefix]...)
-			for i, name := range pkg.ValuesFiles {
-				if paths != nil {
-					name = fmt.Sprintf("values/%s/%d.yaml", pkg.ID, i)
-				}
-				if !filepath.IsAbs(name) {
-					name = filepath.Join(root, name)
-				}
-				files = append(files, name)
-			}
-			files = append(files, opts.ValuesFiles...)
-			item.Files = files
-			for _, filename := range pending {
-				item.Usages = append(item.Usages, PackageValueUsage{Path: filename, Runtime: true, Locations: []ValueUsageLocation{{File: filename, Kind: "bundleValuesTemplate"}}})
-			}
+			reconcileNextValueSources(&item, bundleSources, len(values), len(opts.ValuesFiles))
+			inspected.PackageValues[i] = item
 			result.PackageValues = append(result.PackageValues, item)
 		}
-		result.Bundle.Packages = append(result.Bundle.Packages, BundlePackageMetadata{ID: pkg.ID, Source: pkg.Source, DependsOn: pkg.DependsOn, ValuesFiles: pkg.ValuesFiles, Namespace: pkg.Namespace, OptionalComponents: pkg.OptionalComponents})
+		syncPackageValueMappings(inspected)
+
+		result.Bundle.Packages = append(result.Bundle.Packages, BundlePackageMetadata{ID: pkg.ID, APIVersion: inspected.APIVersion, Source: pkg.Source, DependsOn: pkg.DependsOn, ValuesFiles: pkg.ValuesFiles, Namespace: pkg.Namespace, OptionalComponents: pkg.OptionalComponents})
 	}
 	return result, nil
 }

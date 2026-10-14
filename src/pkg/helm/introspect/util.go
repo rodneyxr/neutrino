@@ -136,12 +136,12 @@ func ParseValuesLocations(content []byte) (map[string]ValueUsageLocation, error)
 // getCacheDir returns the directory where the artifact should be cached.
 // It uses a hash of the URL and version to create a unique path under the category.
 func getCacheDir(category string, url string, version string) (string, error) {
-	home, err := os.UserHomeDir()
+	cache, err := os.UserCacheDir()
 	if err != nil {
-		return "", fmt.Errorf("failed to get user home dir: %w", err)
+		return "", fmt.Errorf("failed to get user cache dir: %w", err)
 	}
 
-	cacheBase := filepath.Join(home, ".cache", "neutrino", category)
+	cacheBase := filepath.Join(cache, "neutrino", category)
 
 	// Create a unique hash for the chart source
 	hasher := sha256.New()
@@ -379,7 +379,7 @@ func checkZarfRef(ctx context.Context, source string, platform ocispec.Platform)
 
 // IsRemote determines if a source string is a remote URL.
 func IsRemote(source string) bool {
-	return len(source) > 6 && (source[:6] == "oci://" || source[:7] == "http://" || source[:8] == "https://")
+	return strings.HasPrefix(source, "oci://") || strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
 }
 
 // FormatDefaultValue formats a value consistently for display (YAML style, truncated).

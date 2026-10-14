@@ -15,6 +15,8 @@ type packageValuesPolicy struct {
 	entries packageValuesCatalog
 	byChart map[string][]*valueMapping
 	tables  map[*valueMapping]*mappingTable
+	traces  map[traceCacheKey]introspect.ValueTrace
+	tracers map[traceCacheKey]*introspect.ValueTracer
 }
 
 type packageValuesCatalog struct {
@@ -105,6 +107,8 @@ func newPackageValuesPolicy(report introspect.InspectionReport) *packageValuesPo
 		entries: packageValuesCatalog{charts: make(map[string][]packageValueEntry, len(report.Components))},
 		byChart: make(map[string][]*valueMapping),
 		tables:  make(map[*valueMapping]*mappingTable),
+		traces:  make(map[traceCacheKey]introspect.ValueTrace),
+		tracers: make(map[traceCacheKey]*introspect.ValueTracer),
 	}
 	ownersByChart := make(map[string][]*valueMapping)
 	for i := range report.PackageValues {
@@ -146,6 +150,9 @@ func newPackageValuesPolicy(report introspect.InspectionReport) *packageValuesPo
 			entry.status = aggregatePackageRoutes(entry.routes)
 			if entry.status != "excluded" && entry.status != "runtime" && entry.status != "mixed" {
 				entry.authoring = &valueAuthoring{path: leaf.path, value: leaf.value, basis: authoringSupplied}
+			}
+			if packageSourcesUnresolved(pkg.Sources) {
+				entry.authoring = nil
 			}
 			policy.entries.packages = append(policy.entries.packages, entry)
 		}
@@ -260,6 +267,9 @@ func (mapping *valueMapping) route(path string) (packageRoute, bool) {
 		if route.Target == "" {
 			route.Target = "."
 		}
+		if unresolvedStatus(mapping.usage.Status) || mapping.pkg != nil && packageSourcesUnresolved(mapping.pkg.Sources) {
+			route.Status = "unresolved"
+		}
 	}
 	return route, true
 }
@@ -364,6 +374,12 @@ func (mapping *valueMapping) row(value introspect.ValueUsage, path string) mappi
 	}
 	if mapping.usage.Runtime {
 		row.status = "runtime"
+	}
+	// A retained known snapshot is useful evidence, but an unresolved layer can
+	// alter it. Do not offer an authoring snippet based on a fabricated winner.
+	if row.status == "available" && (unresolvedStatus(mapping.usage.Status) ||
+		packageSourcesUnresolved(mapping.pkg.Sources)) {
+		row.status = "unresolved"
 	}
 	if row.status == "available" {
 		row.authoring = &valueAuthoring{path: row.packagePath, basis: authoringUnknown}

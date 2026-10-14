@@ -8,12 +8,13 @@ import (
 	"path"
 	"strings"
 
-	"github.com/zarf-dev/zarf/src/api/v1alpha1"
+	"github.com/zarf-dev/zarf/src/api"
+	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 )
 
 // Packaged charts never fall back to source paths or URLs. Selection and layout
 // are shared by verified descriptor validation and materialized consumption.
-func selectPackagedComponent(component v1alpha1.ZarfComponent, available bool) (string, bool, error) {
+func selectPackagedComponent(component api.Component, available, explicitlyOptional bool) (string, bool, error) {
 	if len(component.Charts) == 0 {
 		return "", false, nil
 	}
@@ -22,7 +23,7 @@ func selectPackagedComponent(component v1alpha1.ZarfComponent, available bool) (
 	}
 	title := path.Join("components", component.Name+".tar")
 	if !available {
-		if component.Required != nil && !*component.Required {
+		if explicitlyOptional {
 			return title, false, nil
 		}
 		return "", false, fmt.Errorf("incomplete package layout: missing selected descriptor %q for component %q", title, component.Name)
@@ -58,7 +59,7 @@ func readComponentEntries(title string, contents []byte) (map[string]byte, error
 	}
 }
 
-func packagedChartLayout(component v1alpha1.ZarfComponent, title string, entries map[string]byte) ([]packagedChart, error) {
+func packagedChartLayout(component api.Component, title string, entries map[string]byte) ([]packagedChart, error) {
 	chartsBase, valuesBase := "charts", "values"
 	if !hasArchivePrefix(entries, chartsBase+"/") {
 		chartsBase = path.Join(component.Name, chartsBase)
@@ -68,7 +69,7 @@ func packagedChartLayout(component v1alpha1.ZarfComponent, title string, entries
 	for _, chart := range component.Charts {
 		selected := packagedChart{}
 		for _, candidate := range []string{
-			path.Join(chartsBase, fmt.Sprintf("%s-%s.tgz", chart.Name, chart.Version)),
+			path.Join(chartsBase, layout.ChartArchiveName(chart.Name, chart.LegacyVersion)),
 			path.Join(chartsBase, chart.Name+".tgz"),
 			path.Join(chartsBase, chart.Name, "Chart.yaml"),
 		} {
@@ -83,10 +84,10 @@ func packagedChartLayout(component v1alpha1.ZarfComponent, title string, entries
 		if selected.ChartPath == "" {
 			return nil, fmt.Errorf("incomplete selected descriptor %q: declared chart %q was not found", title, chart.Name)
 		}
-		count := len(chart.ValuesFiles) + len(chart.TemplatedValuesFiles)
+		count := len(chart.ValuesFiles)
 		selected.ValuesPaths = make([]string, 0, count)
 		for i := range count {
-			valuesPath := path.Join(valuesBase, fmt.Sprintf("%s-%s-%d", chart.Name, chart.Version, i))
+			valuesPath := path.Join(valuesBase, layout.ChartValuesFileName(chart.Name, chart.LegacyVersion, i))
 			if !isRegularArchiveEntry(entries, valuesPath) {
 				return nil, fmt.Errorf("incomplete selected descriptor %q: managed values file %d for chart %q was not found", title, i, chart.Name)
 			}

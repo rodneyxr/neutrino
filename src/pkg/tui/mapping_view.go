@@ -49,6 +49,19 @@ func (m *Model) openMapping(ref *valueMapping, origin FocusPane) {
 	m.focusPane = FocusMapping
 }
 
+func (m *Model) focusMappingPath(path string) {
+	if m.mapping == nil {
+		return
+	}
+	for i, row := range m.mapping.rows {
+		if packagePath(row.path) == packagePath(path) {
+			m.mapping.cursor = i
+			m.ensureMappingCursorVisible()
+			return
+		}
+	}
+}
+
 func (screen *mappingScreen) selectRows() {
 	selectedPath := ""
 	if screen.cursor < len(screen.rows) {
@@ -112,6 +125,8 @@ func mappingRowStyle(status string) lipgloss.Style {
 		return mappedValueStyle
 	case "excluded":
 		return excludedValueStyle
+	case "unresolved", "runtime":
+		return zarfVarStyle
 	default:
 		return helpStyle
 	}
@@ -141,17 +156,17 @@ func (m Model) mappingPane(width, height int) string {
 	add := func(line string) { content.WriteString(truncateCell(line, inner) + "\n") }
 	add(paneHeadingStyle.Render("CHART VALUES · DECLARED MAPPING, NOT DEPLOYMENT-EFFECTIVE"))
 	add(screen.packageLabel() + ": " + screen.pkg.PackageName + "    Chart: " + screen.usage.ComponentName + "/" + screen.usage.ChartName)
-	add("Package " + screen.usage.Path + " → chart " + screen.usage.TargetPath)
+	add("Zarf .Values" + dottedTracePath(screen.usage.Path) + " → Helm .Values" + dottedTracePath(screen.usage.TargetPath))
 	add(fmt.Sprintf("In destination: %d    Other chart paths: %s (a toggles)", screen.inside, onOff(screen.showOthers)))
 	if height >= 14 {
-		add(helpStyle.Render("available = reachable  ·  excluded = explicit  ·  other = outside destination"))
+		add(helpStyle.Render("available = reachable  ·  excluded = blocked  ·  unresolved = incomplete input"))
 	}
 	if !screen.sourcePresent {
 		add("Source absent from configured input; chart candidates remain available.")
 	}
 	add("")
 	pathWidth := max(10, inner*45/100)
-	statusWidth := 9
+	statusWidth := 10
 	defaultWidth := max(8, inner-pathWidth-statusWidth-5)
 	inputWidth := 0
 	if inner >= 100 {
@@ -177,14 +192,15 @@ func (m Model) mappingPane(width, height int) string {
 		if row.undiscovered {
 			path += " [not discovered]"
 		}
+		chartValue := DisplayItem{ValueUsage: row.value, Component: screen.chartKey}
 		line := fmt.Sprintf("%-*s %-*s %-*s", pathWidth, truncateCell(path, pathWidth), statusWidth, row.status,
-			defaultWidth, truncateCell(mappingCell(row.defaultValue, !row.undiscovered && row.defaultValue != nil), defaultWidth))
+			defaultWidth, truncateCell(mappingCell(m.displayValue(chartValue, row.defaultValue), !row.undiscovered && row.defaultValue != nil), defaultWidth))
 		if inputWidth > 0 {
 			input := "not supplied"
 			if row.status == "other" {
 				input = "not applicable"
 			} else if row.present {
-				input = mappingCell(row.input, true)
+				input = mappingCell(traceSafeValueWithSchema(row.packagePath, row.input, schemaForPath(screen.pkg.Schema, row.packagePath)), true)
 			}
 			line += " " + truncateCell(input, inputWidth)
 		}

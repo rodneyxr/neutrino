@@ -40,6 +40,13 @@ func (m Model) packageValuesSnippet(value DisplayItem) string {
 		note = "# No known default; replace <set-value> before use"
 		input = "<set-value>"
 	}
+	masked := value
+	masked.Path = plan.path
+	masked.IsPackageValue = true
+	if mapping != nil && mapping.pkg != nil {
+		masked.PackageName = mapping.pkg.PackageName
+	}
+	input = m.displayValue(masked, input)
 	return note + "\n" + packageValuesYAML(plan.path, input)
 }
 
@@ -93,7 +100,7 @@ func relativeDetailFiles(names, sources []string) []detailFile {
 	paths := make([]string, len(names))
 	for i, name := range names {
 		paths[i] = name
-		if i < len(sources) && sources[i] != "" {
+		if i < len(sources) && sources[i] != "" && !filepath.IsAbs(name) {
 			paths[i] = sources[i]
 		}
 		if absolute, err := filepath.Abs(paths[i]); err == nil {
@@ -112,6 +119,9 @@ func relativeDetailFiles(names, sources []string) []detailFile {
 		source := ""
 		if i < len(sources) {
 			source = sources[i]
+		}
+		if filepath.IsAbs(name) {
+			source = name
 		}
 		files = append(files, detailFile{label: label, source: source})
 	}

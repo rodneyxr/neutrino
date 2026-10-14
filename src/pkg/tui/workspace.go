@@ -51,6 +51,10 @@ const (
 	commandCopyPath
 	commandHelp
 	commandQuit
+	commandOverview
+	commandAllInputs
+	commandChanged
+	commandUnresolved
 )
 
 type commandDefinition struct {
@@ -61,8 +65,12 @@ type commandDefinition struct {
 }
 
 var commands = [...]commandDefinition{
+	{commandOverview, "Inspection overview", "0", "Review configuration flow and attention counts"},
+	{commandAllInputs, "All configuration inputs", "8", "Browse every owner in the selected scope"},
+	{commandChanged, "Changed inputs", "c", "Find inputs changed by a later source"},
+	{commandUnresolved, "Unresolved inputs", "u", "Find runtime values and missing input evidence"},
 	{commandSearch, "Filter values", "/", "Search paths across the selected component"},
-	{commandComponents, "Select component", "f", "Filter or switch the component scope"},
+	{commandComponents, "Select package or chart", "f", "Navigate the package, component and chart hierarchy"},
 	{commandNextComponent, "Next component", "n / ]", "Jump to the next component"},
 	{commandPrevComponent, "Previous component", "N / [", "Jump to the previous component"},
 	{commandZarfSummary, "Toggle package variables", "Z", "Show the package variable summary"},
@@ -285,6 +293,7 @@ func (m *Model) activateFocused() tea.Cmd {
 			return nil
 		}
 		m.detailRef = nil
+		m.traceHistory = nil
 		value := m.filteredValues[m.cursor]
 		if value.IsPackageMapping && value.ValueTarget != "" {
 			m.openMapping(value.mappingRef, FocusValues)
@@ -294,6 +303,7 @@ func (m *Model) activateFocused() tea.Cmd {
 			route := value.Routes[0]
 			if !route.Usage.Runtime && route.Usage.TargetPath != "" && route.Usage.ChartName != "" {
 				m.openMapping(route.mapping, FocusValues)
+				m.focusMappingPath(route.Target)
 				return nil
 			}
 		}
@@ -303,6 +313,7 @@ func (m *Model) activateFocused() tea.Cmd {
 		m.statusMessage = ""
 		m.buildDetailItems()
 		m.focusPane = FocusInspector
+		m.ensureDetailCursorVisible()
 	case FocusMapping:
 		if m.mapping != nil && m.mapping.cursor < len(m.mapping.rows) {
 			m.mappingRowDetail = true
@@ -313,6 +324,7 @@ func (m *Model) activateFocused() tea.Cmd {
 			m.statusMessage = ""
 			m.buildDetailItems()
 			m.focusPane = FocusInspector
+			m.ensureDetailCursorVisible()
 		}
 	case FocusInspector:
 		if m.detailCursor < 0 || m.detailCursor >= len(m.detailItems) {
@@ -320,14 +332,26 @@ func (m *Model) activateFocused() tea.Cmd {
 		}
 		detail := m.detailItems[m.detailCursor]
 		if detail.Kind == DetailItemMapping {
+			value, _ := m.detailValue()
 			m.openMapping(detail.mappingRef, FocusInspector)
+			if value.IsPackageValue {
+				for _, route := range value.Routes {
+					if route.mapping == detail.mappingRef {
+						m.focusMappingPath(route.Target)
+						break
+					}
+				}
+			}
 			return nil
 		}
 		if detail.Kind == DetailItemLocation {
 			return openEditor(detail.Location.File, detail.Location.Line, detail.Location.Column)
 		}
-		if detail.Kind == DetailItemFile {
+		if detail.Kind == DetailItemFile || detail.Kind == DetailItemTrace && detail.File != "" {
 			return openEditor(detail.File, 1, 1)
+		}
+		if m.followTrace(detail) {
+			return nil
 		}
 		if detail.relatedValue != nil {
 			m.detailRef = detail.relatedValue
@@ -339,6 +363,10 @@ func (m *Model) activateFocused() tea.Cmd {
 }
 
 func (m *Model) beginFilter() {
+	m.previousFilter = m.filterInput.Value()
+	m.allCategories = true
+	m.showOverview = false
+	m.updateFilteredValues()
 	m.inputMode = InputModeFilter
 	m.filterInput.Focus()
 	m.setStatus("Type to filter values")
@@ -399,10 +427,22 @@ func (m *Model) executeCommand(command commandDefinition) tea.Cmd {
 	m.commandInput.SetValue("")
 
 	switch command.id {
+	case commandOverview:
+		m.showOverview = true
+		m.overviewOffset = 0
+		m.focusPane = FocusValues
+	case commandAllInputs:
+		m.showOverview = false
+		m.allCategories = true
+		m.updateFilteredValues()
+	case commandChanged:
+		m.focusStatus("changed")
+	case commandUnresolved:
+		m.focusStatus("unresolved")
 	case commandSearch:
 		m.beginFilter()
 	case commandComponents:
-		m.beginComponentFilter()
+		m.beginScopePicker()
 	case commandNextComponent:
 		m.jumpComponent(1)
 	case commandPrevComponent:
@@ -428,6 +468,7 @@ func (m *Model) executeCommand(command commandDefinition) tea.Cmd {
 		return m.copySelectedPath()
 	case commandHelp:
 		m.showHelp = true
+		m.helpOffset = 0
 	case commandQuit:
 		return tea.Quit
 	}
@@ -528,6 +569,9 @@ func (m Model) workspaceView() string {
 		height = 30
 	}
 
+	if m.inputMode == InputModeScopeSelect {
+		return m.scopePicker(width, height)
+	}
 	if m.showHelp {
 		return m.helpView(width, height)
 	}
@@ -547,6 +591,8 @@ func (m Model) workspaceView() string {
 		body = m.mappingPane(width, bodyHeight)
 	} else if m.focusPane == FocusInspector {
 		body = m.inspectorPane(width, bodyHeight)
+	} else if m.showOverview {
+		body = m.overviewPane(width, bodyHeight)
 	} else if m.nextRail {
 		body = m.nextCategoryWorkspace(width, bodyHeight)
 	} else if m.layout() == layoutCompact {
@@ -563,18 +609,23 @@ func (m Model) workspaceView() string {
 		)
 	}
 
+	body = fitWorkspace(body, width, bodyHeight)
 	return header + "\n" + body + "\n" + footer
 }
 
 func (m Model) workspaceHeader(width int) string {
-	chart := m.currentChart
-	if chart == "" {
-		chart = m.componentLabel(chart)
-	}
+	chart := terminalText(m.scopeLabel())
 	left := titleStyle.Render("◇ NEUTRINO") + "  " + headerStyle.Render(chart)
 	right := fmt.Sprintf("%d values  •  %s", len(m.filteredValues), layoutLabel(m.layout()))
 	if m.nextRail {
-		right = fmt.Sprintf("%d values  •  category rail", len(m.filteredValues))
+		mode := nextCategories[m.category]
+		if m.allCategories {
+			mode = "all inputs"
+		}
+		if m.showOverview {
+			mode = "overview"
+		}
+		right = fmt.Sprintf("%d values · %s", len(m.filteredValues), mode)
 	}
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 1 {
@@ -593,11 +644,13 @@ func (m Model) workspaceFooter(width int) string {
 	var primary string
 	switch m.inputMode {
 	case InputModeFilter:
-		primary = m.filterInput.View() + helpStyle.Render("  enter apply  esc clear")
+		primary = m.filterInput.View() + helpStyle.Render("  enter apply  esc cancel")
 	case InputModeChartSelect:
 		primary = m.chartInput.View() + helpStyle.Render("  ↑↓ choose  enter apply  esc cancel")
 	default:
 		switch {
+		case m.showOverview:
+			primary = helpStyle.Render("j/k scroll  8 browse  f scope  ? help  q quit")
 		case m.focusPane == FocusMapping:
 			primary = helpStyle.Render("j/k move  enter details  a other chart paths  y copy package path  esc back")
 		case m.focusPane == FocusInspector:
@@ -617,7 +670,7 @@ func (m Model) workspaceFooter(width int) string {
 			primary = helpStyle.Render("j/k move  " + action + "  y copy path  esc back  ? help")
 		default:
 			if m.nextRail {
-				primary = helpStyle.Render("1-7 category  tab panes  j/k move  f component  enter details  / search  : cmd  ? help  q quit")
+				primary = helpStyle.Render("0 overview  1-7 category  8 all  f scope  / search  c changed  u unresolved  ? help  q quit")
 			} else {
 				primary = helpStyle.Render("tab/arrows panes  j/k move  J/K 5-lines  n/N comp  enter details  / search  : cmd  ? help  q quit")
 			}
@@ -633,6 +686,15 @@ func (m Model) workspaceFooter(width int) string {
 			return footerBarStyle.Width(width).Render(truncateCell(m.statusMessage, width-2))
 		}
 		return footerBarStyle.Width(width).Render(m.statusMessage + strings.Repeat(" ", gap) + hint)
+	}
+	if (width < 100 || m.nextRail && width < 115) && m.inputMode == InputModeNormal && m.statusMessage == "" {
+		primary = helpStyle.Render("enter open  / search  f scope  ? help")
+		if m.showOverview {
+			primary = helpStyle.Render("j/k scroll  8 browse  ? help")
+		}
+		if m.focusPane == FocusInspector || m.focusPane == FocusMapping {
+			primary = helpStyle.Render("j/k move  enter open  esc back  ? help")
+		}
 	}
 	line := primary
 	if m.statusMessage != "" {
@@ -744,8 +806,8 @@ func (m Model) componentWidth(totalWidth int) int {
 
 func (m Model) columnWidths(innerWidth int) (pathWidth, valWidth, typeWidth, srcWidth int, showMetadata bool) {
 	if innerWidth < 65 {
-		pathWidth = clamp(innerWidth*45/100, 28, 38)
-		valWidth = max(12, innerWidth-pathWidth-3)
+		pathWidth = max(8, min(38, innerWidth*55/100))
+		valWidth = max(1, innerWidth-pathWidth-3)
 		return pathWidth, valWidth, 0, 0, false
 	}
 
@@ -927,12 +989,20 @@ func (m Model) valuesPane(width, height int) string {
 		if index == m.cursor && m.pathScroll > 0 {
 			path = scrollCell(displayPath, m.pathScroll, pathWidth)
 		}
-		defaultValue := displayValue(value)
+		safeValue := value
+		safeValue.DefaultValue = m.displayValue(value, value.DefaultValue)
+		safeValue.OverrideValue = m.displayValue(value, value.OverrideValue)
+		defaultValue := displayValue(safeValue)
 		if !showMetadata && value.IsPackageValue && value.MappingStatus != "" {
 			defaultValue = value.MappingStatus + ": " + defaultValue
 		}
 		defaultValue = truncateCell(defaultValue, valWidth)
 		kind := displayKind(value)
+		if m.valueUnresolved(value) {
+			kind = "unresolved"
+		} else if m.valueChanged(value) {
+			kind = "changed"
+		}
 		var line string
 		if showMetadata {
 			source := ""
@@ -1259,6 +1329,7 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 		if text == "" {
 			text = "—"
 		}
+		text = terminalMultiline(text)
 		labelWidth := min(14, max(1, innerWidth/3))
 		lines := strings.Split(ansi.Wrap(text, max(1, innerWidth-labelWidth-1), ""), "\n")
 		add(fieldLabelStyle.Render(fmt.Sprintf("%-*s", labelWidth, truncateCell(label, labelWidth))) + " " + codeStyle.Render(lines[0]))
@@ -1314,6 +1385,25 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 		}
 		identity("Package", value.PackageName)
 	}
+	apiVersion := m.report.PackageAPIVersion
+	if chart := m.components[key]; chart != nil && chart.PackageAPIVersion != "" {
+		apiVersion = chart.PackageAPIVersion
+	}
+	if pkg := m.tracePackage(value); pkg != nil && pkg.APIVersion != "" {
+		apiVersion = pkg.APIVersion
+	}
+	if m.bundle != nil {
+		for _, pkg := range m.bundle.Packages {
+			if pkg.ID == value.PackageName && pkg.APIVersion != "" {
+				apiVersion = pkg.APIVersion
+				break
+			}
+		}
+	}
+	if apiVersion != "" {
+		identity("Package API", apiVersion)
+	}
+	m.appendValueTrace(value, innerWidth, focused, add, section, identity, func(int) { selectedLine = lineNumber })
 	if value.IsPackageValue || value.IsPackageMapping || value.IsBundleVariable {
 		if m.bundle != nil {
 			identity("Bundle", strings.TrimSpace(m.bundle.Name+" "+m.bundle.Version)+" ("+m.bundle.Format+")")
@@ -1336,7 +1426,7 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 		}
 		if value.IsPackageValue && value.ValuePresent && len(value.Routes) > 0 {
 			section("CHART MAPPINGS · ENTER TO INSPECT")
-			linkIndex := 0
+			linkIndex := len(m.traceDetailItems(value))
 			for _, route := range value.Routes {
 				owner := route.Usage.ComponentName
 				if route.Usage.ChartName != "" {
@@ -1359,9 +1449,9 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 	}
 	if value.IsUDSOverrideValue {
 		section("CHART DEFAULT")
-		add(detailDefaultStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.OriginalDefault), max(1, innerWidth-2))))
+		add(detailDefaultStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(m.displayValue(value, value.OriginalDefault)), max(1, innerWidth-2))))
 		section("EFFECTIVE VALUE")
-		add(detailCodeStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.OverrideValue), max(1, innerWidth-2))))
+		add(detailCodeStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(m.displayValue(value, value.OverrideValue)), max(1, innerWidth-2))))
 	} else if value.IsPackageMapping || value.IsPackageValue && !value.ValuePresent {
 		// A mapping or an operator-provided values file is not a resolved value.
 	} else {
@@ -1374,7 +1464,7 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 		if !value.IsPackageValue && !value.IsBundleVariable {
 			style = detailDefaultStyle
 		}
-		add(style.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.DefaultValue), max(1, innerWidth-2))))
+		add(style.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(m.displayValue(value, value.DefaultValue)), max(1, innerWidth-2))))
 	}
 	description := value.PkgVarDesc
 	if value.UDSVarDescription != "" {
@@ -1429,7 +1519,7 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 			identity("Package input", "null")
 		} else {
 			add(fieldLabelStyle.Render("Package input"))
-			add(detailCodeStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(row.input), max(1, innerWidth-2))))
+			add(detailCodeStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(m.displayValue(value, traceSafeValue(row.packagePath, row.input))), max(1, innerWidth-2))))
 		}
 		add("")
 	}
@@ -1486,7 +1576,7 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 		fileDetailIndex++
 	}
 	fileEntry := func(index int, file detailFile) {
-		lines := strings.Split(ansi.Wrap(file.label, max(1, innerWidth-6), ""), "\n")
+		lines := strings.Split(ansi.Wrap(terminalMultiline(file.label), max(1, innerWidth-6), ""), "\n")
 		prefix := helpStyle.Render(fmt.Sprintf("  %02d  ", index+1))
 		if file.source != "" && fileDetailIndex < len(m.detailItems) {
 			if focused && fileDetailIndex == m.detailCursor {
@@ -1538,7 +1628,7 @@ func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
 	if value.ValueSchema != nil {
 		if m.detailSchemaShown {
 			section("PACKAGE VALUES SCHEMA · S TO HIDE")
-			add(codeStyle.Render(wrapCell(formatYAMLValue(value.ValueSchema), innerWidth)))
+			add(codeStyle.Render(wrapCell(formatYAMLValue(traceSafeSchema(value.ValueSchema)), innerWidth)))
 		} else {
 			section("PACKAGE VALUES SCHEMA · HIDDEN · S TO SHOW")
 		}
@@ -1579,6 +1669,7 @@ func (m Model) chartRelativeLocationFor(key, file string) string {
 
 // tailCell preserves the filename and line when a source path exceeds the pane.
 func tailCell(value string, width int) string {
+	value = terminalText(value)
 	if lipgloss.Width(value) <= width {
 		return value
 	}
@@ -1593,38 +1684,46 @@ func tailCell(value string, width int) string {
 }
 
 func (m Model) commandPaletteView(width, height int) string {
-	paletteWidth := min(100, max(30, width-8))
+	paletteWidth := min(100, max(20, width-4))
+	contentWidth := max(1, paletteWidth-6)
 	query := m.commandInput.Value()
 	matchCount := commandMatchCount(query)
 	var content strings.Builder
 	content.WriteString(titleStyle.Render("COMMAND PALETTE") + "\n")
-	content.WriteString(m.commandInput.View() + "\n\n")
-	content.WriteString(tableHeaderStyle.Render(truncateCell(fmt.Sprintf("%-8s %-28s %s", "KEY", "ACTION", "DESCRIPTION"), paletteWidth-4)) + "\n")
+	content.WriteString(truncateCell(m.commandInput.View(), contentWidth) + "\n\n")
+	content.WriteString(tableHeaderStyle.Render(truncateCell(fmt.Sprintf("%-8s %-28s %s", "KEY", "ACTION", "DESCRIPTION"), contentWidth)) + "\n")
 	matchIndex := 0
+	visible := max(1, height-9)
+	start := max(0, m.commandCursor-visible+1)
 	for _, command := range commands {
 		if !commandMatches(command, query) {
 			continue
 		}
+		if matchIndex < start || matchIndex >= start+visible {
+			matchIndex++
+			continue
+		}
 		line := fmt.Sprintf("%-8s %-28s %s", command.key, command.name, command.description)
-		line = truncateCell(line, paletteWidth-4)
+		line = truncateCell(line, contentWidth-2)
 		if matchIndex == m.commandCursor {
-			content.WriteString(selectedRowStyle.Render("> " + truncateCell(line, paletteWidth-6)))
+			content.WriteString(selectedRowStyle.Render("> " + truncateCell(line, contentWidth-2)))
 		} else {
-			content.WriteString("  " + truncateCell(line, paletteWidth-6))
+			content.WriteString("  " + truncateCell(line, contentWidth-2))
 		}
 		content.WriteByte('\n')
 		matchIndex++
 	}
 	if matchCount == 0 {
-		content.WriteString(helpStyle.Render("No matching commands."))
+		content.WriteString(helpStyle.Render(truncateCell("No matching commands.", contentWidth)) + "\n")
 	}
-	content.WriteString("\n" + helpStyle.Render("↑↓ move  enter run  esc close"))
+	content.WriteString(helpStyle.Render(truncateCell("↑↓ move  enter  esc", contentWidth)))
 	panel := modalStyle.Width(paletteWidth - 2).Render(content.String())
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, panel)
 }
 
 func (m Model) helpView(width, height int) string {
 	content := titleStyle.Render("KEYBOARD HELP") + "\n\n"
+	content += "0 / 8             overview / all inputs\n" + "c / u             changed / unresolved filter\n"
 	navigation := "jump next / previous component"
 	space := "select component / Details authoring"
 	enter := "details / mapping / mapped value"
@@ -1642,8 +1741,8 @@ func (m Model) helpView(width, height int) string {
 		"n / N, ] / [     " + navigation + "\n" +
 		"g / G             first / last item\n" +
 		"Enter             " + enter + "\n" +
-		"/                 filter values\n" +
-		"f                 select component\n" +
+		"/                 search all inputs in scope\n" +
+		"f                 package / component / chart\n" +
 		":                 command palette\n" +
 		"Space             " + space + "\n" +
 		"a                 toggle other paths in mapping\n" +
@@ -1657,11 +1756,19 @@ func (m Model) helpView(width, height int) string {
 		"q                 quit\n\n" +
 		helpStyle.Render("Press ? or Esc to close")
 	panelWidth := min(58, max(34, width-4))
-	panel := modalStyle.Width(panelWidth - 2).Render(content)
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = truncateCell(line, max(1, panelWidth-6))
+	}
+	visible := max(1, height-7)
+	body := clipLinesAt(strings.Join(lines, "\n"), visible, m.helpOffset)
+	body += "\n" + helpStyle.Render(truncateCell("↑↓ scroll  ? / Esc close", panelWidth-6))
+	panel := modalStyle.Width(panelWidth - 2).Render(body)
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, panel)
 }
 
 func truncateCell(value string, width int) string {
+	value = terminalText(value)
 	if width <= 0 {
 		return ""
 	}
@@ -1700,6 +1807,7 @@ func scrollCell(value string, offset, width int) string {
 }
 
 func wrapCell(value string, width int) string {
+	value = terminalMultiline(value)
 	if width < 1 {
 		return ""
 	}
@@ -1762,12 +1870,12 @@ func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.inputMode = InputModeNormal
 		m.filterInput.Blur()
-		m.filterInput.SetValue("")
+		m.filterInput.SetValue(m.previousFilter)
 		m.updateFilteredValues()
 		m.cursor = 0
 		m.viewportOffset = 0
 		m.buildDetailItems()
-		m.setStatus("Value filter cleared")
+		m.setStatus("Filter edit cancelled")
 	default:
 		var cmd tea.Cmd
 		m.filterInput, cmd = m.filterInput.Update(msg)
@@ -1911,6 +2019,28 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	if m.showOverview {
+		switch msg.String() {
+		case "j", "down":
+			m.overviewOffset++
+			return m, nil
+		case "k", "up":
+			m.overviewOffset = max(0, m.overviewOffset-1)
+			return m, nil
+		case "pgdown":
+			m.overviewOffset += max(1, m.windowHeight-5)
+			return m, nil
+		case "pgup":
+			m.overviewOffset = max(0, m.overviewOffset-max(1, m.windowHeight-5))
+			return m, nil
+		case "g":
+			m.overviewOffset = 0
+			return m, nil
+		case "G":
+			m.overviewOffset = 1000
+			return m, nil
+		}
+	}
 	if m.focusPane == FocusMapping || m.mappingRowDetail {
 		switch msg.String() {
 		case "q", "ctrl+c", "j", "k", "J", "K", "up", "down", "g", "G", "pgup", "pgdown", "enter", "esc", "?", "y":
@@ -1972,8 +2102,29 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgdown":
 		m.moveWithinFocusedPane(max(5, m.windowHeight-7))
 	case "enter":
+		if m.showOverview {
+			m.showOverview = false
+			m.allCategories = true
+			m.updateFilteredValues()
+			return m, nil
+		}
 		cmd := m.activateFocused()
 		return m, cmd
+	case "0":
+		m.showOverview = !m.showOverview
+		m.overviewOffset = 0
+		m.focusPane = FocusValues
+	case "8":
+		m.showOverview = false
+		m.allCategories = true
+		m.focusPane = FocusValues
+		m.updateFilteredValues()
+		m.cursor, m.viewportOffset = 0, 0
+		m.buildDetailItems()
+	case "c":
+		m.focusStatus("changed")
+	case "u":
+		m.focusStatus("unresolved")
 	case "a":
 		if m.focusPane == FocusMapping && m.mapping != nil {
 			m.mapping.showOthers = !m.mapping.showOthers
@@ -1983,13 +2134,20 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "/":
 		m.beginFilter()
 	case "f":
-		m.beginComponentFilter()
+		m.beginScopePicker()
 	case ":":
 		m.beginCommandPalette()
 	case "?":
 		m.showHelp = true
+		m.helpOffset = 0
 	case "esc":
-		if m.focusPane == FocusInspector && m.detailRef != nil {
+		if m.showOverview {
+			m.showOverview = false
+			return m, nil
+		}
+		if m.focusPane == FocusInspector && m.detailRef != nil && m.returnTrace() {
+			return m, nil
+		} else if m.focusPane == FocusInspector && m.detailRef != nil {
 			m.detailRef = nil
 			m.detailCursor, m.detailScrollOffset = 0, 0
 			m.buildDetailItems()

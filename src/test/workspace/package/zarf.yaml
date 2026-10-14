@@ -1,0 +1,38 @@
+kind: ZarfPackageConfig
+metadata:
+  name: observatory
+  version: 1.0.0
+variables:
+  - name: LEGACY_REGION
+    description: Compatibility input; separate from Package Values.
+    default: local
+values:
+  files:
+    - defaults.yaml
+    - environment.yaml
+components:
+  - name: services
+    required: true
+    charts:
+      - name: api
+        version: 1.0.0
+        namespace: observatory
+        localPath: chart
+        valuesFiles:
+          - chart-values.yaml
+        templatedValuesFiles:
+          - chart-template.yaml
+        values:
+          - sourcePath: .app
+            targetPath: .
+            excludePaths: [.app.image]
+          - sourcePath: .scale
+            targetPath: .replicaCount
+          - sourcePath: .missing
+            targetPath: .missing
+    actions:
+      onDeploy:
+        before:
+          - cmd: exit 99
+            setValues:
+              - key: .runtime.endpoint
