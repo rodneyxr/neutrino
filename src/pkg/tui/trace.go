@@ -37,7 +37,7 @@ func (m *Model) followTrace(detail DetailItem) bool {
 	}
 	m.traceHistory = append(m.traceHistory, traceReturn{ref: m.detailRef, cursor: m.detailCursor,
 		offset: m.detailScrollOffset, rowDetail: m.mappingRowDetail, schemaShown: m.detailSchemaShown,
-		panel: m.detailPanel, panels: m.detailPanelHistory, source: m.detailSource})
+		panel: m.detailPanel, panels: append([]detailPanelReturn(nil), m.detailPanelHistory...), source: m.detailSource})
 	target := *detail.relatedValue
 	m.detailRef = &target
 	m.detailCursor, m.detailScrollOffset = 0, 0

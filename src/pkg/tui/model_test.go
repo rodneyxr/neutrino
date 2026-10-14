@@ -106,45 +106,18 @@ func TestGenerateBundleSnippetWithComplexYAMLDefault(t *testing.T) {
 
 func TestWorkspaceResponsiveLayoutsFitTerminal(t *testing.T) {
 	for _, test := range []struct {
-		name        string
-		width       int
-		height      int
-		want        []string
-		doesNotWant []string
+		name              string
+		width, height     int
+		want, doesNotWant []string
 	}{
-		{
-			name:        "wide",
-			width:       132,
-			height:      32,
-			want:        []string{"COMPONENTS", "VALUES", "2 panes"},
-			doesNotWant: []string{"DETAILS"},
-		},
-		{
-			name:        "medium",
-			width:       100,
-			height:      28,
-			want:        []string{"COMPONENTS", "VALUES", "2 panes"},
-			doesNotWant: []string{"DETAILS"},
-		},
-		{
-			name:        "compact",
-			width:       72,
-			height:      24,
-			want:        []string{"VALUES", "single pane"},
-			doesNotWant: []string{"COMPONENTS", "DETAILS"},
-		},
+		{"wide", 132, 32, []string{"Scope", "Settings", "Inspector"}, []string{"CATEGORIES"}},
+		{"medium", 100, 28, []string{"Settings", "Inspector"}, []string{"CATEGORIES", "COMPONENTS"}},
+		{"compact", 72, 24, []string{"Settings"}, []string{"Inspector", "COMPONENTS"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			model := testWorkspaceModel()
-			updated, _ := model.Update(tea.WindowSizeMsg{Width: test.width, Height: test.height})
-			view := updated.(Model).View()
-
-			if got := lipgloss.Width(view); got != test.width {
-				t.Fatalf("rendered width %d, want %d", got, test.width)
-			}
-			if got := lipgloss.Height(view); got != test.height {
-				t.Fatalf("rendered height %d, want %d", got, test.height)
-			}
+			resizeWorkspace(&model, test.width, test.height)
+			view := assertWorkspaceSize(t, model, test.width, test.height)
 			for _, want := range test.want {
 				if !strings.Contains(view, want) {
 					t.Errorf("view does not contain %q", want)
@@ -188,11 +161,6 @@ func TestValuesPaneUsesLastAvailableRow(t *testing.T) {
 		if got := lines[model.windowHeight-3]; !strings.Contains(got, "value-") {
 			t.Fatalf("width %d: last Values interior row should contain a value, got %q", width, got)
 		}
-		model.cursor = 9
-		model.ensureCursorVisible()
-		if model.viewportOffset != 0 {
-			t.Fatalf("width %d: cursor fits on last row without scrolling; viewport offset = %d", width, model.viewportOffset)
-		}
 		updated, _ := model.Update(key("G"))
 		model = updated.(Model)
 		view := model.View()
@@ -208,25 +176,23 @@ func TestValuesPaneUsesLastAvailableRow(t *testing.T) {
 	}
 }
 
-func TestKeyboardFlowOpensAndClosesFullWidthDetails(t *testing.T) {
+func TestKeyboardFlowFocusesInspectorWithinWorkspace(t *testing.T) {
 	model := testWorkspaceModel()
-	model.windowWidth = 132
-	model.windowHeight = 32
-
-	updated, _ := model.Update(key("enter"))
-	details := updated.(Model)
-	view := details.View()
-	if details.focusPane != FocusInspector || details.detailPanel != detailSummary || !strings.Contains(view, "Helm value") {
-		t.Fatalf("enter did not open full-width details:\n%s", view)
+	resizeWorkspace(&model, 132, 32)
+	selected := model.cursor
+	pressWorkspaceKey(&model, "enter")
+	view := model.View()
+	if model.focusPane != FocusInspector || model.detailPanel != detailSummary || !strings.Contains(view, "Helm value") {
+		t.Fatalf("Enter did not focus the selected summary:\n%s", view)
 	}
-	if strings.Contains(view, "COMPONENTS") {
-		t.Fatal("details should replace the two-pane workspace")
+	for _, pane := range []string{"Scope", "Settings", "Inspector"} {
+		if !strings.Contains(view, pane) {
+			t.Fatalf("focusing Inspector removed %s", pane)
+		}
 	}
-
-	updated, _ = details.Update(key("esc"))
-	workspace := updated.(Model).View()
-	if !strings.Contains(workspace, "VALUES") || !strings.Contains(workspace, "COMPONENTS") {
-		t.Fatalf("escape did not restore the two-pane workspace:\n%s", workspace)
+	pressWorkspaceKey(&model, "esc")
+	if model.focusPane != FocusValues || model.cursor != selected || !strings.Contains(model.View(), "Inspector") {
+		t.Fatal("Escape should return focus to Settings without hiding Inspector")
 	}
 }
 
@@ -274,7 +240,7 @@ func TestStatusReturnsToDefaultAfterTwoSeconds(t *testing.T) {
 	updated, _ = model.Update(pathScrollTickMsg(model.statusExpiresAt))
 	model = updated.(Model)
 	if strings.Contains(model.workspaceFooter(100), "Package variable summary on") ||
-		!strings.Contains(model.workspaceFooter(100), "tab/arrows panes") {
+		!strings.Contains(model.workspaceFooter(100), "tab") {
 		t.Fatalf("status did not return to default footer: %q", model.workspaceFooter(100))
 	}
 }
@@ -319,16 +285,8 @@ func TestValuesAreGroupedByComponentAndSection(t *testing.T) {
 		windowHeight: 30,
 	}
 
-	view := model.View()
-	headings := []string{
-		"━━ Zarf package",
-		"  " + valueSection(model.filteredValues[0]),
-		"━━ " + first,
-		"  " + valueSection(model.filteredValues[2]),
-		"  " + valueSection(model.filteredValues[3]),
-		"━━ " + second,
-		"  " + valueSection(model.filteredValues[4]),
-	}
+	view := model.valuesPane(110, 28)
+	headings := []string{"Zarf package", first, second}
 	previous := -1
 	for _, heading := range headings {
 		index := strings.Index(view, heading)
@@ -340,56 +298,45 @@ func TestValuesAreGroupedByComponentAndSection(t *testing.T) {
 		}
 		previous = index
 	}
-	if strings.Count(view, "━━ "+first) != 1 {
+	if strings.Count(view, first) != 1 {
 		t.Fatalf("component band must appear once across its sections:\n%s", view)
 	}
-	if got := model.valueLineCount(1, 2); got != 6 {
-		t.Fatalf("two sections within a component should have a blank separator: got %d lines, want 6", got)
+	if got := model.valueLineCount(1, 2); got != 3 {
+		t.Fatalf("one owner heading should group both rows: got %d lines, want 3", got)
 	}
 	model.viewportOffset = 2
-	scrolled := model.View()
-	if !strings.Contains(scrolled, "━━ "+first) || !strings.Contains(scrolled, "  "+valueSection(model.filteredValues[2])) {
+	scrolled := model.valuesPane(110, 28)
+	if !strings.Contains(scrolled, first) || !strings.Contains(scrolled, "PROXY_MEMORY") {
 		t.Fatalf("scrolling into a component must retain its context:\n%s", scrolled)
 	}
 }
 
-func TestLeftColumnExpandsWhenFocused(t *testing.T) {
+func TestWorkspaceColumnWidthsStayStableAcrossFocus(t *testing.T) {
 	model := testWorkspaceModel()
-	model.windowWidth = 132
-	model.windowHeight = 32
-
-	model.focusPane = FocusValues
-	unfocusedWidth := model.componentWidth(model.windowWidth)
-	if unfocusedWidth != 24 {
-		t.Fatalf("expected unfocused component width 24, got %d", unfocusedWidth)
-	}
-
-	model.focusPane = FocusComponents
-	focusedWidth := model.componentWidth(model.windowWidth)
-	if focusedWidth <= unfocusedWidth {
-		t.Fatalf("expected focused component width to expand beyond %d, got %d", unfocusedWidth, focusedWidth)
-	}
-	if focusedWidth != 50 {
-		t.Fatalf("expected focused component width 50 at 132 columns, got %d", focusedWidth)
+	resizeWorkspace(&model, 120, 32)
+	for _, pane := range []FocusPane{FocusValues, FocusComponents, FocusInspector} {
+		model.focusPane = pane
+		view := model.View()
+		if !strings.Contains(workspaceColumns(view, 24, 46), "Settings") || !strings.Contains(workspaceColumns(view, 70, 50), "Inspector") {
+			t.Fatalf("focus %v shifted persistent pane geometry:\n%s", pane, view)
+		}
 	}
 }
 
-func TestLeftAndRightArrowsNavigatePanes(t *testing.T) {
+func TestLeftAndRightArrowsNavigateSettingsAndInspector(t *testing.T) {
 	model := testWorkspaceModel()
-	model.windowWidth = 100
-	model.windowHeight = 28
-	model.focusPane = FocusValues
-
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyLeft})
-	m := updated.(Model)
-	if m.focusPane != FocusComponents {
-		t.Fatalf("left arrow did not focus Components pane, focus is %v", m.focusPane)
+	resizeWorkspace(&model, 120, 28)
+	pressWorkspaceKey(&model, "right")
+	if model.focusPane != FocusInspector {
+		t.Fatal("right arrow did not focus Inspector")
 	}
-
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
-	m = updated.(Model)
-	if m.focusPane != FocusValues {
-		t.Fatalf("right arrow did not focus Values pane, focus is %v", m.focusPane)
+	pressWorkspaceKey(&model, "left")
+	if model.focusPane != FocusValues {
+		t.Fatal("left arrow did not return to Settings")
+	}
+	pressWorkspaceKey(&model, "left")
+	if model.focusPane != FocusComponents {
+		t.Fatal("left arrow did not focus Scope")
 	}
 }
 
@@ -530,7 +477,7 @@ func TestDetailsViewRendersCopyableYAMLDefault(t *testing.T) {
 	model.buildDetailItems()
 	openInspectorTestPanel(t, &model, detailFullValue)
 
-	view := model.View()
+	view := workspaceColumns(model.View(), 45, 55)
 	if strings.Contains(view, "{requests:") || strings.Contains(view, "map[") {
 		t.Fatalf("expected copyable YAML block instead of JSON or Go struct, got:\n%s", view)
 	}
@@ -662,35 +609,22 @@ func TestWholeNumbersRenderAsIntegersNotFloats(t *testing.T) {
 	}
 }
 
-func TestComponentAutoScrollsWhenTooLong(t *testing.T) {
+func TestLongScopeNamesStayWithinTheirPane(t *testing.T) {
 	longComp := "core-base/istio-controlplane/istiod-with-a-very-long-name-that-does-not-fit-in-the-sidebar"
-	model := Model{
-		components:      map[string]*introspect.IntrospectResult{longComp: {ChartName: "istiod"}},
-		chartNames:      []string{longComp},
-		currentChart:    longComp,
-		componentCursor: 0,
-		focusPane:       FocusComponents,
-		windowWidth:     100,
-		windowHeight:    28,
-		compScroll:      0,
-		compScrollPause: 0,
-	}
-
-	initial := model.View()
-	if !strings.Contains(initial, "> ●") {
-		t.Fatalf("expected current chart cursor in component pane:\n%s", initial)
-	}
-
-	model.stepComponentScroll()
-	if model.compScroll <= 0 {
-		t.Fatalf("expected compScroll to advance automatically, got %d", model.compScroll)
-	}
-
-	scrolled := model.View()
-	if !strings.Contains(scrolled, "‹") {
-		t.Fatalf("expected component view to render scroll indicator ‹, got:\n%s", scrolled)
+	model := NewModel(introspect.InspectionReport{
+		Components:     map[string]*introspect.IntrospectResult{longComp: {ChartName: "istiod", Values: []introspect.ValueUsage{{Path: "enabled", DefaultValue: true}}}},
+		ComponentOrder: []string{longComp},
+	})
+	model.currentChart = longComp
+	model.updateFilteredValues()
+	model.focusPane = FocusComponents
+	resizeWorkspace(&model, 120, 28)
+	view := assertWorkspaceSize(t, model, 120, 28)
+	if !strings.Contains(workspaceColumns(view, 0, 24), "Scope") || !strings.Contains(workspaceColumns(view, 24, 46), "Settings") || model.currentChart != longComp {
+		t.Fatalf("long chart name changed scope identity or pane boundaries:\n%s", view)
 	}
 }
+
 func TestBundleAuthoringHasSeparateScrollablePage(t *testing.T) {
 	model := testWorkspaceModel()
 	model.windowWidth = 72
@@ -863,7 +797,7 @@ func TestValuesAlwaysConsolidateLocations(t *testing.T) {
 		if len(model.filteredValues) != 2 || len(model.filteredValues[0].Locations) != 2 {
 			t.Fatalf("%q changed consolidated values: %+v", shortcut, model.filteredValues)
 		}
-		if !strings.Contains(model.View(), "2 locations") {
+		if !strings.Contains(model.View(), "Sources (2)") {
 			t.Fatalf("%q removed the consolidated source count", shortcut)
 		}
 	}
@@ -1038,6 +972,7 @@ func TestMappingChartFirstRootAndSubtree(t *testing.T) {
 	}
 	updated, _ = model.Update(key("enter"))
 	model = updated.(Model)
+	openInspectorTestMapping(t, &model)
 	if model.mapping.inside != 3 {
 		t.Fatalf("two discovered subtree paths and one supplied-only path: %+v", model.mapping.rows)
 	}
@@ -1099,11 +1034,14 @@ func TestMappingPackageOwnershipAndMissingSource(t *testing.T) {
 	}
 	updated, _ := model.Update(key("enter"))
 	model = updated.(Model)
+	openInspectorTestMapping(t, &model)
 	if model.mapping == nil || model.mapping.pkg.PackageName != "b" || model.mapping.inside != 1 || model.mapping.rows[0].present {
 		t.Fatalf("missing-source declaration must reveal chart candidates owned by b: %+v", model.mapping)
 	}
-	if !strings.Contains(model.View(), "Source absent") {
-		t.Fatalf("missing source label: %s", model.View())
+	for _, want := range []string{"not supplied", ".missing.enabled", "config.enabled"} {
+		if !strings.Contains(model.View(), want) {
+			t.Fatalf("live Inspector lost missing-input evidence %q: %s", want, model.View())
+		}
 	}
 	updated, _ = model.Update(key("enter"))
 	model = updated.(Model)
@@ -1111,6 +1049,7 @@ func TestMappingPackageOwnershipAndMissingSource(t *testing.T) {
 	model = updated.(Model)
 	updated, _ = model.Update(key("esc"))
 	model = updated.(Model)
+	pressWorkspaceKey(&model, "esc")
 	model.currentChart = "b/server/web"
 	model.updateFilteredValues()
 	for i, item := range model.filteredValues {
@@ -1121,6 +1060,7 @@ func TestMappingPackageOwnershipAndMissingSource(t *testing.T) {
 	}
 	updated, _ = model.Update(key("enter"))
 	model = updated.(Model)
+	openInspectorTestMapping(t, &model)
 	if model.mapping == nil || model.mapping.pkg.PackageName != "b" {
 		t.Fatalf("chart mapping must resolve owning package: %+v", model.mapping)
 	}
@@ -1135,7 +1075,7 @@ func TestPackageValuesKeepPackageBandsDistinct(t *testing.T) {
 		},
 	})
 	model.windowWidth, model.windowHeight = 140, 22
-	view := model.View()
+	view := model.valuesPane(140, 20)
 	if !strings.Contains(view, "Zarf Package Values · api") || !strings.Contains(view, "Zarf Package Values · worker") {
 		t.Fatalf("each package must have its own visible band:\n%s", view)
 	}
@@ -1157,7 +1097,7 @@ func TestNextBundleMetadataNeverSuggestsLegacyAuthoring(t *testing.T) {
 			}},
 		},
 	})
-	if !model.nextRail || model.category != 0 || model.categoryCounts[0] != 1 ||
+	if !model.nextRail || !model.allCategories || model.categoryCounts[0] != 1 ||
 		model.categoryCounts[1] != 1 || model.categoryCounts[5] != 1 {
 		t.Fatalf("Next metadata and Helm defaults must have separate categories: %+v", model.categoryCounts)
 	}
@@ -1191,7 +1131,7 @@ func TestNextBundleMetadataNeverSuggestsLegacyAuthoring(t *testing.T) {
 	}
 }
 
-func TestNextCategoryRailKeepsConfigurationOwnersSeparate(t *testing.T) {
+func TestNextCategoryFiltersKeepConfigurationOwnersSeparate(t *testing.T) {
 	const chart = "api/server/app"
 	m := NewModel(introspect.InspectionReport{
 		Components: map[string]*introspect.IntrospectResult{chart: {
@@ -1242,54 +1182,47 @@ func TestNextCategoryRailKeepsConfigurationOwnersSeparate(t *testing.T) {
 	}
 }
 
-func TestNextRailResponsiveAndComponentScope(t *testing.T) {
+func TestNextCategoryFilterRemainsIndependentOfScope(t *testing.T) {
 	m := NewModel(introspect.InspectionReport{
-		Components: map[string]*introspect.IntrospectResult{"api/server/app": {
-			Values: []introspect.ValueUsage{{Path: "image.tag"}},
-		}},
+		Components:     map[string]*introspect.IntrospectResult{"api/server/app": {Values: []introspect.ValueUsage{{Path: "image.tag"}}}},
 		ComponentOrder: []string{"api/server/app"},
-		Bundle: &introspect.BundleMetadata{
-			Format: "next", Variables: map[string]interface{}{"cluster": "dev"},
-		},
+		Bundle:         &introspect.BundleMetadata{Format: "next", Variables: map[string]interface{}{"cluster": "dev"}},
 	})
 	for _, width := range []int{100, 72} {
-		updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
-		m = updated.(Model)
-		view := m.View()
-		if lipgloss.Width(view) != width || lipgloss.Height(view) != 30 ||
-			!strings.Contains(view, "CATEGORIES") || !strings.Contains(view, "VALUES") {
-			t.Fatalf("category rail %d cols rendered %d x %d: %s", width, lipgloss.Width(view), lipgloss.Height(view), view)
+		resizeWorkspace(&m, width, 30)
+		view := assertWorkspaceSize(t, m, width, 30)
+		if !strings.Contains(view, "Settings") || !strings.Contains(view, "1–7") || strings.Contains(view, "CATEGORIES") {
+			t.Fatalf("category choices should be a Settings filter at %d columns:\n%s", width, view)
 		}
 	}
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
-	m = updated.(Model)
-	updated, _ = m.Update(key("j"))
-	m = updated.(Model)
-	if m.focusPane != FocusComponents || m.category != 1 {
-		t.Fatal("focused rail should navigate categories")
-	}
-	updated, _ = m.Update(key("6"))
-	m = updated.(Model)
-	if m.focusPane != FocusValues || m.filteredValues[0].Path != "image.tag" {
-		t.Fatal("digit shortcut should open chosen category")
+	pressWorkspaceKey(&m, "6")
+	if m.focusPane != FocusValues || len(m.filteredValues) != 1 || m.filteredValues[0].Path != "image.tag" {
+		t.Fatal("digit shortcut should filter the Settings rows")
 	}
 	m.currentChart = "api/server/app"
 	m.updateFilteredValues()
 	m.selectNextCategory(0)
-	if len(m.filteredValues) != 0 || !strings.Contains(m.View(), "No items in this category") {
-		t.Fatal("component scope must not leak bundle-wide inputs into chart category")
+	if len(m.filteredValues) != 0 || !strings.Contains(m.View(), "No settings match") {
+		t.Fatal("chart scope must not leak bundle-wide inputs through the category filter")
 	}
 }
 
-func TestNextRailStartsOnFirstPopulatedCategory(t *testing.T) {
+func TestNextWorkspaceStartsWithAllAvailableInputs(t *testing.T) {
 	m := NewModel(introspect.InspectionReport{
-		Components: map[string]*introspect.IntrospectResult{},
+		Components: map[string]*introspect.IntrospectResult{"api/server/app": {Values: []introspect.ValueUsage{{Path: "enabled"}}}},
 		Bundle: &introspect.BundleMetadata{
 			Format: "next", Packages: []introspect.BundlePackageMetadata{{ID: "api", ValuesFiles: []string{"values.yaml"}}},
 		},
 	})
-	if m.category != 1 || len(m.filteredValues) != 1 || m.filteredValues[0].Path != "api" {
-		t.Fatalf("bundles without variables should open on their first available input: %+v", m.filteredValues)
+	if !m.allCategories || len(m.filteredValues) != 2 {
+		t.Fatalf("initial Settings should include the package and Helm value: %+v", m.filteredValues)
+	}
+	found := map[string]bool{}
+	for _, item := range m.filteredValues {
+		found[item.Path] = true
+	}
+	if !found["api"] || !found["enabled"] {
+		t.Fatalf("initial Settings omitted a configuration owner: %+v", m.filteredValues)
 	}
 }
 
@@ -1326,8 +1259,8 @@ func TestNextZarfVariablesGroupByOwningPackage(t *testing.T) {
 		second.PackageName != "api.v2" || second.Path != "api.v2.ADMIN_DOMAINS" || second.DefaultValue != "v2.example" {
 		t.Fatalf("grouping must retain package identity, declaration and both chart references: %+v", m.filteredValues)
 	}
-	view := m.View()
-	for _, band := range []string{"━━ Zarf package · api ", "━━ Zarf package · api.v2 "} {
+	view := m.valuesPane(100, 28)
+	for _, band := range []string{"Zarf package · api ", "Zarf package · api.v2 "} {
 		if strings.Count(view, band) != 1 {
 			t.Fatalf("expected exactly one package section %q:\n%s", band, view)
 		}
@@ -1410,6 +1343,25 @@ func writeModelTestSource(t *testing.T, path string) {
 	if err := os.WriteFile(path, []byte("# source fixture\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func openInspectorTestMapping(t *testing.T, model *Model) {
+	t.Helper()
+	if model.focusPane != FocusInspector {
+		t.Fatalf("mapping declaration must first focus Inspector, got %v", model.focusPane)
+	}
+	for index, item := range model.detailItems {
+		if item.Kind != DetailItemMapping {
+			continue
+		}
+		model.detailCursor = index
+		pressWorkspaceKey(model, "enter")
+		if model.mapping == nil || model.focusPane != FocusMapping {
+			t.Fatal("mapping action did not open the Settings table")
+		}
+		return
+	}
+	t.Fatalf("Inspector offers no mapping action: %+v", model.detailItems)
 }
 
 func openInspectorTestPanel(t *testing.T, model *Model, panel detailPanel) {
@@ -1541,11 +1493,13 @@ func TestChartDetailsShareMappingContextAndRestoreEntryPoints(t *testing.T) {
 	}
 	packageCursor := model.cursor
 	press("enter")
+	openInspectorTestMapping(t, &model)
 	press("enter")
 	fromPackage, _ := model.inspectorContent(116, true)
 	if fromPackage != direct {
 		t.Fatalf("package entry lost common chart Details:\n%s", fromPackage)
 	}
+	press("esc")
 	press("esc")
 	press("esc")
 	if model.focusPane != FocusValues || model.cursor != packageCursor {
@@ -1612,6 +1566,15 @@ func TestMappingDetailsKeepRelatedValuesOutsideWorkspaceFilter(t *testing.T) {
 		t.Fatalf("hidden chart backlink lost: %+v", value)
 	}
 	press("esc")
+	value, ok = model.detailValue()
+	if !ok || !value.IsUDSOverrideVar || value.Path != "ENABLED" {
+		t.Fatal("related backlink did not preserve the preceding variable in its return chain")
+	}
+	press("esc")
+	value, ok = model.detailValue()
+	if !ok || value.Path != "config.enabled" || value.IsUDSOverrideVar {
+		t.Fatal("related variable did not return to its originating chart value")
+	}
 	press("esc")
 	if model.focusPane != FocusMapping || model.filterInput.Value() != "app" || model.cursor != 0 {
 		t.Fatal("related navigation changed the mapping origin or workspace filter")

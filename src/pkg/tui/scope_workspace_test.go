@@ -131,6 +131,7 @@ func TestWorkspaceLayoutsKeepFooterAndControlsWithinTerminal(t *testing.T) {
 			m.showHelp = false
 			m.inputMode = InputModeNormal
 			m.focusPane = FocusValues
+			m.statusMessage = ""
 			switch mode {
 			case "overview":
 				m.showOverview = true
@@ -151,6 +152,18 @@ func TestWorkspaceLayoutsKeepFooterAndControlsWithinTerminal(t *testing.T) {
 				lines := strings.Split(ansi.Strip(view), "\n")
 				if !strings.Contains(lines[len(lines)-1], "help") {
 					t.Fatalf("%s at %v lost persistent footer: %q", mode, size, lines[len(lines)-1])
+				}
+				if size[0] == 40 {
+					for _, status := range []string{"", "Updated the selected scope and retained the current configuration query"} {
+						m.statusMessage = status
+						compact := assertWorkspaceSize(t, m, size[0], size[1])
+						footer := strings.Split(compact, "\n")[size[1]-1]
+						for _, control := range []string{"esc back", "? help", "q quit"} {
+							if !strings.Contains(footer, control) {
+								t.Fatalf("%s at %v with status %q lost %q: %q", mode, size, status, control, footer)
+							}
+						}
+					}
 				}
 			}
 		}
@@ -235,5 +248,65 @@ func TestSmallDetailsInitialTraceActionIsVisible(t *testing.T) {
 	view := ansi.Strip(m.View())
 	if !strings.Contains(view, "> ") || !strings.Contains(view, "cluster") {
 		t.Fatalf("initial trace action and value identity must remain visible:\n%s", view)
+	}
+}
+
+func TestScopeOverlayCancelPreservesInspectorRouteAndQuery(t *testing.T) {
+	m := persistentWorkspaceModel(t)
+	resizeWorkspace(&m, 80, 24)
+	m.filterInput.SetValue("kind:helm")
+	m.updateFilteredValues()
+	pressWorkspaceKey(&m, "enter")
+	openInspectorTestPanel(t, &m, detailSources)
+	m.detailCursor = 3
+	pressWorkspaceKey(&m, "enter")
+	source := m.detailSource
+	pressWorkspaceKey(&m, "f")
+	for _, r := range "missing-chart" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	pressWorkspaceKey(&m, "esc")
+	if m.inputMode != InputModeNormal || m.focusPane != FocusInspector || m.detailPanel != detailSourceFile ||
+		m.detailSource != source || len(m.detailPanelHistory) != 2 || m.filterInput.Value() != "kind:helm" || m.currentChart != "All Charts" {
+		t.Fatal("canceling scope changed the existing inspector route, query, or scope")
+	}
+}
+
+func TestApplyingScopeClosesMappingAndRetainsQuery(t *testing.T) {
+	m := scopedWorkspaceModel()
+	resizeWorkspace(&m, 80, 24)
+	m.filterInput.SetValue("pkg:api")
+	m.updateFilteredValues()
+	m.selectNextCategory(4)
+	if len(m.filteredValues) != 1 || !m.filteredValues[0].IsPackageMapping {
+		t.Fatalf("fixture did not select a mapping declaration: %+v", m.filteredValues)
+	}
+	pressWorkspaceKey(&m, "enter")
+	if m.mapping != nil || m.focusPane != FocusInspector {
+		t.Fatal("Settings Enter should inspect the declaration before opening its mapping")
+	}
+	openInspectorTestMapping(t, &m)
+	table := m.mapping
+	pressWorkspaceKey(&m, "tab")
+	if m.focusPane != FocusInspector || m.mapping != table {
+		t.Fatal("mapping table could not move focus to its live inspector")
+	}
+	pressWorkspaceKey(&m, "shift+tab")
+	if m.focusPane != FocusMapping || m.mapping != table {
+		t.Fatal("mapping Inspector did not return focus to the same table")
+	}
+	pressWorkspaceKey(&m, "f")
+	if m.inputMode != InputModeScopeSelect {
+		t.Fatal("scope selection is unreachable from a mapping table")
+	}
+	for _, r := range "no-chart" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	pressWorkspaceKey(&m, "enter")
+	if m.currentChart != "package:no-chart" || m.mapping != nil || m.mappingRowDetail || m.detailRef != nil ||
+		m.focusPane != FocusValues || m.filterInput.Value() != "pkg:api" || m.detailPanel != detailSummary {
+		t.Fatal("applying a new scope did not clear mapping routes while retaining the query")
 	}
 }

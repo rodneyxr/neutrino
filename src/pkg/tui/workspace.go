@@ -10,7 +10,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
 )
 
 const (
@@ -106,51 +105,37 @@ func (m Model) layout() layoutMode {
 }
 
 func (m *Model) moveFocus(delta int) {
-	if m.focusPane == FocusMapping {
+	if m.focusPane == FocusComponents && m.layout() != layoutWide {
+		m.focusPane = m.centralFocus()
 		return
 	}
+	panes := []FocusPane{m.centralFocus(), FocusInspector}
+	if m.layout() == layoutWide {
+		panes = append([]FocusPane{FocusComponents}, panes...)
+	}
+	at := 0
+	for i, pane := range panes {
+		if pane == m.focusPane {
+			at = i
+			break
+		}
+	}
+	at = (at + delta + len(panes)) % len(panes)
+	m.focusPane = panes[at]
+	if m.focusPane == FocusInspector && m.mapping != nil {
+		m.mappingRowDetail = true
+	}
+	m.statusMessage = ""
+	m.buildDetailItems()
 	if m.focusPane == FocusInspector {
-		if m.mappingRowDetail {
-			return
-		}
-		m.focusPane = FocusValues
-		m.pathScroll = 0
-		m.pathScrollPause = 2
-		m.compScroll = 0
-		m.compScrollPause = 0
-		return
-	}
-	if m.focusPane == FocusValues {
-		m.focusPane = FocusComponents
-		if m.nextRail {
-			return
-		}
-		m.pathScroll = 0
-		m.pathScrollPause = 0
-		m.compScroll = 0
-		m.compScrollPause = 2
-	} else {
-		m.focusPane = FocusValues
-		m.pathScroll = 0
-		m.pathScrollPause = 2
-		m.compScroll = 0
-		m.compScrollPause = 0
+		m.ensureDetailCursorVisible()
 	}
 }
 
 func (m *Model) moveWithinFocusedPane(delta int) {
 	switch m.focusPane {
 	case FocusComponents:
-		if m.nextRail {
-			m.selectNextCategory(clamp(m.category+delta, 0, len(nextCategories)-1))
-			return
-		}
-		prevComp := m.componentCursor
-		m.componentCursor = clamp(m.componentCursor+delta, 0, len(m.chartNames)-1)
-		if m.componentCursor != prevComp {
-			m.compScroll = 0
-			m.compScrollPause = 2
-		}
+		m.moveScopeCursor(delta)
 	case FocusValues:
 		prevVal := m.cursor
 		m.cursor = clamp(m.cursor+delta, 0, len(m.filteredValues)-1)
@@ -159,7 +144,7 @@ func (m *Model) moveWithinFocusedPane(delta int) {
 			m.pathScrollPause = 2
 		}
 		m.ensureCursorVisible()
-		m.buildDetailItems()
+		m.syncInspectorSelection()
 	case FocusMapping:
 		m.moveMappingCursor(delta)
 	case FocusInspector:
@@ -173,23 +158,7 @@ func (m *Model) moveFocusedToBoundary(last bool) {
 	target := 0
 	switch m.focusPane {
 	case FocusComponents:
-		if m.nextRail {
-			if last {
-				m.selectNextCategory(len(nextCategories) - 1)
-			} else {
-				m.selectNextCategory(0)
-			}
-			return
-		}
-		prevComp := m.componentCursor
-		if last {
-			target = len(m.chartNames) - 1
-		}
-		m.componentCursor = clamp(target, 0, len(m.chartNames)-1)
-		if m.componentCursor != prevComp {
-			m.compScroll = 0
-			m.compScrollPause = 2
-		}
+		m.moveScopeBoundary(last)
 	case FocusValues:
 		prevVal := m.cursor
 		if last {
@@ -201,7 +170,7 @@ func (m *Model) moveFocusedToBoundary(last bool) {
 			m.pathScrollPause = 2
 		}
 		m.ensureCursorVisible()
-		m.buildDetailItems()
+		m.syncInspectorSelection()
 	case FocusMapping:
 		m.moveMappingBoundary(last)
 	case FocusInspector:
@@ -218,16 +187,7 @@ func (m *Model) moveFocusedToBoundary(last bool) {
 func (m *Model) jumpComponent(delta int) {
 	switch m.focusPane {
 	case FocusComponents:
-		if m.nextRail {
-			m.selectNextCategory(clamp(m.category+delta, 0, len(nextCategories)-1))
-			return
-		}
-		previous := m.componentCursor
-		m.componentCursor = clamp(m.componentCursor+delta, 0, len(m.chartNames)-1)
-		if m.componentCursor != previous {
-			m.compScroll = 0
-			m.compScrollPause = 2
-		}
+		m.moveScopeCursor(delta)
 	case FocusValues:
 		if len(m.filteredValues) == 0 {
 			return
@@ -240,7 +200,7 @@ func (m *Model) jumpComponent(delta int) {
 					m.pathScroll = 0
 					m.pathScrollPause = 2
 					m.ensureCursorVisible()
-					m.buildDetailItems()
+					m.syncInspectorSelection()
 					return
 				}
 			}
@@ -263,7 +223,7 @@ func (m *Model) jumpComponent(delta int) {
 			m.pathScroll = 0
 			m.pathScrollPause = 2
 			m.ensureCursorVisible()
-			m.buildDetailItems()
+			m.syncInspectorSelection()
 		}
 	}
 }
@@ -271,49 +231,26 @@ func (m *Model) jumpComponent(delta int) {
 func (m *Model) activateFocused() tea.Cmd {
 	switch m.focusPane {
 	case FocusComponents:
-		if m.nextRail {
-			m.focusPane = FocusValues
-			return nil
-		}
-		if len(m.chartNames) == 0 {
-			return nil
-		}
-		m.currentChart = m.chartNames[m.componentCursor]
-		m.updateFilteredValues()
-		m.cursor = 0
-		m.viewportOffset = 0
-		m.focusPane = FocusValues
-		m.pathScroll = 0
-		m.pathScrollPause = 2
-		m.buildDetailItems()
-		m.setStatus("Showing " + m.componentLabel(m.currentChart))
+		m.applyScopeCursor()
 	case FocusValues:
-		if len(m.filteredValues) == 0 || m.filteredValues[m.cursor].IsEmptyState {
+		if _, ok := m.selectedValue(); !ok {
 			return nil
 		}
-		m.detailRef = nil
-		m.traceHistory = nil
-		m.resetDetailPanels()
-		value := m.filteredValues[m.cursor]
-		if value.IsPackageMapping && value.ValueTarget != "" {
-			m.openMapping(value.mappingRef, FocusValues)
-			return nil
+		m.syncInspectorSelection()
+		if m.detailRef != nil {
+			m.resetInspectorRoute()
 		}
-		m.detailCursor = 0
-		m.detailScrollOffset = 0
-		m.detailSchemaShown = false
+		m.focusPane = FocusInspector
 		m.statusMessage = ""
 		m.buildDetailItems()
-		m.focusPane = FocusInspector
 		m.ensureDetailCursorVisible()
 	case FocusMapping:
 		if m.mapping != nil && m.mapping.cursor < len(m.mapping.rows) {
-			m.resetDetailPanels()
+			m.syncInspectorSelection()
+			if m.detailRef != nil {
+				m.resetInspectorRoute()
+			}
 			m.mappingRowDetail = true
-			m.detailRef = nil
-			m.detailCursor = 0
-			m.detailScrollOffset = 0
-			m.detailSchemaShown = false
 			m.statusMessage = ""
 			m.buildDetailItems()
 			m.focusPane = FocusInspector
@@ -355,16 +292,17 @@ func (m *Model) activateFocused() tea.Cmd {
 			return nil
 		}
 		if detail.relatedValue != nil {
-			m.resetDetailPanels()
-			m.detailRef = detail.relatedValue
-			m.detailCursor, m.detailScrollOffset = 0, 0
-			m.buildDetailItems()
+			detail.Kind = DetailItemTrace
+			m.followTrace(detail)
 		}
 	}
 	return nil
 }
 
 func (m *Model) beginFilter() {
+	m.mapping = nil
+	m.mappingRowDetail = false
+	m.focusPane = FocusValues
 	m.previousFilter = m.filterInput.Value()
 	m.allCategories = true
 	m.showOverview = false
@@ -432,8 +370,11 @@ func (m *Model) executeCommand(command commandDefinition) tea.Cmd {
 	case commandOverview:
 		m.showOverview = true
 		m.overviewOffset = 0
-		m.focusPane = FocusValues
+		m.focusPane = m.centralFocus()
 	case commandAllInputs:
+		m.mapping = nil
+		m.mappingRowDetail = false
+		m.focusPane = FocusValues
 		m.showOverview = false
 		m.allCategories = true
 		m.updateFilteredValues()
@@ -480,7 +421,7 @@ func (m *Model) toggleZarfSummary() {
 	m.updateFilteredValues()
 	m.cursor = 0
 	m.viewportOffset = 0
-	m.buildDetailItems()
+	m.syncInspectorSelection()
 	m.setStatus(toggleStatus("Package variable summary", m.showZarfSummary))
 }
 
@@ -489,7 +430,7 @@ func (m *Model) toggleUDSSummary() {
 	m.updateFilteredValues()
 	m.cursor = 0
 	m.viewportOffset = 0
-	m.buildDetailItems()
+	m.syncInspectorSelection()
 	m.setStatus(toggleStatus("Bundle override summary", m.showUDSSummary))
 }
 
@@ -508,7 +449,7 @@ func (m Model) selectedValue() (DisplayItem, bool) {
 }
 
 func (m *Model) openSelectedSource() tea.Cmd {
-	value, ok := m.detailValue()
+	value, ok := m.focusedActionValue()
 	if !ok {
 		m.setStatus("No source location for the selected value")
 		return nil
@@ -516,7 +457,7 @@ func (m *Model) openSelectedSource() tea.Cmd {
 	if len(m.inspectorSources(value)) > 0 {
 		if m.focusPane != FocusInspector {
 			m.focusPane = FocusInspector
-			m.resetDetailPanels()
+			m.resetInspectorRoute()
 			m.buildDetailItems()
 		}
 		m.openDetailPanel(detailSources, nil)
@@ -527,7 +468,7 @@ func (m *Model) openSelectedSource() tea.Cmd {
 }
 
 func (m *Model) copySelectedPath() tea.Cmd {
-	value, ok := m.detailValue()
+	value, ok := m.focusedActionValue()
 	if !ok {
 		m.setStatus("No value path to copy")
 		return nil
@@ -581,26 +522,10 @@ func (m Model) workspaceView() string {
 	}
 
 	var body string
-	if m.focusPane == FocusMapping {
-		body = m.mappingPane(width, bodyHeight)
-	} else if m.focusPane == FocusInspector {
-		body = m.inspectorPane(width, bodyHeight)
-	} else if m.showOverview {
+	if m.showOverview {
 		body = m.overviewPane(width, bodyHeight)
-	} else if m.nextRail {
-		body = m.nextCategoryWorkspace(width, bodyHeight)
-	} else if m.layout() == layoutCompact {
-		if m.focusPane == FocusComponents {
-			body = m.componentPane(width, bodyHeight)
-		} else {
-			body = m.valuesPane(width, bodyHeight)
-		}
 	} else {
-		compWidth := m.componentWidth(width)
-		body = lipgloss.JoinHorizontal(lipgloss.Top,
-			m.componentPane(compWidth, bodyHeight),
-			m.valuesPane(width-compWidth, bodyHeight),
-		)
+		body = m.persistentWorkspace(width, bodyHeight)
 	}
 
 	body = fitWorkspace(body, width, bodyHeight)
@@ -632,9 +557,35 @@ func layoutLabel(mode layoutMode) string {
 	if mode == layoutCompact {
 		return "single pane"
 	}
+	if mode == layoutWide {
+		return "3 panes"
+	}
 	return "2 panes"
 }
 func (m Model) workspaceFooter(width int) string {
+	if width < 60 && m.inputMode == InputModeNormal {
+		action := "enter inspect"
+		switch {
+		case m.showOverview:
+			action = "8 browse"
+		case m.focusPane == FocusComponents:
+			action = "enter apply"
+		case m.focusPane == FocusInspector:
+			action = "enter open"
+			if len(m.detailItems) == 0 {
+				action = "j/k scroll"
+			}
+		}
+		controls := "esc back  ? help  q quit"
+		if m.statusMessage != "" {
+			action = truncateCell(m.statusMessage, max(1, width-lipgloss.Width(controls)-4))
+		}
+		line := action + "  " + controls
+		if lipgloss.Width(line) > width-2 {
+			line = controls
+		}
+		return footerBarStyle.Width(width).Render(truncateCell(line, width-2))
+	}
 	var primary string
 	switch m.inputMode {
 	case InputModeFilter:
@@ -645,39 +596,40 @@ func (m Model) workspaceFooter(width int) string {
 		switch {
 		case m.showOverview:
 			primary = helpStyle.Render("j/k scroll  8 browse  f scope  ? help  q quit")
+		case m.focusPane == FocusComponents:
+			primary = helpStyle.Render("↑↓ scope  ← parent  → expand  enter apply  tab settings  ? help")
 		case m.focusPane == FocusMapping:
-			primary = helpStyle.Render("j/k move  enter details  a other chart paths  y copy package path  esc back")
+			primary = helpStyle.Render("j/k select  enter inspector  tab panes  f scope  esc back  ? help")
 		case m.focusPane == FocusInspector:
 			primary = helpStyle.Render(m.inspectorFooter(width))
 		default:
 			if m.nextRail {
-				primary = helpStyle.Render("0 overview  1-7 category  8 all  f scope  / search  c changed  u unresolved  ? help  q quit")
+				primary = helpStyle.Render("tab panes  j/k select  enter inspector  / search  f scope  1-7 category  8 all  ? help")
 			} else {
-				primary = helpStyle.Render("tab/arrows panes  j/k move  J/K 5-lines  n/N comp  enter details  / search  : cmd  ? help  q quit")
+				primary = helpStyle.Render("tab panes  j/k select  enter inspector  / search  f scope  : commands  ? help")
 			}
 		}
 	}
 	if m.inputMode == InputModeNormal && m.statusMessage != "" {
-		hint := helpStyle.Render(": commands  ? help")
-		if m.focusPane == FocusInspector {
-			hint = helpStyle.Render("? help  esc back")
-		}
+		hint := helpStyle.Render("esc back  ? help  q quit")
 		gap := width - lipgloss.Width(m.statusMessage) - lipgloss.Width(hint) - 2
 		if gap < 1 {
-			return footerBarStyle.Width(width).Render(truncateCell(m.statusMessage, width-2))
+			return footerBarStyle.Width(width).Render(truncateCell(m.statusMessage, width-lipgloss.Width(hint)-3) + " " + hint)
 		}
 		return footerBarStyle.Width(width).Render(m.statusMessage + strings.Repeat(" ", gap) + hint)
 	}
 	if (width < 100 || m.nextRail && width < 115) && m.inputMode == InputModeNormal && m.statusMessage == "" {
-		primary = helpStyle.Render("enter open  / search  f scope  ? help")
-		if m.showOverview {
-			primary = helpStyle.Render("j/k scroll  8 browse  ? help")
-		}
-		if m.focusPane == FocusMapping {
-			primary = helpStyle.Render("j/k move  enter open  esc back  ? help")
-		}
-		if m.focusPane == FocusInspector {
-			primary = helpStyle.Render(m.inspectorFooter(width))
+		switch {
+		case m.showOverview:
+			primary = helpStyle.Render("j/k scroll  8 browse  esc back  ? help  q quit")
+		case m.focusPane == FocusComponents:
+			primary = helpStyle.Render("←/→ fold  enter apply  tab panes  esc back  ? help  q quit")
+		case m.focusPane == FocusMapping:
+			primary = helpStyle.Render("enter inspector  tab panes  f scope  esc back  ? help  q quit")
+		case m.focusPane == FocusInspector:
+			primary = helpStyle.Render("enter open  tab panes  esc back  ? help  q quit")
+		default:
+			primary = helpStyle.Render("enter inspect  tab panes  / search  f scope  ? help  q quit")
 		}
 	}
 	line := primary
@@ -789,17 +741,14 @@ func (m Model) componentWidth(totalWidth int) int {
 }
 
 func (m Model) columnWidths(innerWidth int) (pathWidth, valWidth, typeWidth, srcWidth int, showMetadata bool) {
-	if innerWidth < 65 {
-		pathWidth = max(8, min(38, innerWidth*55/100))
-		valWidth = max(1, innerWidth-pathWidth-3)
-		return pathWidth, valWidth, 0, 0, false
+	if innerWidth < 52 {
+		pathWidth = max(8, innerWidth*58/100)
+		return pathWidth, max(1, innerWidth-pathWidth-3), 0, 0, false
 	}
-
 	typeWidth = 10
-	pathWidth = clamp(innerWidth*38/100, 30, 44)
-	valWidth = clamp(innerWidth*28/100, 18, 30)
-	srcWidth = max(12, innerWidth-pathWidth-valWidth-typeWidth-5)
-	return pathWidth, valWidth, typeWidth, srcWidth, true
+	valWidth = clamp(innerWidth/3, 10, 20)
+	pathWidth = max(8, innerWidth-valWidth-typeWidth-4)
+	return pathWidth, valWidth, typeWidth, 0, true
 }
 
 func (m Model) currentPathWidth() int {
@@ -807,10 +756,7 @@ func (m Model) currentPathWidth() int {
 	if width < 1 {
 		width = 100
 	}
-	valuesWidth := width
-	if m.layout() != layoutCompact {
-		valuesWidth = width - m.componentWidth(width)
-	}
+	valuesWidth := geometryFor(width).settings
 	innerWidth := max(1, valuesWidth-4)
 	pathWidth, _, _, _, _ := m.columnWidths(innerWidth)
 	return pathWidth
@@ -908,129 +854,62 @@ func onOff(enabled bool) string {
 }
 
 func (m Model) valuesPane(width, height int) string {
-	focused := m.focusPane == FocusValues
-	innerWidth := max(1, width-4)
-	contentHeight := max(1, height-4)
+	inner := max(1, width-4)
 	var content strings.Builder
-	content.WriteString(paneHeadingStyle.Render("VALUES"))
-	if filter := m.filterInput.Value(); filter != "" {
-		content.WriteString(filterStyle.Render("  /" + truncateCell(filter, max(1, innerWidth-12))))
+	// Sanitize and size untrusted text before applying our own styles. Stripping
+	// ANSI after rendering would also erase the selected-row highlight.
+	add := func(line string) { content.WriteString(line + "\n") }
+	add(paneHeadingStyle.Render("Settings"))
+	add(filterStyle.Render(m.settingsQueryLine(inner)))
+	add(helpStyle.Render(m.settingsFilterLine(inner)))
+	pathWidth, valWidth, typeWidth, _, metadata := m.columnWidths(inner)
+	heading := fmt.Sprintf("  %-*s %-*s", pathWidth, "Setting", valWidth, "Value")
+	if metadata {
+		heading += " Kind"
 	}
-	content.WriteByte('\n')
-
-	pathWidth, valWidth, typeWidth, srcWidth, showMetadata := m.columnWidths(innerWidth)
-	if showMetadata {
-		content.WriteString(tableHeaderStyle.Render(truncateCell(fmt.Sprintf("  %-*s %-*s %-*s %s", pathWidth, "VALUE PATH", valWidth, "VALUE", typeWidth, "TYPE", "SOURCE"), innerWidth)))
-	} else {
-		content.WriteString(tableHeaderStyle.Render(fmt.Sprintf("  %-*s %s", pathWidth, "VALUE PATH", "VALUE")))
-	}
-	content.WriteByte('\n')
-
-	maxLines := contentHeight
-	linesUsed := 0
+	add(tableHeaderStyle.Render(truncateCell(heading, inner)))
+	available := max(1, height-6)
+	used := 0
+	lastOwner := ""
 	start := clamp(m.viewportOffset, 0, max(0, len(m.filteredValues)-1))
-	lastComponent := ""
-	lastSection := ""
-	for index := start; index < len(m.filteredValues); index++ {
+	for index := start; index < len(m.filteredValues) && used < available; index++ {
 		value := m.filteredValues[index]
-		group := valueGroupKey(value)
-		if index == start || group != lastComponent {
-			if linesUsed+2 > maxLines {
+		owner := valueGroupKey(value)
+		if index == start || owner != lastOwner {
+			if used+2 > available {
 				break
 			}
-			content.WriteString(componentBandStyle.Render(componentBand(m.valueComponentLabel(value, innerWidth), innerWidth)))
-			content.WriteByte('\n')
-			linesUsed++
-			lastComponent = group
-			lastSection = ""
+			add(groupHeadingStyle.Render(truncateCell(m.valueComponentLabel(value, inner), inner)))
+			used++
+			lastOwner = owner
 		}
-		section := valueSection(value)
-		if section != lastSection {
-			if lastSection != "" {
-				if linesUsed+3 > maxLines {
-					break
-				}
-				content.WriteByte('\n')
-				linesUsed++
-			} else if linesUsed+2 > maxLines {
-				break
-			}
-			content.WriteString(groupHeadingStyle.Render(truncateCell("  "+section, innerWidth)))
-			content.WriteByte('\n')
-			linesUsed++
-			lastSection = section
+		safe := value
+		safe.DefaultValue = m.displayValue(value, value.DefaultValue)
+		safe.OverrideValue = m.displayValue(value, value.OverrideValue)
+		path := truncateCell(m.valueListPath(value), pathWidth)
+		if index == m.cursor && m.pathScroll > 0 {
+			path = scrollCell(m.valueListPath(value), m.pathScroll, pathWidth)
 		}
-		if linesUsed+1 > maxLines {
-			break
+		line := fmt.Sprintf("%-*s %-*s", pathWidth, path, valWidth, truncateCell(displayValue(safe), valWidth))
+		if metadata {
+			line += " " + fmt.Sprintf("%-*s", typeWidth, truncateCell(displayKind(value), typeWidth))
 		}
-
 		marker := "  "
 		if index == m.cursor {
 			marker = "> "
 		}
-		displayPath := m.valueListPath(value)
-		path := truncateCell(displayPath, pathWidth)
-		if index == m.cursor && m.pathScroll > 0 {
-			path = scrollCell(displayPath, m.pathScroll, pathWidth)
-		}
-		safeValue := value
-		safeValue.DefaultValue = m.displayValue(value, value.DefaultValue)
-		safeValue.OverrideValue = m.displayValue(value, value.OverrideValue)
-		defaultValue := displayValue(safeValue)
-		if !showMetadata && value.IsPackageValue && value.MappingStatus != "" {
-			defaultValue = value.MappingStatus + ": " + defaultValue
-		}
-		defaultValue = truncateCell(defaultValue, valWidth)
-		kind := displayKind(value)
-		if m.valueUnresolved(value) && !runtimeReference(value) && !value.Wildcard {
-			kind = "unresolved"
-		} else if m.valueChanged(value) {
-			kind = "changed"
-		}
-		var line string
-		if showMetadata {
-			source := ""
-			count := len(value.Locations)
-			first := introspect.ValueUsageLocation{}
-			if count > 0 {
-				first = value.Locations[0]
-			}
-			if len(value.ZarfReferences) > 0 {
-				count, first = value.ZarfLocationCount, value.ZarfFirstLocation
-			}
-			if count > 1 {
-				source = fmt.Sprintf("%d locations", count)
-			} else if count == 1 {
-				source = filepath.Base(first.File)
-				if runtimeReference(value) {
-					source = "template use"
-				}
-				if first.Line > 0 {
-					source += fmt.Sprintf(":%d", first.Line)
-				}
-			}
-			source = truncateCell(source, srcWidth)
-			line = fmt.Sprintf("%s%-*s %-*s %-*s %s", marker, pathWidth, path, valWidth, defaultValue, typeWidth, kind, source)
-		} else {
-			line = fmt.Sprintf("%s%-*s %s", marker, pathWidth, path, defaultValue)
-		}
-		line = truncateCell(line, innerWidth)
+		line = truncateCell(marker+line, inner)
 		if index == m.cursor {
-			content.WriteString(selectedRowStyle.Render(line))
+			add(selectedRowStyle.Render(line))
 		} else {
-			content.WriteString(kindStyleFor(value).Render(line))
+			add(kindStyleFor(value).Render(line))
 		}
-		content.WriteByte('\n')
-		linesUsed++
+		used++
 	}
 	if len(m.filteredValues) == 0 {
-		message := "No values match the current filters."
-		if m.nextRail && m.filterInput.Value() == "" {
-			message = "No items in this category for this component."
-		}
-		content.WriteString(helpStyle.Render(truncateCell(message, innerWidth)))
+		add(helpStyle.Render("No settings match"))
 	}
-	return paneFrame(width, height, focused).Render(strings.TrimSuffix(content.String(), "\n"))
+	return paneFrame(width, height, m.focusPane == FocusValues).Render(strings.TrimSuffix(content.String(), "\n"))
 }
 
 // The package band carries the owner; keep the full path on DisplayItem for
@@ -1054,6 +933,9 @@ func (m Model) valueComponentLabel(value DisplayItem, width int) string {
 			return "UDS Next bundle · " + value.PackageName
 		}
 		if value.PackageName != "" {
+			if runtimeReference(value) {
+				return "Zarf package · " + value.PackageName
+			}
 			return "Zarf Package Values · " + value.PackageName
 		}
 	}
@@ -1111,28 +993,13 @@ func valueSection(value DisplayItem) string {
 }
 
 func (m Model) valueLineCount(start, end int) int {
-	if start < 0 || end < start || start >= len(m.filteredValues) {
-		return 0
-	}
-	end = min(end, len(m.filteredValues)-1)
 	lines := 0
-	lastComponent := ""
-	lastSection := ""
-	for index := start; index <= end; index++ {
-		value := m.filteredValues[index]
-		group := valueGroupKey(value)
-		if index == start || group != lastComponent {
+	owner := ""
+	for i := start; i <= end && i < len(m.filteredValues); i++ {
+		next := valueGroupKey(m.filteredValues[i])
+		if i == start || next != owner {
 			lines++
-			lastComponent = group
-			lastSection = ""
-		}
-		section := valueSection(value)
-		if section != lastSection {
-			if lastSection != "" {
-				lines++
-			}
-			lines++
-			lastSection = section
+			owner = next
 		}
 		lines++
 	}
@@ -1242,51 +1109,25 @@ func kindStyleFor(value DisplayItem) lipgloss.Style {
 
 func (m Model) inspectorPane(width, height int) string {
 	focused := m.focusPane == FocusInspector
-	innerWidth := max(1, width-4)
+	inner := max(1, width-4)
+	heading := paneHeadingStyle.Render("Inspector")
+	frame := paneFrame(width, height, focused)
 	if _, ok := m.detailValue(); !ok {
-		return paneFrame(width, height, focused).Render(paneHeadingStyle.Render("DETAILS") + "\n" + helpStyle.Render("Select a value to inspect it."))
+		return frame.Render(heading + "\n" + helpStyle.Render("Select a setting."))
 	}
-	content, _ := m.inspectorContent(innerWidth, focused)
-	visible := max(1, height-3)
+	content, _ := m.inspectorContent(inner, focused)
+	visible := max(1, height-4)
 	total := strings.Count(content, "\n") + 1
+	if total <= height-3 {
+		return frame.Render(heading + "\n" + content)
+	}
 	offset := clamp(m.detailScrollOffset, 0, max(0, total-visible))
-	position := fmt.Sprintf("%d–%d / %d lines", offset+1, min(total, offset+visible), total)
-	context := "Details"
-	if offset > 0 {
-		if value, ok := m.detailValue(); ok {
-			context = value.Path
-		}
-	}
-	gap := max(1, innerWidth-lipgloss.Width(position)-2)
-	progress := fmt.Sprintf("%-*s  %s", gap, truncateCell(context, gap), position)
-	frame := paneFrame(width, height, focused).Border(lipgloss.RoundedBorder())
-	if m.detailPanel == detailSummary && total <= height-2 {
-		return frame.Render(content + strings.Repeat("\n", max(0, height-2-lipgloss.Height(content))))
-	}
 	body := clipLinesAt(content, visible, offset)
-	body += strings.Repeat("\n", max(0, visible-lipgloss.Height(body)))
-	return frame.Render(body + "\n" + helpStyle.Render(truncateCell(progress, innerWidth)))
+	position := fmt.Sprintf("%d–%d / %d", offset+1, min(total, offset+visible), total)
+	return frame.Render(heading + "\n" + body + "\n" + helpStyle.Render(truncateCell(position, inner)))
 }
 
-func (m Model) detailScrollLimit() int {
-	width := m.windowWidth
-	height := m.windowHeight
-	if width < 1 {
-		width = 100
-	}
-	if height < 1 {
-		height = 30
-	}
-	bodyHeight := height - lipgloss.Height(m.workspaceHeader(width)) - lipgloss.Height(m.workspaceFooter(width))
-	bodyHeight = max(4, bodyHeight)
-	content, _ := m.inspectorContent(max(1, width-4), true)
-	return max(0, len(strings.Split(content, "\n"))-max(1, bodyHeight-3))
-}
-
-func (m *Model) ensureDetailCursorVisible() {
-	if len(m.detailItems) == 0 {
-		return
-	}
+func (m Model) inspectorVisibleLines() int {
 	width, height := m.windowWidth, m.windowHeight
 	if width < 1 {
 		width = 100
@@ -1294,8 +1135,21 @@ func (m *Model) ensureDetailCursorVisible() {
 	if height < 1 {
 		height = 30
 	}
-	_, row := m.inspectorContent(max(1, width-4), true)
-	visible := max(1, height-lipgloss.Height(m.workspaceHeader(width))-lipgloss.Height(m.workspaceFooter(width))-3)
+	bodyHeight := height - lipgloss.Height(m.workspaceHeader(width)) - lipgloss.Height(m.workspaceFooter(width))
+	return max(1, bodyHeight-4)
+}
+
+func (m Model) detailScrollLimit() int {
+	content, _ := m.inspectorContent(max(1, m.inspectorWidth()-4), true)
+	return max(0, strings.Count(content, "\n")+1-m.inspectorVisibleLines())
+}
+
+func (m *Model) ensureDetailCursorVisible() {
+	if len(m.detailItems) == 0 {
+		return
+	}
+	_, row := m.inspectorContent(max(1, m.inspectorWidth()-4), true)
+	visible := m.inspectorVisibleLines()
 	if row < m.detailScrollOffset {
 		m.detailScrollOffset = row
 	} else if row >= m.detailScrollOffset+visible {
@@ -1392,18 +1246,14 @@ func (m Model) commandPaletteView(width, height int) string {
 func (m Model) helpView(width, height int) string {
 	content := titleStyle.Render("KEYBOARD HELP") + "\n\n"
 	content += "0 / 8             overview / all inputs\n" + "c / u             changed / unresolved filter\n"
-	navigation := "jump next / previous component"
-	space := "select component / Details authoring"
-	enter := "details / mapping / mapped value"
+	navigation := "next / previous owner group"
+	space := "apply scope / Inspector authoring"
+	enter := "apply scope / inspect / follow action"
 	if m.nextRail {
-		content += "1–7               select category\nTab / Shift+Tab   switch Categories / Values\n"
-		navigation = "next / previous group or category"
-		space = "focus values / Details authoring"
-		enter = "focus values / details / mapping"
-	} else {
-		content += "Tab / Shift+Tab   switch Components / Values\n"
+		content += "1–7               category filter; 8 all\n1 Bundle vars · 2 Next files · 3 Zarf vars\n4 Package values · 5 Mappings & uses\n6 Helm values · 7 Legacy overrides\n"
 	}
-	content += "h / l, ← / →      focus left / right pane\n" +
+	content += "Tab / Shift+Tab   Scope / Settings / Inspector\n" +
+		"h / l, ← / →      pane focus; tree collapse/expand\n" +
 		"j / k, ↑ / ↓      move 1 line in focused pane\n" +
 		"J / K             jump 5 lines in focused pane\n" +
 		"n / N, ] / [     " + navigation + "\n" +
@@ -1542,7 +1392,7 @@ func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.updateFilteredValues()
 		m.cursor = 0
 		m.viewportOffset = 0
-		m.buildDetailItems()
+		m.syncInspectorSelection()
 		m.setStatus("Filter edit cancelled")
 	default:
 		var cmd tea.Cmd
@@ -1679,7 +1529,7 @@ func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.nextRail && (m.focusPane == FocusComponents || m.focusPane == FocusValues) {
+	if m.nextRail {
 		key := msg.String()
 		if len(key) == 1 && key[0] >= '1' && key[0] <= '7' {
 			m.selectNextCategory(int(key[0] - '1'))
@@ -1709,21 +1559,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if m.focusPane == FocusMapping || m.mappingRowDetail {
-		switch msg.String() {
-		case "q", "ctrl+c", "j", "k", "J", "K", "up", "down", "g", "G", "pgup", "pgdown", "enter", "esc", "?", "y":
-		case "p", "o", "b", " ", "space":
-			if m.focusPane != FocusInspector {
-				return m, nil
-			}
-		case "a":
-			if m.focusPane != FocusMapping {
-				return m, nil
-			}
-		default:
-			return m, nil
-		}
-	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -1732,23 +1568,17 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab":
 		m.moveFocus(-1)
 	case "h", "left":
-		if m.focusPane == FocusMapping || m.mappingRowDetail {
-			break
-		}
-		if m.focusPane == FocusInspector {
-			m.focusPane = FocusValues
+		if m.focusPane == FocusComponents {
+			m.scopeTreeLeft()
 		} else {
-			m.focusPane = FocusComponents
+			m.moveFocus(-1)
 		}
-		m.pathScroll = 0
-		m.pathScrollPause = 2
 	case "l", "right":
-		if m.focusPane == FocusMapping || m.mappingRowDetail {
-			break
+		if m.focusPane == FocusComponents {
+			m.scopeTreeRight()
+		} else {
+			m.moveFocus(1)
 		}
-		m.focusPane = FocusValues
-		m.pathScroll = 0
-		m.pathScrollPause = 2
 	case "j", "down":
 		m.moveWithinFocusedPane(1)
 	case "k", "up":
@@ -1772,8 +1602,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.showOverview {
 			m.showOverview = false
-			m.allCategories = true
-			m.updateFilteredValues()
+			m.focusPane = m.centralFocus()
 			return m, nil
 		}
 		cmd := m.activateFocused()
@@ -1781,14 +1610,16 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "0":
 		m.showOverview = !m.showOverview
 		m.overviewOffset = 0
-		m.focusPane = FocusValues
+		m.focusPane = m.centralFocus()
 	case "8":
+		m.mapping = nil
+		m.mappingRowDetail = false
 		m.showOverview = false
 		m.allCategories = true
 		m.focusPane = FocusValues
 		m.updateFilteredValues()
 		m.cursor, m.viewportOffset = 0, 0
-		m.buildDetailItems()
+		m.syncInspectorSelection()
 	case "c":
 		m.focusStatus("changed")
 	case "u":
@@ -1798,6 +1629,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mapping.showOthers = !m.mapping.showOthers
 			m.mapping.selectRows()
 			m.ensureMappingCursorVisible()
+			m.syncInspectorSelection()
 		}
 	case "/":
 		m.beginFilter()
@@ -1822,7 +1654,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detailRef = nil
 			m.detailCursor, m.detailScrollOffset = 0, 0
 			m.buildDetailItems()
-		} else if m.mappingRowDetail {
+		} else if m.focusPane == FocusInspector && m.mappingRowDetail {
 			m.mappingRowDetail = false
 			m.detailScrollOffset = 0
 			m.focusPane = FocusMapping
@@ -1835,16 +1667,20 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detailCursor = screen.returnDetailCursor
 			m.detailScrollOffset = screen.returnDetailOffset
 			m.detailPanel, m.detailPanelHistory, m.detailSource = screen.returnPanel, screen.returnPanels, screen.returnSource
+			m.traceHistory = screen.returnTraceHistory
+			m.inspectorSelection = m.liveSelectionKey()
 			m.buildDetailItems()
 		} else if m.focusPane == FocusInspector {
-			m.focusPane = FocusValues
+			m.focusPane = m.centralFocus()
 			m.detailScrollOffset = 0
+		} else if m.focusPane == FocusComponents {
+			m.focusPane = m.centralFocus()
 		} else if m.filterInput.Value() != "" {
 			m.filterInput.SetValue("")
 			m.updateFilteredValues()
 			m.cursor = 0
 			m.viewportOffset = 0
-			m.buildDetailItems()
+			m.syncInspectorSelection()
 			m.setStatus("Value filter cleared")
 		}
 	case " ", "space":

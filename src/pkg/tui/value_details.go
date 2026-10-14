@@ -168,10 +168,10 @@ func commonFileParent(paths []string) string {
 // detailValue resolves the same chart identity regardless of the entry point.
 // A mapping-only supplied path has no invented template locations or default.
 func (m Model) detailValue() (DisplayItem, bool) {
-	if m.focusPane == FocusInspector && m.detailRef != nil {
+	if m.detailRef != nil {
 		return *m.detailRef, true
 	}
-	if !m.mappingRowDetail {
+	if m.mapping == nil {
 		return m.selectedValue()
 	}
 	if m.mapping == nil || m.mapping.cursor < 0 || m.mapping.cursor >= len(m.mapping.rows) {

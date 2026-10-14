@@ -273,10 +273,7 @@ func (m Model) inspectorDocument(value DisplayItem) inspectorDocument {
 	description := inspectorDescription(value)
 	if description != "" {
 		field("Description", description)
-		width := m.windowWidth
-		if width < 1 {
-			width = 100
-		}
+		width := m.inspectorWidth()
 		innerWidth := max(1, width-4)
 		labelWidth := min(15, max(8, innerWidth/3))
 		if strings.Count(wrapCell(description, max(1, innerWidth-labelWidth-1)), "\n") >= 2 {
@@ -284,6 +281,9 @@ func (m Model) inspectorDocument(value DisplayItem) inspectorDocument {
 		}
 	}
 	technical := m.technicalItems(value)
+	if value.IsPackageMapping && !runtimeReference(value) && value.mappingRef != nil {
+		action("Explore mapped settings", DetailItem{Kind: DetailItemMapping, Mapping: value.mappingRef.usage, mappingRef: value.mappingRef})
+	}
 	for _, detail := range technical {
 		if detail.Kind != DetailItemMapping || detail.Mapping.TargetPath == "" || detail.Mapping.Runtime {
 			continue
@@ -385,6 +385,7 @@ func (m Model) inspectorFooter(width int) string {
 	if width < 60 {
 		return text + "  ? help"
 	}
+	text += "  tab panes"
 	if value, ok := m.detailValue(); ok && m.detailPanel == detailSummary {
 		if m.canViewFullValue(value) {
 			text += "  v value"
@@ -396,7 +397,7 @@ func (m Model) inspectorFooter(width int) string {
 			text += "  s schema"
 		}
 	}
-	return text + "  ? help"
+	return text + "  ? help  q quit"
 }
 
 func inspectorRawValue(value DisplayItem) interface{} {

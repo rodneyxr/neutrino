@@ -106,6 +106,8 @@ func (m Model) consolidateNextZarfVariables(values []DisplayItem, filter string)
 }
 
 func (m *Model) selectNextCategory(index int) {
+	m.mapping = nil
+	m.mappingRowDetail = false
 	if !m.allCategories {
 		m.categoryCursors[m.category], m.categoryOffsets[m.category] = m.cursor, m.viewportOffset
 	}
@@ -117,7 +119,7 @@ func (m *Model) selectNextCategory(index int) {
 	m.viewportOffset = clamp(m.categoryOffsets[index], 0, m.cursor)
 	m.pathScroll = 0
 	m.pathScrollPause = 2
-	m.buildDetailItems()
+	m.syncInspectorSelection()
 }
 
 func (m Model) nextCategoryRail(width, height int) string {

@@ -126,6 +126,10 @@ type Model struct {
 	// State
 	inputMode          InputMode
 	focusPane          FocusPane
+	inspectorSelection string
+	scopeExpanded      map[string]bool
+	scopeTreeKey       string
+	scopeReturnFocus   FocusPane
 	cursor             int
 	componentCursor    int
 	detailCursor       int
@@ -167,17 +171,11 @@ type Model struct {
 func NewModel(report introspect.InspectionReport) Model {
 
 	components := report.Components
-	componentOrder := report.ComponentOrder
 	pkgVariables := report.Variables
 
-	// Initialize charts list in chronological definition order
-	charts := make([]string, 0, len(componentOrder)+1)
-	charts = append(charts, "All Charts")
-	for _, k := range componentOrder {
-		if _, ok := components[k]; ok {
-			charts = append(charts, k)
-		}
-	}
+	// Keep package/chart identity order deterministic even when a report omits
+	// optional ComponentOrder entries.
+	charts := append([]string{"All Charts"}, orderedScopeCharts(report)...)
 
 	currentChart := "All Charts"
 
@@ -213,11 +211,12 @@ func NewModel(report introspect.InspectionReport) Model {
 		valuePolicy:          newPackageValuesPolicy(report),
 		bundle:               report.Bundle,
 		nextRail:             report.Bundle != nil && report.Bundle.Format == "next",
+		allCategories:        report.Bundle != nil && report.Bundle.Format == "next",
 		showZarfSummary:      len(pkgVariables) > 0 || report.Bundle != nil && report.Bundle.Format == "next",
 	}
 
 	m.updateFilteredValues()
-	if m.nextRail && m.categoryCounts[m.category] == 0 {
+	if m.nextRail && !m.allCategories && m.categoryCounts[m.category] == 0 {
 		for i, count := range m.categoryCounts {
 			if count > 0 {
 				m.category = i
@@ -226,7 +225,8 @@ func NewModel(report introspect.InspectionReport) Model {
 			}
 		}
 	}
-	m.buildDetailItems()
+	m.syncScopeCursor()
+	m.syncInspectorSelection()
 	return m
 }
 
@@ -239,7 +239,7 @@ func (m *Model) updateFilteredValues() {
 
 	// Package Values are package-level inputs, not chart defaults. Keep them
 	// visible even when a package contains no charts.
-	if m.currentChart == "All Charts" || strings.HasPrefix(m.currentChart, "package:") {
+	if m.currentChart == "All Charts" || m.currentChart == "bundle:inputs" || strings.HasPrefix(m.currentChart, "package:") {
 		for _, entry := range m.valuePolicy.catalog().packages {
 			item := packageValueItem(entry, "Zarf Package Values")
 			if matchesValueFilter(item, filter) {
@@ -289,43 +289,68 @@ func (m *Model) updateFilteredValues() {
 		}
 	}
 
-	// Add UDS summary items if the UDS summary toggle is on
-	if m.showUDSSummary {
-		for _, ov := range m.udsOverrideValues {
-			destComponent := fmt.Sprintf("%s/%s/%s", ov.PackageName, ov.ComponentName, ov.ChartName)
-			if filter == "" || strings.Contains(strings.ToLower(ov.Path), strings.ToLower(filter)) {
-				newValues = append(newValues, DisplayItem{
-					ValueUsage: introspect.ValueUsage{
-						Path:         ov.Path,
-						DefaultValue: ov.OriginalDefault,
-					},
-					Component:          "UDS Bundle Overrides",
-					IsUDSOverrideValue: true,
-					IsSummaryItem:      true,
-					OverrideValue:      ov.Value,
-					OriginalDefault:    ov.OriginalDefault,
-					SummaryComponent:   destComponent,
-				})
+	// Keep overrides whose destination row is unavailable. The summary toggle
+	// controls only extra copies of overrides already shown with their chart.
+	for _, ov := range m.udsOverrideValues {
+		destComponent := fmt.Sprintf("%s/%s/%s", ov.PackageName, ov.ComponentName, ov.ChartName)
+		chartHasOverride := false
+		if chart := m.components[destComponent]; chart != nil {
+			for _, chartOverride := range chart.UDSOverrideValues {
+				if chartOverride.Path == ov.Path {
+					chartHasOverride = true
+					break
+				}
 			}
 		}
-		for _, ov := range m.udsOverrideVariables {
-			destComponent := fmt.Sprintf("%s/%s/%s", ov.PackageName, ov.ComponentName, ov.ChartName)
-			searchStr := strings.ToLower(ov.Name + " " + ov.Path)
-			if filter == "" || strings.Contains(searchStr, strings.ToLower(filter)) {
-				newValues = append(newValues, DisplayItem{
-					ValueUsage: introspect.ValueUsage{
-						Path:         ov.Name,
-						DefaultValue: ov.Default,
-					},
-					Component:         "UDS Bundle Overrides",
-					IsUDSOverrideVar:  true,
-					IsSummaryItem:     true,
-					UDSVarPath:        ov.Path,
-					UDSVarDescription: ov.Description,
-					OriginalDefault:   ov.OriginalDefault,
-					SummaryComponent:  destComponent,
-				})
+		if chartHasOverride && !m.showUDSSummary {
+			continue
+		}
+		if filter == "" || strings.Contains(strings.ToLower(ov.Path), strings.ToLower(filter)) {
+			newValues = append(newValues, DisplayItem{
+				ValueUsage: introspect.ValueUsage{
+					Path:         ov.Path,
+					DefaultValue: ov.OriginalDefault,
+				},
+				Component:          "UDS Bundle Overrides",
+				PackageName:        ov.PackageName,
+				IsUDSOverrideValue: true,
+				IsSummaryItem:      true,
+				OverrideValue:      ov.Value,
+				OriginalDefault:    ov.OriginalDefault,
+				SummaryComponent:   destComponent,
+			})
+		}
+	}
+	for _, ov := range m.udsOverrideVariables {
+		destComponent := fmt.Sprintf("%s/%s/%s", ov.PackageName, ov.ComponentName, ov.ChartName)
+		chartHasOverride := false
+		if chart := m.components[destComponent]; chart != nil {
+			for _, chartOverride := range chart.UDSOverrideVariables {
+				if chartOverride.Name == ov.Name && chartOverride.Path == ov.Path {
+					chartHasOverride = true
+					break
+				}
 			}
+		}
+		if chartHasOverride && !m.showUDSSummary {
+			continue
+		}
+		searchStr := strings.ToLower(ov.Name + " " + ov.Path)
+		if filter == "" || strings.Contains(searchStr, strings.ToLower(filter)) {
+			newValues = append(newValues, DisplayItem{
+				ValueUsage: introspect.ValueUsage{
+					Path:         ov.Name,
+					DefaultValue: ov.Default,
+				},
+				Component:         "UDS Bundle Overrides",
+				PackageName:       ov.PackageName,
+				IsUDSOverrideVar:  true,
+				IsSummaryItem:     true,
+				UDSVarPath:        ov.Path,
+				UDSVarDescription: ov.Description,
+				OriginalDefault:   ov.OriginalDefault,
+				SummaryComponent:  destComponent,
+			})
 		}
 	}
 
@@ -612,6 +637,8 @@ func (m *Model) updateFilteredValues() {
 	if m.cursor >= len(m.filteredValues) {
 		m.cursor = 0
 	}
+	m.cursor = clamp(m.cursor, 0, len(m.filteredValues)-1)
+	m.syncInspectorSelection()
 }
 
 func packageValueItem(entry packageValueEntry, component string) DisplayItem {
@@ -715,11 +742,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.windowHeight = msg.Height
 		m.windowWidth = msg.Width
+		m.filterInput.Width = max(1, geometryFor(msg.Width).settings-6)
 		m.pathScroll = 0
 		m.pathScrollPause = 2
 		m.compScroll = 0
 		m.compScrollPause = 2
 		m.ensureCursorVisible()
+		m.ensureMappingCursorVisible()
+		if m.focusPane == FocusInspector {
+			m.ensureDetailCursorVisible()
+		}
 	}
 	return m, nil
 }
@@ -732,7 +764,7 @@ func (m *Model) ensureCursorVisible() {
 		return
 	}
 	m.cursor = clamp(m.cursor, 0, len(m.filteredValues)-1)
-	visibleLines := max(2, m.windowHeight-6)
+	visibleLines := max(2, m.windowHeight-8)
 	if m.cursor < m.viewportOffset {
 		m.viewportOffset = m.cursor
 	}

@@ -10,11 +10,17 @@ neutrino inspect ./my-package -i
 
 Explicit `--output table|json|yaml` and `--interactive=false` print reports. Pipes, redirected streams, and `TERM=dumb` do not enter the TUI automatically. `-i` reports an error when no usable terminal is attached or `--output` is also supplied.
 
+## Workspace layout
+
+At 120 columns and wider, **Scope**, **Settings**, and **Inspector** remain visible together. The Scope tree selects a package, component, or chart. Settings contains the query and results; moving its selection updates the Inspector immediately. `Tab` and `Shift+Tab` move between panes, and the focused pane has a highlighted border.
+
+From 80 to 119 columns, Settings and Inspector remain side by side and `f` opens the scope picker. Below 80 columns, one pane is visible at a time: `Enter` opens the Inspector and `Esc` returns to Settings. Resizing changes the layout while retaining the scope, query, selected setting, and inspector history.
+
 ## Find a setting
 
-Press `f` to choose a package, component, or chart. Press `/` to search the selected scope; terms combine with AND. Examples include `pkg:api replica`, `chart:gateway`, `source:production.yaml`, and `status:changed`. Press `8` for all categories, or `0` for an inspection overview.
+Press `f` to focus the Scope tree at wide widths or open its picker at narrower widths. In the tree, use the right arrow to expand a branch and the left arrow to collapse it or move to its parent. Press `Enter` to apply the selected scope. Press `/` to edit the query in Settings; terms combine with AND. Examples include `pkg:api replica`, `chart:gateway`, `source:production.yaml`, and `status:changed`. Press `8` for all categories, or `0` for an inspection overview.
 
-Next bundles have seven categories. The fifth, **Mappings & uses**, includes declared Package Values mappings and observed template references. Their kinds distinguish mappings from runtime uses; an observed reference is not itself a configurable declaration. Identical chart names in different packages retain separate owners.
+Next bundles have seven category filters in Settings. The fifth, **Mappings & uses**, includes declared Package Values mappings and observed template references. Their kinds distinguish mappings from runtime uses; an observed reference is not itself a configurable declaration. Identical chart names in different packages retain separate owners. Source filenames are available through **Sources**, rather than consuming catalog columns.
 
 The catalog includes:
 
@@ -29,7 +35,7 @@ Static schema inventory follows explicit `properties`. Raw references, compositi
 
 ## Read a setting
 
-Press `Enter` to open a compact inspector. Its primary view shows the selected name, owner, kind, known value or absence, available description, and proven mapping actions. Long descriptions and values have separate views. Additional evidence does not fill the primary screen just because the terminal is wide.
+The Inspector follows the selected setting and shows its name, owner, kind, known value or absence, available description, and proven mapping actions. Press `Enter` from Settings to focus the Inspector; at wide and medium widths the surrounding workspace remains visible. Long descriptions and values have separate views within the Inspector. Additional evidence does not fill the primary screen just because the terminal is wide.
 
 For example, a legacy `.Variables.CA_BUNDLE_CERTS` reference appears as a **Zarf runtime reference**, with **Requires deployment context** and a Sources action. It is not renamed to Package `.Values`, and no Helm destination is invented. `.Constants`, `.Pkg`, and unsupported static template expressions say **Expression not evaluated**. An empty target on a template reference is not a chart-root mapping.
 
@@ -46,13 +52,13 @@ Secondary views are explicit actions:
 | **Package references / Observed uses** | Package source, ordering metadata, or separately recorded template usage. |
 | **Authoring example** (`b` or `Space`) | Optional Package Values or legacy UDS configuration example to review before use. |
 
-Only applicable actions appear. `j`/`k` selects an action and `Enter` follows it. `Esc` returns to the preceding page and restores its selection and scroll position. Short terminals keep the primary identity and value concise; secondary evidence can be scrolled.
+Only applicable actions appear. With the Inspector focused, `j`/`k` selects an action and `Enter` follows it. `Esc` returns to the preceding inspector page and restores its selection and scroll position, then returns focus to Settings. Moving to a different setting starts that setting's summary; changing focus or resizing alone preserves the current evidence view. Short terminals keep the primary identity and value concise; secondary evidence can be scrolled.
 
 ## Explore mappings
 
-A Package Value's inspector links to its declared chart destinations. Selecting a destination opens the chart mapping table at the corresponding path. A mapping declaration can also be opened directly from **Mappings & uses**, even when its input is empty or absent.
+A Package Value's inspector links to its declared chart destinations. Selecting a destination opens the chart mapping table at the corresponding path in the Settings area, with the selected mapping row shown in the Inspector. Inspect a declaration in **Mappings & uses** and follow its mapping action to explore it, even when its input is empty or absent. `Esc` restores the originating settings or inspector state.
 
-The table separates **Chart default** from **Package input**. **Available** means a chart path is reachable through the declaration, not that an input was supplied or deployment succeeded. **Excluded** paths retain their exclusion reason. Press `a` to show chart paths outside a subtree destination. An explicit `targetPath: .` is a chart-root mapping; a missing target is not.
+The mapping view separates **Chart default** from **Package input**; the Inspector shows the selected path's input when the table is too narrow for both. **Available** means a chart path is reachable through the declaration, not that an input was supplied or deployment succeeded. **Excluded** paths retain their exclusion reason. Press `a` to show chart paths outside a subtree destination. An explicit `targetPath: .` is a chart-root mapping; a missing target is not.
 
 Chart values opened directly and through mapping rows share the same inspector. Proven mappings show their owning package input paths. Multiple mappings remain separate; the inspector does not select a final Helm winner from incomplete evidence.
 
@@ -64,17 +70,18 @@ Authoring examples use supplied input when known, otherwise a known chart defaul
 
 | Key | Action |
 | --- | --- |
-| `f` | Select package, component, or chart scope |
+| `f` | Focus Scope at wide widths; open the scope picker at narrower widths |
+| Left / right in Scope | Collapse or move to parent / expand branch |
 | `/` | Search within the selected scope |
 | `1`–`7` | Select a Next bundle category |
 | `0` / `8` | Overview / all inputs |
 | `c` / `u` | Toggle changed / unresolved filter |
-| `Tab` / `Shift+Tab` | Switch workspace panes |
+| `Tab` / `Shift+Tab` | Cycle through visible workspace panes |
 | `j` / `k`, arrows | Move through rows or actions; scroll evidence |
 | `g` / `G` | First / last item |
 | `PgUp` / `PgDn` | Move by a viewport |
 | `n` / `N`, `]` / `[` | Next / previous component or group |
-| `Enter` | Inspect a setting or follow the selected action |
+| `Enter` | Apply a scope, focus the selected setting's Inspector, or follow its selected action |
 | `Esc` | Back, close an overlay, or clear a filter |
 | `o` | Browse source locations |
 | `v` / `t` / `s` | Full value / input history / schema, when applicable |

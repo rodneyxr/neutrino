@@ -1,0 +1,141 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+type workspaceGeometry struct{ scope, settings, inspector int }
+
+func geometryFor(width int) workspaceGeometry {
+	if width >= wideLayoutWidth {
+		scope := clamp(24+(width-120)/10, 24, 32)
+		settings := 46 + (width-120)*2/5
+		return workspaceGeometry{scope: scope, settings: settings, inspector: width - scope - settings}
+	}
+	if width >= mediumLayoutWidth {
+		settings := width * 45 / 100
+		return workspaceGeometry{settings: settings, inspector: width - settings}
+	}
+	return workspaceGeometry{settings: width, inspector: width}
+}
+
+func (m Model) inspectorWidth() int {
+	width := m.windowWidth
+	if width < 1 {
+		width = 100
+	}
+	return geometryFor(width).inspector
+}
+
+func (m Model) centralFocus() FocusPane {
+	if m.mapping != nil {
+		return FocusMapping
+	}
+	return FocusValues
+}
+
+func (m Model) liveSelectionKey() string {
+	if m.mapping != nil {
+		if m.mapping.cursor >= 0 && m.mapping.cursor < len(m.mapping.rows) {
+			return fmt.Sprintf("mapping:%p:%s", m.mapping, m.mapping.rows[m.mapping.cursor].path)
+		}
+		return fmt.Sprintf("mapping:%p:empty", m.mapping)
+	}
+	value, ok := m.selectedValue()
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%d:%s:%s:%s:%s:%s:%p", nextCategory(value), value.PackageName, value.Component, value.SummaryComponent, value.Chart, value.Path, value.mappingRef)
+}
+
+// Focus and resizing never change this key. Only a different catalog/mapping
+// selection replaces the inspector's route with the newly selected summary.
+func (m *Model) syncInspectorSelection() {
+	key := m.liveSelectionKey()
+	if key != m.inspectorSelection {
+		m.inspectorSelection = key
+		m.resetInspectorRoute()
+		m.mappingRowDetail = m.mapping != nil && m.focusPane == FocusInspector
+	}
+	m.buildDetailItems()
+}
+
+func (m *Model) resetInspectorRoute() {
+	m.detailRef = nil
+	m.traceHistory = nil
+	m.resetDetailPanels()
+	m.detailCursor, m.detailScrollOffset = 0, 0
+}
+
+func (m Model) focusedActionValue() (DisplayItem, bool) {
+	if m.focusPane == FocusInspector {
+		return m.detailValue()
+	}
+	if m.focusPane == FocusMapping {
+		m.detailRef = nil
+		return m.detailValue()
+	}
+	return m.selectedValue()
+}
+
+func (m Model) persistentWorkspace(width, height int) string {
+	geometry := geometryFor(width)
+	if width < mediumLayoutWidth {
+		switch m.focusPane {
+		case FocusComponents:
+			return m.scopeTreePane(width, height)
+		case FocusInspector:
+			return m.inspectorPane(width, height)
+		default:
+			if m.mapping != nil {
+				return m.mappingPane(width, height)
+			}
+			return m.valuesPane(width, height)
+		}
+	}
+	settings := m.valuesPane(geometry.settings, height)
+	if m.mapping != nil {
+		settings = m.mappingPane(geometry.settings, height)
+	}
+	if width < wideLayoutWidth {
+		if m.focusPane == FocusComponents {
+			return m.scopeTreePane(width, height)
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Top, settings, m.inspectorPane(geometry.inspector, height))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, m.scopeTreePane(geometry.scope, height), settings, m.inspectorPane(geometry.inspector, height))
+}
+
+func (m Model) settingsFilterLine(width int) string {
+	if !m.nextRail {
+		return truncateCell(fmt.Sprintf("All kinds · %d settings", len(m.filteredValues)), width)
+	}
+	label := "All settings"
+	if m.nextRail && !m.allCategories {
+		label = fmt.Sprintf("%d %s", m.category+1, nextCategories[m.category])
+	}
+	return truncateCell(label+" · 1–7 / 8 all", width)
+}
+
+func (m Model) settingsQueryLine(width int) string {
+	query := strings.TrimSpace(m.filterInput.Value())
+	if m.inputMode == InputModeFilter {
+		runes := []rune(terminalText(m.filterInput.Value()))
+		position := clamp(m.filterInput.Position(), 0, len(runes))
+		before := string(runes[:position])
+		// Leave room for both the caret and a truncated suffix while editing
+		// in the middle of a query wider than this pane.
+		available := max(1, width-4)
+		if lipgloss.Width(before) > available {
+			before = tailCell(before, available)
+		}
+		return truncateCell("/ "+before+"▏"+string(runes[position:]), width)
+	}
+	if query == "" {
+		return truncateCell("/ Search settings", width)
+	}
+	return truncateCell("/ "+query, width)
+}

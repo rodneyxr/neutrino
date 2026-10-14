@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,98 +14,253 @@ import (
 
 // Scope identities are independent of display labels and chart path substrings.
 type workspaceScope struct {
-	key, label, kind string
-	depth, charts    int
+	key, label, kind       string
+	parentKey, packageName string
+	depth, charts          int
+	chartKeys              []string
+}
+
+// Preserve declared chart order, then include map-only snapshots deterministically.
+// The empty key is the real identity of a standalone Helm chart.
+func orderedScopeCharts(report introspect.InspectionReport) []string {
+	seen := make(map[string]bool, len(report.Components))
+	keys := make([]string, 0, len(report.Components))
+	for _, key := range report.ComponentOrder {
+		if _, exists := report.Components[key]; exists && !seen[key] {
+			keys = append(keys, key)
+			seen[key] = true
+		}
+	}
+	var remaining []string
+	for key := range report.Components {
+		if !seen[key] {
+			remaining = append(remaining, key)
+		}
+	}
+	sort.Strings(remaining)
+	return append(keys, remaining...)
 }
 
 func buildWorkspaceScopes(report introspect.InspectionReport) []workspaceScope {
-	scopes := []workspaceScope{{key: "All Charts", label: "All components", kind: "inspection", charts: len(report.Components)}}
-	seen := map[string]int{"All Charts": 0}
-	add := func(key, label, kind string, depth int) {
-		if _, ok := seen[key]; !ok {
-			seen[key] = len(scopes)
-			scopes = append(scopes, workspaceScope{key: key, label: label, kind: kind, depth: depth})
+	keys := orderedScopeCharts(report)
+	var packages []string
+	known := make(map[string]bool)
+	addPackage := func(name string) {
+		if name != "" && !known[name] {
+			known[name] = true
+			packages = append(packages, name)
 		}
 	}
 	if report.Bundle != nil {
-		for _, p := range report.Bundle.Packages {
-			add("package:"+p.ID, p.ID, "package", 0)
+		for _, pkg := range report.Bundle.Packages {
+			addPackage(pkg.ID)
 		}
 	}
-	// Build each package subtree in declaration order, including packages without charts.
-	roots := append([]workspaceScope(nil), scopes[1:]...)
-	scopes = scopes[:1]
-	seen = map[string]int{"All Charts": 0}
-	appendChart := func(key string, depth int) {
+	for _, pkg := range report.PackageValues {
+		addPackage(pkg.PackageName)
+	}
+	for _, override := range report.UDSOverrideValues {
+		addPackage(override.PackageName)
+	}
+	for _, override := range report.UDSOverrideVariables {
+		addPackage(override.PackageName)
+	}
+	owners := make(map[string]string, len(keys))
+	prefixed := false
+	for _, key := range keys {
 		parts := strings.Split(key, "/")
-		component := ""
-		if len(parts) > 1 {
-			component = strings.Join(parts[:len(parts)-1], "/")
-			add("component:"+component, parts[len(parts)-2], "component", depth)
-			depth++
+		if len(parts) == 3 {
+			owners[key] = parts[0]
+			addPackage(parts[0])
+			prefixed = true
 		}
-		label := parts[len(parts)-1]
-		if chart := report.Components[key]; chart != nil && chart.ChartName != "" {
-			label = chart.ChartName
-		}
-		if label == "" {
-			label = "Standalone chart"
-		}
-		add(key, label, "chart", depth)
 	}
-	assigned := map[string]bool{}
-	for _, root := range roots {
-		add(root.key, root.label, root.kind, 0)
-		for _, key := range report.ComponentOrder {
-			if strings.HasPrefix(key, root.label+"/") {
-				appendChart(key, 1)
-				assigned[key] = true
-				scopes[seen[root.key]].charts++
+	// Direct Zarf reports use component/chart, while bundle reports prefix
+	// their package IDs. Never reinterpret a direct component as a package.
+	for _, key := range keys {
+		if len(strings.Split(key, "/")) != 2 {
+			continue
+		}
+		if report.Bundle == nil && !prefixed && len(report.UDSOverrideValues) == 0 && len(report.UDSOverrideVariables) == 0 && len(packages) == 1 {
+			owners[key] = packages[0]
+			continue
+		}
+		owner, ambiguous := "", false
+		for _, pkg := range report.PackageValues {
+			for _, usage := range pkg.Usages {
+				if usage.ChartName == "" || usage.ComponentName+"/"+usage.ChartName != key {
+					continue
+				}
+				if _, exists := report.Components[pkg.PackageName+"/"+key]; exists {
+					continue
+				}
+				if owner != "" && owner != pkg.PackageName {
+					ambiguous = true
+				}
+				owner = pkg.PackageName
+			}
+		}
+		if !ambiguous {
+			owners[key] = owner
+		}
+	}
+	scopes := []workspaceScope{{key: "All Charts", label: "All settings", kind: "inspection", charts: len(keys), chartKeys: keys}}
+	if report.Bundle != nil {
+		scopes = append(scopes, workspaceScope{key: "bundle:inputs", label: "Bundle inputs", kind: "bundle", parentKey: "All Charts", depth: 1})
+	}
+	appendChildren := func(parent, owner string, depth int, charts []string) {
+		var groups []string
+		byComponent := make(map[string][]string)
+		for _, key := range charts {
+			component, _, hasComponent := strings.Cut(key, "/")
+			if hasComponent {
+				component = key[:strings.LastIndex(key, "/")]
+			} else {
+				component = ""
+			}
+			if _, seen := byComponent[component]; !seen {
+				groups = append(groups, component)
+			}
+			byComponent[component] = append(byComponent[component], key)
+		}
+		for _, component := range groups {
+			chartParent, chartDepth := parent, depth
+			if component != "" {
+				chartParent = "component:" + component
+				name := component[strings.LastIndex(component, "/")+1:]
+				scopes = append(scopes, workspaceScope{key: chartParent, label: name, kind: "component", parentKey: parent,
+					packageName: owner, depth: depth, charts: len(byComponent[component]), chartKeys: byComponent[component]})
+				chartDepth++
+			}
+			for _, key := range byComponent[component] {
+				label := key[strings.LastIndex(key, "/")+1:]
+				if result := report.Components[key]; result != nil && result.ChartName != "" {
+					label = result.ChartName
+				}
+				if label == "" {
+					label = "Standalone chart"
+				}
+				scopes = append(scopes, workspaceScope{key: key, label: label, kind: "chart", parentKey: chartParent,
+					packageName: owner, depth: chartDepth, charts: 1, chartKeys: []string{key}})
 			}
 		}
 	}
-	for _, key := range report.ComponentOrder {
-		if !assigned[key] {
-			appendChart(key, 0)
+	for _, owner := range packages {
+		var charts []string
+		for _, key := range keys {
+			if owners[key] == owner {
+				charts = append(charts, key)
+			}
+		}
+		parent := "package:" + owner
+		scopes = append(scopes, workspaceScope{key: parent, label: owner, kind: "package", parentKey: "All Charts",
+			packageName: owner, depth: 1, charts: len(charts), chartKeys: charts})
+		appendChildren(parent, owner, 2, charts)
+	}
+	var unowned []string
+	for _, key := range keys {
+		if owners[key] == "" {
+			unowned = append(unowned, key)
 		}
 	}
+	appendChildren("All Charts", "", 1, unowned)
 	return scopes
 }
 
+func (m Model) workspaceScope(key string) (workspaceScope, bool) {
+	for _, scope := range m.scopes {
+		if scope.key == key {
+			return scope, true
+		}
+	}
+	return workspaceScope{}, false
+}
+
 func (m Model) chartInScope(key string) bool {
-	switch {
-	case m.currentChart == "All Charts":
+	if m.currentChart == "All Charts" {
 		return true
+	}
+	if scope, found := m.workspaceScope(m.currentChart); found {
+		return slices.Contains(scope.chartKeys, key)
+	}
+	// Older callers can construct a Model without a compiled hierarchy.
+	switch {
+	case m.currentChart == "bundle:inputs":
+		return false
 	case strings.HasPrefix(m.currentChart, "package:"):
-		return strings.HasPrefix(key, strings.TrimPrefix(m.currentChart, "package:")+"/")
+		owner, _, _ := parseComponentKey(key)
+		return owner == strings.TrimPrefix(m.currentChart, "package:")
 	case strings.HasPrefix(m.currentChart, "component:"):
-		return strings.HasPrefix(key, strings.TrimPrefix(m.currentChart, "component:")+"/")
+		end := strings.LastIndex(key, "/")
+		return end >= 0 && key[:end] == strings.TrimPrefix(m.currentChart, "component:")
 	default:
 		return key == m.currentChart || (m.inputMode == InputModeChartSelect && strings.Contains(strings.ToLower(key), strings.ToLower(m.currentChart)))
 	}
 }
+
+func (m Model) scopeItemOwner(item DisplayItem) string {
+	if item.PackageName != "" {
+		return item.PackageName
+	}
+	if item.IsSummaryItem {
+		owner, _, _ := parseComponentKey(item.SummaryComponent)
+		return owner
+	}
+	if scope, found := m.workspaceScope(item.Component); found && scope.kind == "chart" {
+		return scope.packageName
+	}
+	if item.IsPkgVar {
+		owner, sole, count, prefixed := "", "", 0, false
+		for _, scope := range m.scopes {
+			if scope.kind == "package" {
+				sole, count = scope.packageName, count+1
+				if len(scope.packageName) > len(owner) && strings.HasPrefix(item.Path, scope.packageName+".") {
+					owner = scope.packageName
+				}
+			}
+			prefixed = prefixed || scope.kind == "chart" && len(strings.Split(scope.key, "/")) == 3
+		}
+		if owner == "" && m.bundle == nil && count == 1 && !prefixed && len(m.report.UDSOverrideValues) == 0 && len(m.report.UDSOverrideVariables) == 0 {
+			owner = sole
+		}
+		return owner
+	}
+	return ""
+}
+
 func (m Model) itemInScope(item DisplayItem) bool {
 	if m.currentChart == "All Charts" {
 		return true
 	}
+	if m.currentChart == "bundle:inputs" {
+		return item.IsBundleVariable || item.IsPackageValue && item.Component == "UDS Next bundle"
+	}
+	if item.IsBundleVariable {
+		return false
+	}
+	owner := m.scopeItemOwner(item)
 	if strings.HasPrefix(m.currentChart, "package:") {
-		owner := strings.TrimPrefix(m.currentChart, "package:")
-		return item.PackageName == owner || strings.HasPrefix(item.Component, owner+"/") || strings.HasPrefix(item.SummaryComponent, owner+"/")
+		return owner == strings.TrimPrefix(m.currentChart, "package:") || m.chartInScope(item.Component)
 	}
-	if item.IsPkgVar && m.nextRail {
-		return item.PackageName == m.nextPackageFor(strings.TrimPrefix(m.currentChart, "component:"), "/")
+	if item.IsSummaryItem {
+		return m.chartInScope(item.SummaryComponent)
 	}
-	return !item.IsBundleVariable
+	if item.IsPkgVar {
+		if scope, found := m.workspaceScope(m.currentChart); found && owner != "" {
+			return owner == scope.packageName
+		}
+		return owner == "" && !m.nextRail
+	}
+	if item.mappingRef != nil {
+		return m.chartInScope(item.mappingRef.chartKey)
+	}
+	return m.chartInScope(item.Component)
 }
 func (m Model) scopeLabel() string {
 	for _, scope := range m.scopes {
 		if scope.key == m.currentChart {
-			if scope.kind == "inspection" && m.bundle != nil {
-				name := m.bundle.Name
-				if name == "" {
-					name = "Bundle"
-				}
-				return name + " / all packages"
+			if scope.kind == "bundle" || scope.kind == "inspection" {
+				return scope.label
 			}
 			label := strings.TrimPrefix(strings.TrimPrefix(scope.key, "package:"), "component:")
 			if label == "" {
@@ -125,6 +282,15 @@ func (m Model) matchingScopes() []workspaceScope {
 	return out
 }
 func (m *Model) beginScopePicker() {
+	m.scopeReturnFocus = m.focusPane
+	if m.windowWidth >= wideLayoutWidth {
+		m.inputMode = InputModeNormal
+		m.chartInput.Blur()
+		m.focusPane = FocusComponents
+		m.syncScopeCursor()
+		m.statusMessage = ""
+		return
+	}
 	m.inputMode = InputModeScopeSelect
 	m.chartInput.SetValue("")
 	m.chartInput.Focus()
@@ -143,6 +309,7 @@ func (m Model) handleScopeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.inputMode = InputModeNormal
 		m.chartInput.Blur()
+		m.focusPane = m.scopeReturnFocus
 	case "up", "ctrl+k":
 		m.scopeCursor = clamp(m.scopeCursor-1, 0, len(choices)-1)
 	case "down", "ctrl+j":
@@ -153,15 +320,10 @@ func (m Model) handleScopeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.scopeCursor = clamp(m.scopeCursor+max(1, m.windowHeight-9), 0, len(choices)-1)
 	case "enter":
 		if len(choices) > 0 {
-			m.currentChart = choices[clamp(m.scopeCursor, 0, len(choices)-1)].key
+			m.scopeTreeKey = choices[clamp(m.scopeCursor, 0, len(choices)-1)].key
 			m.inputMode = InputModeNormal
 			m.chartInput.Blur()
-			m.showOverview = false
-			m.updateFilteredValues()
-			m.cursor, m.viewportOffset = 0, 0
-			m.focusPane = FocusValues
-			m.buildDetailItems()
-			m.setStatus("Scope: " + m.scopeLabel())
+			m.applyScopeCursor()
 		}
 	default:
 		var cmd tea.Cmd
@@ -314,10 +476,12 @@ func (m *Model) focusStatus(status string) {
 	m.filterInput.SetValue(query)
 	m.allCategories = true
 	m.showOverview = false
+	m.mapping = nil
+	m.mappingRowDetail = false
 	m.focusPane = FocusValues
 	m.updateFilteredValues()
 	m.cursor, m.viewportOffset = 0, 0
-	m.buildDetailItems()
+	m.syncInspectorSelection()
 }
 func (m Model) overviewPane(width, height int) string {
 	inner := max(1, width-4)

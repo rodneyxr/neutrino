@@ -29,6 +29,7 @@ type mappingScreen struct {
 	returnPanel        detailPanel
 	returnPanels       []detailPanelReturn
 	returnSource       *DetailItem
+	returnTraceHistory []traceReturn
 }
 
 func (m *Model) openMapping(ref *valueMapping, origin FocusPane) {
@@ -44,7 +45,8 @@ func (m *Model) openMapping(ref *valueMapping, origin FocusPane) {
 		previous: m.mapping, returnRowDetail: m.mappingRowDetail,
 		returnDetailCursor: m.detailCursor, returnDetailOffset: m.detailScrollOffset,
 		returnDetailRef: m.detailRef,
-		returnPanel:     m.detailPanel, returnPanels: m.detailPanelHistory, returnSource: m.detailSource,
+		returnPanel:     m.detailPanel, returnPanels: append([]detailPanelReturn(nil), m.detailPanelHistory...), returnSource: m.detailSource,
+		returnTraceHistory: append([]traceReturn(nil), m.traceHistory...),
 	}
 	m.mapping = screen
 	m.mappingRowDetail = false
@@ -52,6 +54,7 @@ func (m *Model) openMapping(ref *valueMapping, origin FocusPane) {
 	m.resetDetailPanels()
 	m.mapping.selectRows()
 	m.focusPane = FocusMapping
+	m.syncInspectorSelection()
 }
 
 func (m *Model) focusMappingPath(path string) {
@@ -62,6 +65,7 @@ func (m *Model) focusMappingPath(path string) {
 		if packagePath(row.path) == packagePath(path) {
 			m.mapping.cursor = i
 			m.ensureMappingCursorVisible()
+			m.syncInspectorSelection()
 			return
 		}
 	}
@@ -98,6 +102,7 @@ func (m *Model) moveMappingCursor(delta int) {
 	}
 	m.mapping.cursor = clamp(m.mapping.cursor+delta, 0, len(m.mapping.rows)-1)
 	m.ensureMappingCursorVisible()
+	m.syncInspectorSelection()
 }
 
 func (m *Model) moveMappingBoundary(last bool) {
@@ -109,13 +114,14 @@ func (m *Model) moveMappingBoundary(last bool) {
 		m.mapping.cursor = len(m.mapping.rows) - 1
 	}
 	m.ensureMappingCursorVisible()
+	m.syncInspectorSelection()
 }
 
 func (m *Model) ensureMappingCursorVisible() {
 	if m.mapping == nil {
 		return
 	}
-	visible := max(1, m.windowHeight-13)
+	visible := max(1, m.windowHeight-8)
 	if m.mapping.cursor < m.mapping.offset {
 		m.mapping.offset = m.mapping.cursor
 	}
@@ -159,17 +165,9 @@ func (m Model) mappingPane(width, height int) string {
 	inner := max(1, width-4)
 	var content strings.Builder
 	add := func(line string) { content.WriteString(truncateCell(line, inner) + "\n") }
-	add(paneHeadingStyle.Render("CHART VALUES · DECLARED MAPPING, NOT DEPLOYMENT-EFFECTIVE"))
-	add(screen.packageLabel() + ": " + screen.pkg.PackageName + "    Chart: " + screen.usage.ComponentName + "/" + screen.usage.ChartName)
-	add("Zarf .Values" + dottedTracePath(screen.usage.Path) + " → Helm .Values" + dottedTracePath(screen.usage.TargetPath))
-	add(fmt.Sprintf("In destination: %d    Other chart paths: %s (a toggles)", screen.inside, onOff(screen.showOthers)))
-	if height >= 14 {
-		add(helpStyle.Render("available = reachable  ·  excluded = blocked  ·  unresolved = incomplete input"))
-	}
-	if !screen.sourcePresent {
-		add("Source absent from configured input; chart candidates remain available.")
-	}
-	add("")
+	add(paneHeadingStyle.Render("Mapped settings"))
+	add(screen.usage.ComponentName + "/" + screen.usage.ChartName)
+	add("Target: " + screen.usage.TargetPath + " · a other paths")
 	pathWidth := max(10, inner*45/100)
 	statusWidth := 10
 	defaultWidth := max(8, inner-pathWidth-statusWidth-5)
@@ -183,14 +181,7 @@ func (m Model) mappingPane(width, height int) string {
 		heading += " PACKAGE INPUT"
 	}
 	add(tableHeaderStyle.Render(heading))
-	available := height - 10
-	if !screen.sourcePresent {
-		available--
-	}
-	if height < 14 {
-		available++
-	}
-	available = max(0, available)
+	available := max(1, height-6)
 	for index := screen.offset; index < len(screen.rows) && index < screen.offset+available; index++ {
 		row := screen.rows[index]
 		path := row.path
@@ -223,5 +214,5 @@ func (m Model) mappingPane(width, height int) string {
 	if len(screen.rows) == 0 {
 		add(helpStyle.Render("No chart values discovered in this destination."))
 	}
-	return paneFrame(width, height, true).Render(strings.TrimSuffix(content.String(), "\n"))
+	return paneFrame(width, height, m.focusPane == FocusMapping).Render(strings.TrimSuffix(content.String(), "\n"))
 }
