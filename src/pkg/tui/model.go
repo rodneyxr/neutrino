@@ -36,6 +36,8 @@ const (
 	DetailItemMapping
 	DetailItemFile
 	DetailItemTrace
+	DetailItemPanel
+	DetailItemSource
 )
 
 // DetailItem represents a single navigable row in the detail view.
@@ -50,6 +52,7 @@ type DetailItem struct {
 	packageMapping  *valueMappingDetail
 	mappingRef      *valueMapping
 	File            string // resolved path when Kind == DetailItemFile
+	panel           detailPanel
 }
 
 type DisplayItem struct {
@@ -135,6 +138,9 @@ type Model struct {
 	mappingRowDetail   bool
 	detailRef          *DisplayItem
 	traceHistory       []traceReturn
+	detailPanel        detailPanel
+	detailPanelHistory []detailPanelReturn
+	detailSource       *DetailItem
 	pathScroll         int
 	pathScrollPause    int
 	compScroll         int
@@ -207,7 +213,7 @@ func NewModel(report introspect.InspectionReport) Model {
 		valuePolicy:          newPackageValuesPolicy(report),
 		bundle:               report.Bundle,
 		nextRail:             report.Bundle != nil && report.Bundle.Format == "next",
-		showZarfSummary:      report.Bundle != nil && report.Bundle.Format == "next",
+		showZarfSummary:      len(pkgVariables) > 0 || report.Bundle != nil && report.Bundle.Format == "next",
 	}
 
 	m.updateFilteredValues()
@@ -241,14 +247,7 @@ func (m *Model) updateFilteredValues() {
 			}
 		}
 		if m.bundle != nil {
-			keys := make([]string, 0, len(m.bundle.Variables))
-			for key := range m.bundle.Variables {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-			for _, key := range keys {
-				item := DisplayItem{ValueUsage: introspect.ValueUsage{Path: key, DefaultValue: m.bundle.Variables[key]},
-					Component: "UDS Next bundle", IsBundleVariable: true, ValuePresent: true}
+			for _, item := range m.bundleVariableItems() {
 				if matchesValueFilter(item, filter) {
 					newValues = append(newValues, item)
 				}
@@ -636,7 +635,7 @@ func packageValueItem(entry packageValueEntry, component string) DisplayItem {
 		schema = entry.pkg.Schema
 	}
 	return DisplayItem{
-		ValueUsage: introspect.ValueUsage{Path: entry.path, DefaultValue: entry.value},
+		ValueUsage: introspect.ValueUsage{Path: entry.path, DefaultValue: entry.value, DefaultPresent: entry.present, Schema: entry.schema, SchemaRequired: entry.schemaRequired},
 		Component:  component, PackageName: entry.pkg.PackageName,
 		IsPackageValue: true, ValuePresent: entry.present,
 		ValueFiles: entry.pkg.Files, ValueFileSources: entry.pkg.FileSources,
@@ -810,7 +809,7 @@ func (m Model) findLocationsForOverridePath(component, path string) []DetailItem
 }
 
 // buildDetailItems constructs the unified navigable list for the detail view of the current item.
-func (m *Model) buildDetailItems() {
+func (m *Model) buildTechnicalDetailItems() {
 	v, ok := m.detailValue()
 	if !ok {
 		m.detailItems = nil
@@ -827,7 +826,7 @@ func (m *Model) buildDetailItems() {
 			})
 		}
 	}
-	if v.IsPackageValue && v.ValuePresent && v.Component == "Zarf Package Values" {
+	if v.IsPackageValue && v.Component == "Zarf Package Values" {
 		for _, route := range v.Routes {
 			if route.Usage.TargetPath != "" && route.Usage.ChartName != "" {
 				items = append(items, DetailItem{

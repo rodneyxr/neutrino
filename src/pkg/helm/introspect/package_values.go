@@ -116,8 +116,8 @@ func inspectTemplateText(text, filename, component, chart string) []PackageValue
 	}
 	// The Helm walker intentionally follows .Values. Retain other Zarf template
 	// contexts too, so a .State-only action does not disappear from inspection.
-	seen := map[string]bool{}
-	addContext := func(parts []string) {
+	seen := map[string]int{}
+	addContext := func(parts []string, pos parse.Pos) {
 		if len(parts) == 0 {
 			return
 		}
@@ -127,13 +127,18 @@ func inspectTemplateText(text, filename, component, chart string) []PackageValue
 			return
 		}
 		path := "." + strings.Join(parts, ".")
-		if seen[path] {
+		offset := min(max(int(pos), 0), len(text))
+		location := ValueUsageLocation{File: filename, Kind: "runtimeContext",
+			Line:   strings.Count(text[:offset], "\n") + 1,
+			Column: offset - strings.LastIndexByte(text[:offset], '\n')}
+		if index, ok := seen[path]; ok {
+			usages[index].Locations = append(usages[index].Locations, location)
 			return
 		}
-		seen[path] = true
+		seen[path] = len(usages)
 		usages = append(usages, PackageValueUsage{Path: path, ComponentName: component, ChartName: chart,
 			Runtime: true, Status: ValueDynamic, Diagnostic: "Zarf template context requires deployment-time evaluation.",
-			Locations: []ValueUsageLocation{{File: filename, Kind: "runtimeContext"}}})
+			Locations: []ValueUsageLocation{location}})
 	}
 	var walk func(parse.Node)
 	walk = func(node parse.Node) {
@@ -168,7 +173,7 @@ func inspectTemplateText(text, filename, component, chart string) []PackageValue
 						parts = append(parts, key.Text)
 					}
 					if literal {
-						addContext(parts)
+						addContext(parts, field.Pos)
 						return
 					}
 				}
@@ -177,7 +182,7 @@ func inspectTemplateText(text, filename, component, chart string) []PackageValue
 				walk(arg)
 			}
 		case *parse.FieldNode:
-			addContext(n.Ident)
+			addContext(n.Ident, n.Pos)
 		case *parse.ChainNode:
 			walk(n.Node)
 		case *parse.IfNode:

@@ -36,6 +36,43 @@ func (m Model) displayValue(value DisplayItem, raw interface{}) interface{} {
 			}
 		}
 	} else if !value.IsBundleVariable && !value.IsPkgVar && !value.IsZarfVar {
+		// Keep the chart root available while resolving local references. A
+		// detached property's $ref may name a definition outside that property.
+		if result := m.components[value.Component]; result != nil {
+			for _, declaration := range result.ValuesSchemas {
+				chartSchema, _ := declaration.Schema.(map[string]interface{})
+				prefix := packagePath(declaration.ValuePrefix)
+				localPath := packagePath(path)
+				if prefix != "" {
+					if localPath == prefix {
+						localPath = "."
+					} else if strings.HasPrefix(localPath, prefix+".") {
+						localPath = strings.TrimPrefix(localPath, prefix+".")
+					} else {
+						continue
+					}
+				}
+				raw = traceSafeValueWithSchema(path, raw, schemaForPath(chartSchema, localPath))
+				// Some charts expose wrapper defaults through public template
+				// paths. The display projection must retain wrapper sensitivity
+				// even though it does not copy private schema declarations.
+				projection := normalizeMaskSchema(chartSchema)
+				properties, _ := projection["properties"].(map[string]interface{})
+				if _, declared := properties["_internal_defaults_do_not_set"]; declared {
+					wrappedPath := "_internal_defaults_do_not_set"
+					if packagePath(localPath) != "" {
+						wrappedPath += "." + packagePath(localPath)
+					}
+					raw = traceSafeValueWithSchema(path, raw, schemaForPath(projection, wrappedPath))
+				}
+			}
+		}
+		if property, ok := value.Schema.(map[string]interface{}); ok {
+			// Explicit annotations remain useful for older/incomplete reports.
+			// Resolve detached references against the correctly prefixed chart.
+			root, _ := m.selectedValueSchema(value).(map[string]interface{})
+			raw = traceSafeValueWithSchema(path, raw, resolveMaskSchema(property, root, make(map[string]bool), 0))
+		}
 		for _, detail := range m.valuePolicy.details(value.Component, value.ValueUsage) {
 			if detail.row.packagePath != "" && detail.pkg != nil {
 				raw = traceSafeValueWithSchema(detail.row.packagePath, raw, schemaForPath(detail.pkg.Schema, detail.row.packagePath))

@@ -26,6 +26,9 @@ type traceReturn struct {
 	offset      int
 	rowDetail   bool
 	schemaShown bool
+	panel       detailPanel
+	panels      []detailPanelReturn
+	source      *DetailItem
 }
 
 func (m *Model) followTrace(detail DetailItem) bool {
@@ -33,11 +36,13 @@ func (m *Model) followTrace(detail DetailItem) bool {
 		return false
 	}
 	m.traceHistory = append(m.traceHistory, traceReturn{ref: m.detailRef, cursor: m.detailCursor,
-		offset: m.detailScrollOffset, rowDetail: m.mappingRowDetail, schemaShown: m.detailSchemaShown})
+		offset: m.detailScrollOffset, rowDetail: m.mappingRowDetail, schemaShown: m.detailSchemaShown,
+		panel: m.detailPanel, panels: m.detailPanelHistory, source: m.detailSource})
 	target := *detail.relatedValue
 	m.detailRef = &target
 	m.detailCursor, m.detailScrollOffset = 0, 0
 	m.detailSchemaShown = false
+	m.resetDetailPanels()
 	m.buildDetailItems()
 	m.ensureDetailCursorVisible()
 	return true
@@ -53,6 +58,7 @@ func (m *Model) returnTrace() bool {
 	m.detailRef = previous.ref
 	m.mappingRowDetail = previous.rowDetail
 	m.detailSchemaShown = previous.schemaShown
+	m.detailPanel, m.detailPanelHistory, m.detailSource = previous.panel, previous.panels, previous.source
 	m.buildDetailItems()
 	m.detailCursor = clamp(previous.cursor, 0, len(m.detailItems)-1)
 	m.detailScrollOffset = previous.offset
@@ -110,6 +116,9 @@ func (m Model) tracePackage(value DisplayItem) *introspect.PackageValues {
 }
 
 func (m Model) valueTrace(value DisplayItem) (introspect.ValueTrace, bool) {
+	if runtimeReference(value) {
+		return introspect.ValueTrace{}, false
+	}
 	if value.IsBundleVariable && m.bundle != nil && len(m.bundle.VariableSources) > 0 {
 		return m.cachedValueTrace(value, m.bundle.VariableSources, value.Path), true
 	}
@@ -140,7 +149,7 @@ func (m Model) valueChanged(value DisplayItem) bool {
 }
 
 func (m Model) valueUnresolved(value DisplayItem) bool {
-	if value.Runtime {
+	if value.Runtime || value.Wildcard {
 		return true
 	}
 	if value.IsBundleVariable && m.bundle != nil {
@@ -240,6 +249,13 @@ func (m Model) appendValueTrace(value DisplayItem, width int, focused bool,
 
 func (m Model) valueTraceSections(value DisplayItem) []traceSection {
 	var sections []traceSection
+	if runtimeReference(value) {
+		state := "Expression not evaluated."
+		if referenceRequiresDeployment(value) {
+			state = "Requires deployment context."
+		}
+		return []traceSection{{title: inspectorKind(value), lines: []traceLine{{text: value.Path + ": " + state}}}}
+	}
 	if value.IsBundleVariable {
 		if m.bundle == nil {
 			return nil
@@ -255,7 +271,7 @@ func (m Model) valueTraceSections(value DisplayItem) []traceSection {
 					}
 					target := DisplayItem{ValueUsage: introspect.ValueUsage{Path: pkg.PackageName}, Component: "UDS Next bundle",
 						PackageName: pkg.PackageName, IsPackageValue: true, ValueFiles: pkg.Files, ValueFileSources: pkg.FileSources}
-					label := pkg.PackageName + " · " + filepath.Base(source.Name) + " reads bundle .vars." + packagePath(ref.Path)
+					label := friendlySourceLabel(pkg.PackageName, source, max(0, source.Order-1)) + " · reads .vars." + packagePath(ref.Path)
 					links.lines = append(links.lines, traceLine{text: label, link: &DetailItem{Kind: DetailItemTrace, relatedValue: &target}})
 				}
 			}
@@ -385,10 +401,12 @@ func (m Model) inputHistory(value DisplayItem, sources []introspect.ValueSource,
 		case contribution.Changed:
 			state = "changes inspected input"
 		}
-		label := fmt.Sprintf("%02d  %s · %s · %s", index+1, contribution.Kind, contribution.Name, state)
+		label := fmt.Sprintf("%02d  %s · %s", index+1, contribution.Kind, state)
 		line := traceLine{text: label}
 		for _, source := range sources {
 			if source.ID == contribution.SourceID && traceSourceFile(source) != "" {
+				label = friendlySourceLabel(value.PackageName, source, index) + " · " + state
+				line.text = label
 				line.link = &DetailItem{Kind: DetailItemTrace, File: traceSourceFile(source)}
 				break
 			}
@@ -425,6 +443,9 @@ func traceSourceFile(source introspect.ValueSource) string {
 }
 
 func (m Model) packageInputDependencies(pkg *introspect.PackageValues) []traceSection {
+	if pkg == nil {
+		return nil
+	}
 	section := traceSection{title: "BUNDLE → PACKAGE · OBSERVED FILE DEPENDENCIES"}
 	seen := make(map[string]bool)
 	for _, source := range pkg.Sources {
@@ -439,7 +460,7 @@ func (m Model) packageInputDependencies(pkg *introspect.PackageValues) []traceSe
 				input, present = packageValueInput(m.bundle.Variables, packagePath(ref.Path))
 			}
 			target := DisplayItem{ValueUsage: introspect.ValueUsage{Path: packagePath(ref.Path), DefaultValue: input}, Component: "UDS Next bundle", IsBundleVariable: true, ValuePresent: present}
-			label := "bundle .vars." + packagePath(ref.Path) + " → " + filepath.Base(source.Name)
+			label := friendlySourceLabel(pkg.PackageName, source, max(0, source.Order-1)) + " · reads .vars." + packagePath(ref.Path)
 			if ref.Computed {
 				label += " · computed expression"
 			}

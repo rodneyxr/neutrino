@@ -26,6 +26,9 @@ type mappingScreen struct {
 	returnDetailCursor int
 	returnDetailOffset int
 	returnDetailRef    *DisplayItem
+	returnPanel        detailPanel
+	returnPanels       []detailPanelReturn
+	returnSource       *DetailItem
 }
 
 func (m *Model) openMapping(ref *valueMapping, origin FocusPane) {
@@ -41,10 +44,12 @@ func (m *Model) openMapping(ref *valueMapping, origin FocusPane) {
 		previous: m.mapping, returnRowDetail: m.mappingRowDetail,
 		returnDetailCursor: m.detailCursor, returnDetailOffset: m.detailScrollOffset,
 		returnDetailRef: m.detailRef,
+		returnPanel:     m.detailPanel, returnPanels: m.detailPanelHistory, returnSource: m.detailSource,
 	}
 	m.mapping = screen
 	m.mappingRowDetail = false
 	m.detailRef = nil
+	m.resetDetailPanels()
 	m.mapping.selectRows()
 	m.focusPane = FocusMapping
 }
@@ -194,7 +199,7 @@ func (m Model) mappingPane(width, height int) string {
 		}
 		chartValue := DisplayItem{ValueUsage: row.value, Component: screen.chartKey}
 		line := fmt.Sprintf("%-*s %-*s %-*s", pathWidth, truncateCell(path, pathWidth), statusWidth, row.status,
-			defaultWidth, truncateCell(mappingCell(m.displayValue(chartValue, row.defaultValue), !row.undiscovered && row.defaultValue != nil), defaultWidth))
+			defaultWidth, truncateCell(mappingCell(m.displayValue(chartValue, row.defaultValue), !row.undiscovered && (row.value.DefaultPresent || row.defaultValue != nil)), defaultWidth))
 		if inputWidth > 0 {
 			input := "not supplied"
 			if row.status == "other" {

@@ -10,12 +10,27 @@ import (
 // packageValuesSnippet uses the selected mapping, falling back to the first
 // mapping when a source location or related value has focus.
 func (m Model) packageValuesSnippet(value DisplayItem) string {
+	details, cursor := m.detailItems, m.detailCursor
+	if m.detailPanel == detailAuthoring {
+		// The secondary page has no mapping actions of its own. Recover the
+		// primary selection so an alternate mapping still authors that input.
+		primary := m
+		primary.detailPanel = detailSummary
+		primary.buildDetailItems()
+		details, cursor = primary.detailItems, 0
+		for i := len(m.detailPanelHistory) - 1; i >= 0; i-- {
+			if m.detailPanelHistory[i].panel == detailSummary {
+				cursor = m.detailPanelHistory[i].cursor
+				break
+			}
+		}
+	}
 	var mapping *valueMappingDetail
-	if m.detailCursor >= 0 && m.detailCursor < len(m.detailItems) {
-		mapping = m.detailItems[m.detailCursor].packageMapping
+	if cursor >= 0 && cursor < len(details) {
+		mapping = details[cursor].packageMapping
 	}
 	if mapping == nil {
-		for _, detail := range m.detailItems {
+		for _, detail := range details {
 			if detail.packageMapping != nil {
 				mapping = detail.packageMapping
 				break
@@ -36,6 +51,7 @@ func (m Model) packageValuesSnippet(value DisplayItem) string {
 	switch plan.basis {
 	case authoringDefault:
 		note = "# Example using the chart default; edit before use"
+		input = m.displayValue(value, input)
 	case authoringUnknown:
 		note = "# No known default; replace <set-value> before use"
 		input = "<set-value>"

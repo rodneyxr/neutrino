@@ -12,7 +12,7 @@ import (
 // Their positions match the single-key shortcuts shown in the rail.
 var nextCategories = [...]string{
 	"Bundle vars", "Next values files", "Zarf variables", "Zarf Package Values",
-	"Chart mappings", "Helm values", "Legacy overrides",
+	"Mappings & uses", "Helm values", "Legacy overrides",
 }
 
 func nextCategory(item DisplayItem) int {

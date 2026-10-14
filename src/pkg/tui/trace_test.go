@@ -36,6 +36,7 @@ func traceFixtureValue(model Model) DisplayItem {
 
 func traceBody(model Model, value DisplayItem) string {
 	model.focusPane, model.detailRef = FocusInspector, &value
+	model.detailPanel = detailProvenance
 	model.buildDetailItems()
 	body, _ := model.inspectorContent(100, true)
 	return ansi.Strip(body)
@@ -46,12 +47,12 @@ func TestTraceOrderedInputHistoryAndUnresolvedWinner(t *testing.T) {
 	model := NewModel(report)
 	value := traceFixtureValue(model)
 	body := traceBody(model, value)
-	for _, text := range []string{"INPUT HISTORY · LOW → HIGH", "shadowed", "effective inspected input", "Effective inspected input: false", "Final Helm result: incomplete"} {
+	for _, text := range []string{"Input history · low to high precedence", "shadowed", "effective inspected input", "Effective inspected input: false"} {
 		if !strings.Contains(body, text) {
 			t.Fatalf("missing trace evidence %q:\n%s", text, body)
 		}
 	}
-	if strings.Index(body, "defaults.yaml") > strings.Index(body, "operator.yaml") || !model.valueChanged(value) || model.valueUnresolved(value) {
+	if strings.Index(body, "packaged defaults") > strings.Index(body, "operator values file") || !model.valueChanged(value) || model.valueUnresolved(value) {
 		t.Fatal("source order or changed/unresolved classification is incorrect")
 	}
 	report.PackageValues[0].Sources = append(report.PackageValues[0].Sources, introspect.ValueSource{
@@ -209,7 +210,7 @@ func TestActualNextTraceDependenciesAndNestedReturn(t *testing.T) {
 		PackageValues: inspection.PackageValues, Bundle: inspection.Bundle, Variables: inspection.Variables})
 	origin := DisplayItem{ValueUsage: introspect.ValueUsage{Path: "scale", DefaultValue: inspection.Bundle.Variables["scale"]}, Component: "UDS Next bundle", IsBundleVariable: true, ValuePresent: true}
 	model.focusPane, model.detailRef = FocusInspector, &origin
-	model.buildDetailItems()
+	model.openDetailPanel(detailDependencies, nil)
 	findLink := func(match func(DisplayItem) bool) int {
 		t.Helper()
 		for i, detail := range model.detailItems {
@@ -223,38 +224,123 @@ func TestActualNextTraceDependenciesAndNestedReturn(t *testing.T) {
 	firstCursor := findLink(func(value DisplayItem) bool { return value.IsPackageValue && value.PackageName == "api" })
 	model.detailCursor, model.detailScrollOffset = firstCursor, 7
 	model.activateFocused()
-	if selected, _ := model.detailValue(); !selected.IsPackageValue || selected.PackageName != "api" {
-		t.Fatal("bundle variable did not navigate to its actual consuming package")
-	}
 	packageView, _ := model.detailValue()
+	if !packageView.IsPackageValue || packageView.PackageName != "api" {
+		t.Fatal("bundle variable did not navigate to actual consuming package")
+	}
 	body := traceBody(model, packageView)
-	if !strings.Contains(body, "bundle .vars.scale") || !strings.Contains(body, "INCOMPLETE INPUT") || strings.Contains(body, "Effective inspected input:") {
-		t.Fatalf("real Next references or unresolved later input lost:\n%s", body)
+	if !strings.Contains(body, "INCOMPLETE INPUT") || strings.Contains(body, "Effective inspected input:") {
+		t.Fatalf("unresolved layer lost: %s", body)
 	}
 	var originalSource bool
-	for _, item := range model.detailItems {
-		if item.Kind == DetailItemTrace && item.File == filepath.Join(root, "values.yaml") {
+	for _, source := range model.inspectorSources(packageView) {
+		if source.File == filepath.Join(root, "values.yaml") {
 			originalSource = true
 		}
 	}
 	if !originalSource {
-		t.Fatal("source link must open original Next values file, not rendered cache")
+		t.Fatal("source link must retain original template, not rendered cache")
 	}
+	model.openDetailPanel(detailDependencies, nil)
 	secondCursor := findLink(func(value DisplayItem) bool { return value.IsBundleVariable && value.Path == "scale" })
 	model.detailCursor, model.detailScrollOffset = secondCursor, 11
 	model.activateFocused()
-	for i, want := range []struct {
-		cursor, offset int
-		packageView    bool
-	}{{secondCursor, 11, true}, {firstCursor, 7, false}} {
-		updated, _ := model.Update(key("esc"))
-		model = updated.(Model)
-		selected, _ := model.detailValue()
-		if selected.IsPackageValue != want.packageView || model.detailCursor != want.cursor || model.detailScrollOffset != want.offset || model.focusPane != FocusInspector {
-			t.Fatalf("return %d lost typed origin or selection", i)
-		}
+	updated, _ := model.Update(key("esc"))
+	model = updated.(Model)
+	selected, _ := model.detailValue()
+	if !selected.IsPackageValue || model.detailPanel != detailDependencies || model.detailCursor != secondCursor || model.detailScrollOffset != 11 {
+		t.Fatal("trace return lost package dependency context")
+	}
+	updated, _ = model.Update(key("esc"))
+	model = updated.(Model)
+	if model.detailPanel != detailSummary {
+		t.Fatal("secondary Escape must return to package summary")
+	}
+	updated, _ = model.Update(key("esc"))
+	model = updated.(Model)
+	if model.detailPanel != detailDependencies || model.detailCursor != firstCursor || model.detailScrollOffset != 7 {
+		t.Fatal("outer trace return lost bundle dependency selection")
 	}
 	if len(model.traceHistory) != 0 || !reflect.DeepEqual(*model.detailRef, origin) {
-		t.Fatal("trace return stack did not restore its original value")
+		t.Fatal("trace return stack did not restore original value")
+	}
+}
+
+func TestHelmSchemaMaskUsesRootReferencesAndAliasContext(t *testing.T) {
+	const private = "private-fixture-value"
+	root := map[string]interface{}{
+		"$defs":      map[string]interface{}{"hidden": map[string]interface{}{"writeOnly": true}, "public": map[string]interface{}{"type": "string"}},
+		"properties": map[string]interface{}{"access": map[string]interface{}{"$ref": "#/$defs/hidden", "default": private}, "label": map[string]interface{}{"$ref": "#/$defs/public"}},
+	}
+	model := NewModel(introspect.InspectionReport{Components: map[string]*introspect.IntrospectResult{"api/server/web": {
+		ValuesSchemas: []introspect.ChartValuesSchema{{Chart: "web", Schema: root},
+			{Chart: "worker", ValuePrefix: "first", Schema: map[string]interface{}{"properties": map[string]interface{}{"name": map[string]interface{}{"writeOnly": true}}}},
+			{Chart: "worker", ValuePrefix: "second", Schema: map[string]interface{}{"properties": map[string]interface{}{"name": map[string]interface{}{"type": "string"}}}},
+		},
+	}}})
+	for _, sample := range []struct {
+		path, ref string
+		expected  interface{}
+	}{
+		{"access", "#/$defs/hidden", redactedValue}, {"label", "#/$defs/public", private}, {"first.name", "", redactedValue}, {"second.name", "", private},
+	} {
+		value := DisplayItem{Component: "api/server/web", ValueUsage: introspect.ValueUsage{Path: sample.path, DefaultValue: private, DefaultPresent: true}}
+		if sample.ref != "" {
+			value.Schema = map[string]interface{}{"$ref": sample.ref}
+		}
+		if got := model.displayValue(value, private); got != sample.expected {
+			t.Fatalf("%s: got %v, want %v", sample.path, got, sample.expected)
+		}
+		if sample.path == "access" {
+			model.focusPane, model.detailRef = FocusInspector, &value
+			for _, panel := range []detailPanel{detailSummary, detailFullValue, detailSchema} {
+				model.detailPanel = panel
+				body, _ := model.inspectorContent(100, true)
+				if strings.Contains(body, private) {
+					t.Fatalf("schema-protected value leaked in panel %v", panel)
+				}
+			}
+		}
+	}
+	value := DisplayItem{Component: "api/server/web", ValueUsage: introspect.ValueUsage{Path: "second.name", Chart: "worker"}}
+	selected := model.selectedValueSchema(value).(map[string]interface{})
+	if schemaSensitive(schemaForPath(selected, "name")) {
+		t.Fatal("same chart name chose another alias's schema")
+	}
+}
+
+func TestProjectedWrapperDefaultRetainsSchemaMaskInSummaryAndAuthoring(t *testing.T) {
+	const private = "wrapper-private-fixture"
+	for _, prefix := range []string{"", "alias"} {
+		path := "access"
+		if prefix != "" {
+			path = prefix + "." + path
+		}
+		schema := map[string]interface{}{"properties": map[string]interface{}{"_internal_defaults_do_not_set": map[string]interface{}{"properties": map[string]interface{}{"access": map[string]interface{}{"writeOnly": true}}}}}
+		model := NewModel(introspect.InspectionReport{Components: map[string]*introspect.IntrospectResult{"core/server/web": {
+			Values: []introspect.ValueUsage{{Path: path, DefaultValue: private, DefaultPresent: true}}, ValuesSchemas: []introspect.ChartValuesSchema{{Chart: "web", ValuePrefix: prefix, Schema: schema}},
+		}}, PackageValues: []introspect.PackageValues{{PackageName: "core", Usages: []introspect.PackageValueUsage{{Path: ".app", TargetPath: ".", ComponentName: "server", ChartName: "web"}}}}})
+		value := DisplayItem{Component: "core/server/web", ValueUsage: introspect.ValueUsage{Path: path, DefaultValue: private, DefaultPresent: true}}
+		model.focusPane, model.detailRef = FocusInspector, &value
+		model.buildDetailItems()
+		if got := model.displayValue(value, private); got != redactedValue {
+			t.Fatalf("prefix %q exposed projected wrapper default", prefix)
+		}
+		for _, panel := range []detailPanel{detailSummary, detailFullValue, detailAuthoring} {
+			model.openDetailPanel(panel, nil)
+			body, _ := model.inspectorContent(100, true)
+			if strings.Contains(body, private) {
+				t.Fatalf("prefix %q panel %d leaked wrapper default", prefix, panel)
+			}
+		}
+	}
+}
+
+func TestWrapperMaskDoesNotInventPrivateAdditionalProperty(t *testing.T) {
+	schema := map[string]interface{}{"properties": map[string]interface{}{"label": map[string]interface{}{"type": "string"}}, "additionalProperties": map[string]interface{}{"writeOnly": true}}
+	model := NewModel(introspect.InspectionReport{Components: map[string]*introspect.IntrospectResult{"web": {ValuesSchemas: []introspect.ChartValuesSchema{{Schema: schema}}}}})
+	value := DisplayItem{Component: "web", ValueUsage: introspect.ValueUsage{Path: "label"}}
+	if got := model.displayValue(value, "visible"); got != "visible" {
+		t.Fatal("invented wrapper path hid explicitly public value")
 	}
 }

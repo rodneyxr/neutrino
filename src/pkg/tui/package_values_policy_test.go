@@ -295,7 +295,8 @@ func TestPackageValuesPolicyChartDeclarationsAndUnavailableTargets(t *testing.T)
 
 func TestPackageValuesPolicyDeclarationVisibility(t *testing.T) {
 	mapping := introspect.PackageValueUsage{Path: ".app", TargetPath: ".config", ComponentName: "server", ChartName: "web"}
-	runtime := introspect.PackageValueUsage{Path: ".runtime", Runtime: true}
+	runtime := introspect.PackageValueUsage{Path: ".runtime", Runtime: true,
+		Locations: []introspect.ValueUsageLocation{{File: "values-template.yaml", Kind: "field"}}}
 	for _, tc := range []struct {
 		name          string
 		values        map[string]interface{}

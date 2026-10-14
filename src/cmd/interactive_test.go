@@ -50,3 +50,18 @@ func TestInspectRejectsUnusableModeBeforeReadingSource(t *testing.T) {
 		}
 	}
 }
+
+func TestInspectHelpExplainsOptionalConfiguration(t *testing.T) {
+	var output bytes.Buffer
+	command := newInspectCmd(&output)
+	command.SetOut(&output)
+	command.SetArgs([]string{"--help"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"--config", "Optional config.uds.hcl", "on by default in the TUI"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("help is missing %q:\n%s", want, output.String())
+		}
+	}
+}
