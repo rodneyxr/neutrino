@@ -22,12 +22,35 @@ func geometryFor(width int) workspaceGeometry {
 	return workspaceGeometry{settings: width, inspector: width}
 }
 
+// Scope borrows space only while it has focus. Its cursor and expansion state
+// live independently of this layout, so closing it never changes the selection.
+func (m Model) workspaceGeometry(width int) workspaceGeometry {
+	if width >= wideLayoutWidth && m.focusPane != FocusComponents {
+		settings := width * 55 / 100
+		return workspaceGeometry{settings: settings, inspector: width - settings}
+	}
+	return geometryFor(width)
+}
+
+func (m *Model) refreshWorkspaceGeometry() {
+	width := m.windowWidth
+	if width < 1 {
+		width = 100
+	}
+	m.filterInput.Width = max(1, m.workspaceGeometry(width).settings-6)
+	m.ensureCursorVisible()
+	m.ensureMappingCursorVisible()
+	if m.focusPane == FocusInspector {
+		m.ensureDetailCursorVisible()
+	}
+}
+
 func (m Model) inspectorWidth() int {
 	width := m.windowWidth
 	if width < 1 {
 		width = 100
 	}
-	return geometryFor(width).inspector
+	return m.workspaceGeometry(width).inspector
 }
 
 func (m Model) centralFocus() FocusPane {
@@ -56,6 +79,7 @@ func (m Model) liveSelectionKey() string {
 func (m *Model) syncInspectorSelection() {
 	key := m.liveSelectionKey()
 	if key != m.inspectorSelection {
+		m.resetSelectedRowScroll()
 		m.inspectorSelection = key
 		m.resetInspectorRoute()
 		m.mappingRowDetail = m.mapping != nil && m.focusPane == FocusInspector
@@ -82,7 +106,7 @@ func (m Model) focusedActionValue() (DisplayItem, bool) {
 }
 
 func (m Model) persistentWorkspace(width, height int) string {
-	geometry := geometryFor(width)
+	geometry := m.workspaceGeometry(width)
 	if width < mediumLayoutWidth {
 		switch m.focusPane {
 		case FocusComponents:
@@ -100,7 +124,7 @@ func (m Model) persistentWorkspace(width, height int) string {
 	if m.mapping != nil {
 		settings = m.mappingPane(geometry.settings, height)
 	}
-	if width < wideLayoutWidth {
+	if geometry.scope == 0 {
 		if m.focusPane == FocusComponents {
 			return m.scopeTreePane(width, height)
 		}
@@ -138,4 +162,30 @@ func (m Model) settingsQueryLine(width int) string {
 		return truncateCell("/ Search settings", width)
 	}
 	return truncateCell("/ "+query, width)
+}
+
+// A bundle's file declaration is distinct from a supplied package value.
+// Report inspection of those files without implying they were applied.
+func (m Model) bundleFilesState(value DisplayItem) string {
+	state := "declared"
+	if pkg := m.tracePackage(value); pkg != nil {
+		for _, source := range pkg.Sources {
+			if source.Kind != "bundle-values" {
+				continue
+			}
+			switch source.Status {
+			case "resolved":
+				state = "inspected"
+			case "missing":
+				return "missing"
+			case "parse-error":
+				return "parse error"
+			case "unavailable":
+				return "unavailable"
+			default:
+				return "not evaluated"
+			}
+		}
+	}
+	return state
 }

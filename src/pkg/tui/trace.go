@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
@@ -135,6 +138,24 @@ func (m Model) valueTrace(value DisplayItem) (introspect.ValueTrace, bool) {
 }
 
 func (m Model) valueChanged(value DisplayItem) bool {
+	if value.IsUDSOverrideValue {
+		baseline, present := value.OriginalDefault, value.OriginalDefault != nil
+		if !present {
+			component := value.Component
+			if value.IsSummaryItem {
+				component = value.SummaryComponent
+			}
+			if chart := m.components[component]; chart != nil {
+				for _, input := range chart.Values {
+					if input.Path == value.Path {
+						baseline, present = input.DefaultValue, input.DefaultPresent || input.DefaultValue != nil
+						break
+					}
+				}
+			}
+		}
+		return present && !traceValuesEqual(baseline, value.OverrideValue)
+	}
 	if trace, ok := m.valueTrace(value); ok {
 		return trace.Changed
 	}
@@ -145,7 +166,19 @@ func (m Model) valueChanged(value DisplayItem) bool {
 			return true
 		}
 	}
-	return value.IsUDSOverrideValue
+	return false
+}
+
+// YAML loaders can represent the same number with different Go types. JSON's
+// stable map ordering and numeric rendering compare those decoded values while
+// keeping strings distinct from numbers, including inside maps and lists.
+func traceValuesEqual(a, b interface{}) bool {
+	if reflect.DeepEqual(a, b) {
+		return true
+	}
+	aJSON, aErr := json.Marshal(a)
+	bJSON, bErr := json.Marshal(b)
+	return aErr == nil && bErr == nil && bytes.Equal(aJSON, bJSON)
 }
 
 func (m Model) valueUnresolved(value DisplayItem) bool {
@@ -296,6 +329,7 @@ func (m Model) valueTraceSections(value DisplayItem) []traceSection {
 			sections = append(sections, m.packageInputDependencies(pkg)...)
 		}
 		boundary := traceSection{title: "TYPED BOUNDARY · PACKAGE → HELM"}
+		runtimeUses := traceSection{title: "RUNTIME USES · NOT EVALUATED"}
 		if value.IsPackageMapping && value.mappingRef != nil {
 			boundary.lines = append(boundary.lines, mappingTraceLine(value.mappingRef, value.ValueSource, value.ValueTarget))
 			if value.Runtime || unresolvedStatus(value.mappingRef.usage.Status) {
@@ -303,11 +337,21 @@ func (m Model) valueTraceSections(value DisplayItem) []traceSection {
 			}
 		} else {
 			for _, route := range value.Routes {
+				if route.Status == "runtime" || route.Usage.Runtime || route.Usage.TargetPath == "" {
+					runtimeUses.lines = append(runtimeUses.lines, runtimeRouteTraceLines(value.Path, route.Usage)...)
+					continue
+				}
 				label := "Zarf .Values." + packagePath(value.Path) + " → " + route.Usage.ComponentName + "/" + route.Usage.ChartName + " Helm .Values." + packagePath(route.Target)
-				if route.Status == "excluded" || route.Status == "runtime" {
+				if route.Status == "excluded" {
 					label += " · " + route.Status + " (not applied)"
 				}
 				boundary.lines = append(boundary.lines, traceLine{text: label})
+			}
+		}
+		if len(runtimeUses.lines) > 0 {
+			sections = append(sections, runtimeUses)
+			if len(boundary.lines) == 0 {
+				return sections
 			}
 		}
 		if len(boundary.lines) == 0 {
@@ -362,6 +406,34 @@ func (m Model) valueTraceSections(value DisplayItem) []traceSection {
 		sections = append(sections, traceSection{title: "HELM RESULT · INCOMPLETE", lines: []traceLine{{text: "No final Helm winner is inferred. Inspected package input is separate from chart defaults, ordered chart files, template evaluation, legacy variables and UDS overrides."}}})
 	}
 	return sections
+}
+
+// A runtime observation identifies where an input was referenced. ChartName can
+// also hold a manifest name, so it cannot establish a Helm destination without a
+// declared target path. Show only the recorded component and source locations.
+func runtimeRouteTraceLines(path string, usage introspect.PackageValueUsage) []traceLine {
+	prefix := "Zarf .Values" + dottedTracePath(path) + " · observed in "
+	component := ""
+	if usage.ComponentName != "" {
+		component = "component " + usage.ComponentName + " · "
+	}
+	if len(usage.Locations) == 0 {
+		return []traceLine{{text: prefix + component + "source location unavailable · runtime not evaluated"}}
+	}
+	lines := make([]traceLine, 0, len(usage.Locations))
+	for _, location := range usage.Locations {
+		source := location.File
+		if source == "" {
+			source = "source location unavailable"
+		} else if location.Line > 0 {
+			source += fmt.Sprintf(":%d", location.Line)
+			if location.Column > 0 {
+				source += fmt.Sprintf(":%d", location.Column)
+			}
+		}
+		lines = append(lines, traceLine{text: prefix + component + source + " · runtime not evaluated"})
+	}
+	return lines
 }
 
 func mappingTraceLine(mapping *valueMapping, source, target string) traceLine {

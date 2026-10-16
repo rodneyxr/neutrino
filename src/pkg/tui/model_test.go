@@ -185,10 +185,13 @@ func TestKeyboardFlowFocusesInspectorWithinWorkspace(t *testing.T) {
 	if model.focusPane != FocusInspector || model.detailPanel != detailSummary || !strings.Contains(view, "Helm value") {
 		t.Fatalf("Enter did not focus the selected summary:\n%s", view)
 	}
-	for _, pane := range []string{"Scope", "Settings", "Inspector"} {
+	for _, pane := range []string{"Settings", "Inspector"} {
 		if !strings.Contains(view, pane) {
 			t.Fatalf("focusing Inspector removed %s", pane)
 		}
+	}
+	if model.workspaceGeometry(model.windowWidth).scope != 0 || !strings.Contains(view, "f Scope") {
+		t.Fatal("Inspector focus should leave Scope collapsed and discoverable")
 	}
 	pressWorkspaceKey(&model, "esc")
 	if model.focusPane != FocusValues || model.cursor != selected || !strings.Contains(model.View(), "Inspector") {
@@ -263,7 +266,7 @@ func TestNewStatusRefreshesExpiry(t *testing.T) {
 	}
 }
 
-func TestValuesAreGroupedByComponentAndSection(t *testing.T) {
+func TestValuesAreGroupedByConfigurationLayerAndOwner(t *testing.T) {
 	const first = "core-base/istio-controlplane/istiod"
 	const second = "core-base/istio-admin-gateway/gateway"
 	model := Model{
@@ -286,7 +289,9 @@ func TestValuesAreGroupedByComponentAndSection(t *testing.T) {
 	}
 
 	view := model.valuesPane(110, 28)
-	headings := []string{"Zarf package", first, second}
+	headings := []string{"━━ Legacy Zarf variables ━", "Legacy Zarf variables · " + first,
+		"Legacy bundle overrides · configurable · " + first, "Helm inputs · " + first,
+		"Legacy bundle overrides · fixed · " + second}
 	previous := -1
 	for _, heading := range headings {
 		index := strings.Index(view, heading)
@@ -298,27 +303,32 @@ func TestValuesAreGroupedByComponentAndSection(t *testing.T) {
 		}
 		previous = index
 	}
-	if strings.Count(view, first) != 1 {
-		t.Fatalf("component band must appear once across its sections:\n%s", view)
+	if strings.Count(view, first) != 3 {
+		t.Fatalf("each distinct configuration layer must retain the same destination owner:\n%s", view)
 	}
-	if got := model.valueLineCount(1, 2); got != 3 {
-		t.Fatalf("one owner heading should group both rows: got %d lines, want 3", got)
+	if got := model.valueLineCount(1, 2); got != 4 {
+		t.Fatalf("distinct layers sharing an owner need separate headings: got %d lines, want 4", got)
 	}
 	model.viewportOffset = 2
 	scrolled := model.valuesPane(110, 28)
-	if !strings.Contains(scrolled, first) || !strings.Contains(scrolled, "PROXY_MEMORY") {
-		t.Fatalf("scrolling into a component must retain its context:\n%s", scrolled)
+	if !strings.Contains(scrolled, "Legacy bundle overrides · configurable · "+first) || !strings.Contains(scrolled, "PROXY_MEMORY") {
+		t.Fatalf("scrolling into a layer must retain its meaning and destination:\n%s", scrolled)
 	}
 }
 
-func TestWorkspaceColumnWidthsStayStableAcrossFocus(t *testing.T) {
+func TestWorkspaceColumnWidthsExpandSettingsWhileScopeIsClosed(t *testing.T) {
 	model := testWorkspaceModel()
 	resizeWorkspace(&model, 120, 32)
-	for _, pane := range []FocusPane{FocusValues, FocusComponents, FocusInspector} {
-		model.focusPane = pane
+	for _, layout := range []struct {
+		focus                      FocusPane
+		scope, settings, inspector int
+	}{{FocusValues, 0, 66, 54}, {FocusComponents, 24, 46, 50}, {FocusInspector, 0, 66, 54}} {
+		model.focusPane = layout.focus
 		view := model.View()
-		if !strings.Contains(workspaceColumns(view, 24, 46), "Settings") || !strings.Contains(workspaceColumns(view, 70, 50), "Inspector") {
-			t.Fatalf("focus %v shifted persistent pane geometry:\n%s", pane, view)
+		if !strings.Contains(workspaceColumns(view, layout.scope, layout.settings), "Settings") ||
+			!strings.Contains(workspaceColumns(view, layout.scope+layout.settings, layout.inspector), "Inspector") ||
+			model.workspaceGeometry(120) != (workspaceGeometry{scope: layout.scope, settings: layout.settings, inspector: layout.inspector}) {
+			t.Fatalf("focus %v did not use the requested pane geometry:\n%s", layout.focus, view)
 		}
 	}
 }
@@ -1076,8 +1086,8 @@ func TestPackageValuesKeepPackageBandsDistinct(t *testing.T) {
 	})
 	model.windowWidth, model.windowHeight = 140, 22
 	view := model.valuesPane(140, 20)
-	if !strings.Contains(view, "Zarf Package Values · api") || !strings.Contains(view, "Zarf Package Values · worker") {
-		t.Fatalf("each package must have its own visible band:\n%s", view)
+	if !strings.Contains(view, "Zarf values · unknown · api") || !strings.Contains(view, "Zarf values · unknown · worker") {
+		t.Fatalf("each package must retain its owner and unknown source provenance:\n%s", view)
 	}
 }
 
@@ -1260,7 +1270,7 @@ func TestNextZarfVariablesGroupByOwningPackage(t *testing.T) {
 		t.Fatalf("grouping must retain package identity, declaration and both chart references: %+v", m.filteredValues)
 	}
 	view := m.valuesPane(100, 28)
-	for _, band := range []string{"Zarf package · api ", "Zarf package · api.v2 "} {
+	for _, band := range []string{"Legacy Zarf variables · api ", "Legacy Zarf variables · api.v2 "} {
 		if strings.Count(view, band) != 1 {
 			t.Fatalf("expected exactly one package section %q:\n%s", band, view)
 		}

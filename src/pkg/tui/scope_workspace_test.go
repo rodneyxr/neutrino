@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -50,8 +51,10 @@ func TestHierarchyScopesSeparateSiblingPackagesAndKeepChartlessInputs(t *testing
 	}
 	m.currentChart = "package:no-chart"
 	m.updateFilteredValues()
-	if len(m.filteredValues) != 2 {
-		t.Fatalf("chartless package should retain its declaration and configured input: %+v", m.filteredValues)
+	if len(m.filteredValues) != 1 || !m.filteredValues[0].IsPackageValue ||
+		m.filteredValues[0].PackageName != "no-chart" || m.filteredValues[0].Path != "enabled" ||
+		!m.filteredValues[0].ValuePresent || m.filteredValues[0].DefaultValue != false {
+		t.Fatalf("chartless package should retain its configured input without an empty file declaration: %+v", m.filteredValues)
 	}
 	found := false
 	for _, scope := range m.scopes {
@@ -68,6 +71,30 @@ func TestHierarchyScopesSeparateSiblingPackagesAndKeepChartlessInputs(t *testing
 		if v.Component == "api.extra/server/app" {
 			t.Fatal("chart selection used substring ownership")
 		}
+	}
+}
+
+func TestScopeKeepsPackagesWithoutInventingEmptyFileSettings(t *testing.T) {
+	m := NewModel(introspect.InspectionReport{Bundle: &introspect.BundleMetadata{
+		Format: "next", Packages: []introspect.BundlePackageMetadata{
+			{ID: "metadata-only", Source: "oci://registry.example/metadata-only"},
+			{ID: "configured", ValuesFiles: []string{"configured.yaml"}},
+		},
+	}})
+	for _, name := range []string{"metadata-only", "configured"} {
+		if _, found := m.workspaceScope("package:" + name); !found {
+			t.Fatalf("package %q was removed from Scope", name)
+		}
+	}
+	if len(m.filteredValues) != 1 || m.filteredValues[0].Component != "UDS Next bundle" ||
+		m.filteredValues[0].PackageName != "configured" ||
+		!reflect.DeepEqual(m.filteredValues[0].ValueFiles, []string{"configured.yaml"}) {
+		t.Fatalf("Settings should contain only the actual bundle file declaration: %+v", m.filteredValues)
+	}
+	m.currentChart = "package:metadata-only"
+	m.updateFilteredValues()
+	if len(m.filteredValues) != 0 {
+		t.Fatalf("metadata-only scope invented a setting: %+v", m.filteredValues)
 	}
 }
 
@@ -251,25 +278,79 @@ func TestSmallDetailsInitialTraceActionIsVisible(t *testing.T) {
 	}
 }
 
-func TestScopeOverlayCancelPreservesInspectorRouteAndQuery(t *testing.T) {
-	m := persistentWorkspaceModel(t)
-	resizeWorkspace(&m, 80, 24)
-	m.filterInput.SetValue("kind:helm")
-	m.updateFilteredValues()
+func TestScopeCancelPreservesInspectorRouteAndQueryAcrossResize(t *testing.T) {
+	for _, scenario := range []struct {
+		name   string
+		widths []int
+	}{{"overlay", []int{80, 40, 160}}, {"tree", []int{160, 80, 40, 160}}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			m := persistentWorkspaceModel(t)
+			resizeWorkspace(&m, scenario.widths[0], 24)
+			m.filterInput.SetValue("kind:helm")
+			m.updateFilteredValues()
+			pressWorkspaceKey(&m, "j")
+			pressWorkspaceKey(&m, "enter")
+			openInspectorTestPanel(t, &m, detailSources)
+			m.detailCursor = 3
+			pressWorkspaceKey(&m, "enter")
+			source, history := m.detailSource, append([]detailPanelReturn(nil), m.detailPanelHistory...)
+			selected, cursor := m.inspectorSelection, m.cursor
+			pressWorkspaceKey(&m, "f")
+			if scenario.name == "overlay" {
+				for _, r := range "missing-chart" {
+					updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+					m = updated.(Model)
+				}
+			} else {
+				pressWorkspaceKey(&m, "j")
+				pressWorkspaceKey(&m, "f") // Reentering must retain the original Inspector caller.
+			}
+			key, mode := m.scopeTreeKey, m.inputMode
+			for _, width := range scenario.widths[1:] {
+				resizeWorkspace(&m, width, 24)
+				assertWorkspaceSize(t, m, width, 24)
+				if m.inputMode != mode || m.scopeTreeKey != key {
+					t.Fatal("resizing changed active Scope navigation")
+				}
+			}
+			pressWorkspaceKey(&m, "esc")
+			if m.inputMode != InputModeNormal || m.focusPane != FocusInspector || m.detailPanel != detailSourceFile ||
+				m.detailSource != source || len(history) != 2 || !reflect.DeepEqual(m.detailPanelHistory, history) ||
+				m.filterInput.Value() != "kind:helm" || m.currentChart != "All Charts" ||
+				m.cursor != cursor || m.inspectorSelection != selected || m.scopeTreeKey != key ||
+				m.workspaceGeometry(m.windowWidth).scope != 0 {
+				t.Fatal("canceling Scope changed its caller, Inspector route, selected setting, query, or scope")
+			}
+		})
+	}
+}
+
+func TestScopeCancelPreservesMappingAcrossResize(t *testing.T) {
+	m := scopedWorkspaceModel()
+	resizeWorkspace(&m, 160, 24)
+	m.selectNextCategory(4)
 	pressWorkspaceKey(&m, "enter")
-	openInspectorTestPanel(t, &m, detailSources)
-	m.detailCursor = 3
-	pressWorkspaceKey(&m, "enter")
-	source := m.detailSource
-	pressWorkspaceKey(&m, "f")
-	for _, r := range "missing-chart" {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = updated.(Model)
+	openInspectorTestMapping(t, &m)
+	table, selected := m.mapping, m.inspectorSelection
+	cursor, offset := table.cursor, table.offset
+	pressWorkspaceKey(&m, "shift+tab")
+	if m.focusPane != FocusComponents || m.scopeReturnFocus != FocusMapping {
+		t.Fatal("mapping table did not open Scope with its return focus")
+	}
+	pressWorkspaceKey(&m, "j")
+	key := m.scopeTreeKey
+	for _, width := range []int{80, 40, 160} {
+		resizeWorkspace(&m, width, 24)
+		assertWorkspaceSize(t, m, width, 24)
+		if m.focusPane != FocusComponents || m.scopeTreeKey != key || m.mapping != table {
+			t.Fatal("resizing Scope changed its active navigation or mapping table")
+		}
 	}
 	pressWorkspaceKey(&m, "esc")
-	if m.inputMode != InputModeNormal || m.focusPane != FocusInspector || m.detailPanel != detailSourceFile ||
-		m.detailSource != source || len(m.detailPanelHistory) != 2 || m.filterInput.Value() != "kind:helm" || m.currentChart != "All Charts" {
-		t.Fatal("canceling scope changed the existing inspector route, query, or scope")
+	if m.focusPane != FocusMapping || m.mapping != table || table.cursor != cursor || table.offset != offset ||
+		m.inspectorSelection != selected || m.currentChart != "All Charts" || m.scopeTreeKey != key ||
+		m.workspaceGeometry(m.windowWidth).scope != 0 {
+		t.Fatal("canceling Scope did not restore the same mapping selection")
 	}
 }
 

@@ -127,7 +127,7 @@ func inspectorKind(value DisplayItem) string {
 		return "Package Values mapping"
 	case value.IsPackageValue:
 		if value.Component == "UDS Next bundle" {
-			return "Bundle package"
+			return "Bundle values-file input"
 		}
 		return "Package value"
 	case value.IsPkgVar || value.IsZarfVar:
@@ -243,6 +243,7 @@ func (m Model) inspectorDocument(value DisplayItem) inspectorDocument {
 		field("Target", "Helm .Values"+dottedTracePath(value.ValueTarget))
 	case value.IsPackageValue && value.Component == "UDS Next bundle":
 		field("Values files", fmt.Sprintf("%d declared", len(value.ValueFiles)))
+		field("Status", m.bundleFilesState(value))
 	case value.IsPackageValue || value.IsBundleVariable:
 		if !value.ValuePresent {
 			field("Input", "Not supplied")

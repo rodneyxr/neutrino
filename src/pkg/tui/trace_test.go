@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -71,6 +72,128 @@ func TestTraceOrderedInputHistoryAndUnresolvedWinner(t *testing.T) {
 	table, err := model.valuePolicy.open(policyDeclarations(model.valuePolicy.catalog(), "core")[0])
 	if err != nil || table.rows[0].status != "unresolved" || table.rows[0].authoring != nil {
 		t.Fatal("chart mapping table must retain unresolved source evidence")
+	}
+}
+
+func TestTraceRuntimeConsumersDoNotInventHelmDestinations(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		usage      introspect.PackageValueUsage
+		wantSource string
+	}{
+		{
+			name: "action read",
+			usage: introspect.PackageValueUsage{Path: ".app.enabled", ComponentName: "server", Runtime: true,
+				Locations: []introspect.ValueUsageLocation{{File: "actions", Line: 4, Column: 8, Kind: "field"}}},
+			wantSource: "component server · actions:4:8",
+		},
+		{
+			name: "manifest named like chart",
+			usage: introspect.PackageValueUsage{Path: ".app.enabled", ComponentName: "server", ChartName: "web", Runtime: true,
+				Locations: []introspect.ValueUsageLocation{{File: "manifest.yaml", Line: 3, Kind: "field"}}},
+			wantSource: "component server · manifest.yaml:3",
+		},
+		{
+			name: "targetless observation",
+			usage: introspect.PackageValueUsage{Path: ".app.enabled", ComponentName: "server", ChartName: "web",
+				Locations: []introspect.ValueUsageLocation{{File: "template.yaml", Kind: "field"}}},
+			wantSource: "component server · template.yaml",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			report := traceFixtureReport()
+			report.PackageValues[0].Usages = []introspect.PackageValueUsage{test.usage}
+			model := NewModel(report)
+			sections := model.valueTraceSections(traceFixtureValue(model))
+			var runtimeText string
+			for _, section := range sections {
+				if strings.Contains(section.title, "PACKAGE → HELM") {
+					t.Fatal("runtime-only consumers received a Helm mapping heading")
+				}
+				for _, line := range section.lines {
+					if strings.Contains(line.text, "Helm .Values") {
+						t.Fatal("runtime observation invented a Helm target")
+					}
+					if section.title == "RUNTIME USES · NOT EVALUATED" {
+						runtimeText += line.text + "\n"
+					}
+				}
+			}
+			for _, want := range []string{"Zarf .Values.app.enabled", test.wantSource, "runtime not evaluated"} {
+				if !strings.Contains(runtimeText, want) {
+					t.Fatalf("runtime trace omitted observed evidence %q: %s", want, runtimeText)
+				}
+			}
+			// The same input may also have a real declared chart mapping.
+			report.PackageValues[0].Usages = append(report.PackageValues[0].Usages,
+				introspect.PackageValueUsage{Path: ".app", TargetPath: ".config", ComponentName: "server", ChartName: "web"})
+			model = NewModel(report)
+			var mapped, observed bool
+			for _, section := range model.valueTraceSections(traceFixtureValue(model)) {
+				observed = observed || section.title == "RUNTIME USES · NOT EVALUATED"
+				if section.title == "TYPED BOUNDARY · PACKAGE → HELM" {
+					for _, line := range section.lines {
+						mapped = mapped || line.text == "Zarf .Values.app.enabled → server/web Helm .Values.config.enabled"
+						if strings.Contains(line.text, test.wantSource) {
+							t.Fatal("runtime source leaked into the declared mapping section")
+						}
+					}
+				}
+			}
+			if !mapped || !observed {
+				t.Fatal("mixed consumers must preserve both runtime evidence and the real Helm mapping")
+			}
+		})
+	}
+}
+
+func TestTraceFixedOverridesChangedRequiresKnownDifferentBaseline(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		original        interface{}
+		override        interface{}
+		chartBaseline   interface{}
+		baselinePresent bool
+		summary         bool
+		changed         bool
+	}{
+		{name: "same known value", original: false, override: false},
+		{name: "different known value", original: false, override: true, changed: true},
+		{name: "absent baseline", override: true},
+		{name: "same explicit null", baselinePresent: true},
+		{name: "different from explicit null", override: false, baselinePresent: true, changed: true},
+		{name: "known chart baseline", override: true, chartBaseline: false, baselinePresent: true, changed: true},
+		{name: "summary explicit null", override: false, baselinePresent: true, summary: true, changed: true},
+		{name: "same integer and float", original: int(1), override: float64(1)},
+		{name: "same integer and JSON number", original: int(1), override: json.Number("1")},
+		{name: "string differs from number", original: "1", override: float64(1), changed: true},
+		{name: "nested numeric representations", original: map[string]interface{}{"ports": []interface{}{int(80), map[string]interface{}{"count": int64(1)}}},
+			override: map[string]interface{}{"ports": []interface{}{float64(80), map[string]interface{}{"count": json.Number("1")}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			report := introspect.InspectionReport{Components: map[string]*introspect.IntrospectResult{
+				"core/server/web": {
+					Values:            []introspect.ValueUsage{{Path: "enabled", DefaultValue: test.chartBaseline, DefaultPresent: test.baselinePresent}},
+					UDSOverrideValues: []introspect.UDSOverrideValue{{Path: "enabled", Value: test.override, OriginalDefault: test.original}},
+				},
+			}, ComponentOrder: []string{"core/server/web"}}
+			model := NewModel(report)
+			value := DisplayItem{ValueUsage: introspect.ValueUsage{Path: "enabled"}, Component: "core/server/web",
+				IsUDSOverrideValue: true, OriginalDefault: test.original, OverrideValue: test.override}
+			if test.summary {
+				value.Component, value.SummaryComponent, value.IsSummaryItem = "UDS Bundle Overrides", "core/server/web", true
+			}
+			if got := model.valueChanged(value); got != test.changed {
+				t.Fatalf("changed = %t; want %t for fixed override with inspected baseline", got, test.changed)
+			}
+			var declarationVisible bool
+			for _, row := range model.allValues {
+				declarationVisible = declarationVisible || row.IsUDSOverrideValue && row.Path == "enabled"
+			}
+			if !declarationVisible {
+				t.Fatal("override declaration must remain visible regardless of changed classification")
+			}
+		})
 	}
 }
 

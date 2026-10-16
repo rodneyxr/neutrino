@@ -51,17 +51,24 @@ func (m Model) scopeTreeIndex(visible []workspaceScope) int {
 	return 0
 }
 
+func (m *Model) setScopeTreeKey(key string) {
+	if key != m.scopeTreeKey {
+		m.compScroll, m.compScrollPause = 0, 2
+	}
+	m.scopeTreeKey = key
+}
+
 // syncScopeCursor reveals the active selection without expanding other packages.
 // The persistent tree cursor stays independent of the searchable picker cursor.
 func (m *Model) syncScopeCursor() {
 	scope, found := m.workspaceScope(m.currentChart)
 	if !found {
 		if len(m.scopes) > 0 {
-			m.scopeTreeKey = m.scopes[0].key
+			m.setScopeTreeKey(m.scopes[0].key)
 		}
 		return
 	}
-	m.scopeTreeKey = scope.key
+	m.setScopeTreeKey(scope.key)
 	for scope.parentKey != "" {
 		m.setScopeExpanded(scope.parentKey, true)
 		parent, found := m.workspaceScope(scope.parentKey)
@@ -78,7 +85,7 @@ func (m *Model) moveScopeCursor(delta int) {
 		return
 	}
 	index := clamp(m.scopeTreeIndex(visible)+delta, 0, len(visible)-1)
-	m.scopeTreeKey = visible[index].key
+	m.setScopeTreeKey(visible[index].key)
 }
 
 func (m *Model) moveScopeBoundary(last bool) {
@@ -90,7 +97,7 @@ func (m *Model) moveScopeBoundary(last bool) {
 	if last {
 		index = len(visible) - 1
 	}
-	m.scopeTreeKey = visible[index].key
+	m.setScopeTreeKey(visible[index].key)
 }
 
 func (m *Model) scopeTreeLeft() {
@@ -101,7 +108,7 @@ func (m *Model) scopeTreeLeft() {
 	if m.scopeHasChildren(scope) && m.scopeIsExpanded(scope) {
 		m.setScopeExpanded(scope.key, false)
 	} else if scope.parentKey != "" {
-		m.scopeTreeKey = scope.parentKey
+		m.setScopeTreeKey(scope.parentKey)
 	}
 }
 
@@ -116,7 +123,7 @@ func (m *Model) scopeTreeRight() {
 	}
 	for _, child := range m.scopes {
 		if child.parentKey == scope.key && child.kind != "inspection" {
-			m.scopeTreeKey = child.key
+			m.setScopeTreeKey(child.key)
 			return
 		}
 	}
@@ -152,22 +159,12 @@ func (m Model) scopeTreePane(width, height int) string {
 	lines := []string{paneHeadingStyle.Render("Scope")}
 	for i := start; i < len(visible) && i < start+rows; i++ {
 		scope := visible[i]
-		branch := "  "
-		if m.scopeHasChildren(scope) {
-			branch = "▸ "
-			if m.scopeIsExpanded(scope) {
-				branch = "▾ "
-			}
-		}
-		marker := "  "
-		if scope.key == m.currentChart {
-			marker = "● "
-		}
+		prefix, label, labelWidth := m.scopeLabelCell(scope, width)
+		name := truncateCell(label, labelWidth)
 		if focused && i == index {
-			marker = "> "
+			name = scrollRowCell(label, m.compScroll, labelWidth)
 		}
-		indent := strings.Repeat("  ", scope.depth)
-		line := truncateCell(marker+indent+branch+terminalText(scope.label), inner)
+		line := truncateCell(prefix+name, inner)
 		if focused && i == index {
 			line = selectedRowStyle.Width(inner).Render(line)
 		} else if scope.key == m.currentChart {

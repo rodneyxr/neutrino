@@ -256,6 +256,7 @@ func TestScopeTreePickerUsesWidePaneAndRestoresOverlayCaller(t *testing.T) {
 	m.windowWidth, m.windowHeight = 120, 30
 	m.focusPane = FocusInspector
 	m.currentChart = "api/server/app"
+	m.syncScopeCursor()
 	m.beginScopePicker()
 	if m.inputMode != InputModeNormal || m.focusPane != FocusComponents || m.scopeTreeKey != m.currentChart {
 		t.Fatal("wide scope navigation did not focus the persistent hierarchy")
@@ -278,5 +279,42 @@ func TestScopeTreePickerUsesWidePaneAndRestoresOverlayCaller(t *testing.T) {
 		if lipgloss.Width(body) > size[0] || lipgloss.Height(body) > size[1] || !strings.Contains(ansi.Strip(body), "Scope") {
 			t.Fatalf("scope tree exceeded pane dimensions %v:\n%s", size, body)
 		}
+	}
+}
+
+func TestScopeTreeReopenPreservesUnappliedCursorAndFolds(t *testing.T) {
+	for _, navigation := range []struct{ open, close string }{{"f", "tab"}, {"f", "esc"}, {"shift+tab", "tab"}, {"shift+tab", "esc"}} {
+		t.Run(navigation.open+"/"+navigation.close, func(t *testing.T) {
+			m := scopedWorkspaceModel()
+			resizeWorkspace(&m, 160, 30)
+			m.currentChart = "api/server/app"
+			m.filterInput.SetValue("kind:helm")
+			m.updateFilteredValues()
+			m.syncScopeCursor()
+			pressWorkspaceKey(&m, "j")
+			selected := m.inspectorSelection
+			cursor := m.cursor
+			pressWorkspaceKey(&m, navigation.open)
+			pressWorkspaceKey(&m, "left")
+			pressWorkspaceKey(&m, "left")
+			if m.scopeTreeKey != "component:api/server" || m.scopeExpanded[m.scopeTreeKey] {
+				t.Fatal("fixture did not leave an unapplied cursor on a collapsed component")
+			}
+			expanded := make(map[string]bool, len(m.scopeExpanded))
+			for key, value := range m.scopeExpanded {
+				expanded[key] = value
+			}
+			pressWorkspaceKey(&m, navigation.close)
+			if m.focusPane != FocusValues || m.workspaceGeometry(m.windowWidth).scope != 0 {
+				t.Fatal("leaving Scope did not return its space to Settings and Inspector")
+			}
+			pressWorkspaceKey(&m, navigation.open)
+			if m.focusPane != FocusComponents || m.workspaceGeometry(m.windowWidth).scope == 0 ||
+				m.scopeTreeKey != "component:api/server" || !reflect.DeepEqual(m.scopeExpanded, expanded) ||
+				m.currentChart != "api/server/app" || m.filterInput.Value() != "kind:helm" ||
+				m.cursor != cursor || m.inspectorSelection != selected {
+				t.Fatal("reopening Scope changed its unapplied cursor, folds, applied scope, or selected setting")
+			}
+		})
 	}
 }

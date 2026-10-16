@@ -117,8 +117,7 @@ func (m *Model) selectNextCategory(index int) {
 	m.filteredValues = m.categoryRows[index]
 	m.cursor = clamp(m.categoryCursors[index], 0, len(m.filteredValues)-1)
 	m.viewportOffset = clamp(m.categoryOffsets[index], 0, m.cursor)
-	m.pathScroll = 0
-	m.pathScrollPause = 2
+	m.resetSelectedRowScroll()
 	m.syncInspectorSelection()
 }
 

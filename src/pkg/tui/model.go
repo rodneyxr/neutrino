@@ -147,6 +147,8 @@ type Model struct {
 	detailSource       *DetailItem
 	pathScroll         int
 	pathScrollPause    int
+	valueScroll        int
+	valueScrollPause   int
 	compScroll         int
 	compScrollPause    int
 	windowHeight       int
@@ -231,8 +233,7 @@ func NewModel(report introspect.InspectionReport) Model {
 }
 
 func (m *Model) updateFilteredValues() {
-	m.pathScroll = 0
-	m.pathScrollPause = 2
+	m.resetSelectedRowScroll()
 	var newValues []DisplayItem
 	// Filter the completed catalog so every row type shares the same query semantics.
 	filter := ""
@@ -253,6 +254,11 @@ func (m *Model) updateFilteredValues() {
 				}
 			}
 			for _, pkg := range m.bundle.Packages {
+				// Packages without values files remain in Scope; they are not
+				// configuration inputs in the Settings catalog.
+				if len(pkg.ValuesFiles) == 0 {
+					continue
+				}
 				item := DisplayItem{ValueUsage: introspect.ValueUsage{Path: pkg.ID},
 					Component: "UDS Next bundle", PackageName: pkg.ID,
 					IsPackageValue: true, ValueFiles: pkg.ValuesFiles, ValueSource: pkg.Source}
@@ -560,7 +566,7 @@ func (m *Model) updateFilteredValues() {
 			filtered = append(filtered, item)
 		}
 	}
-	newValues = filtered
+	newValues = m.orderSettingsLayers(filtered)
 	m.allValues = newValues
 	if m.nextRail {
 		for i := range m.categoryCounts {
@@ -569,13 +575,6 @@ func (m *Model) updateFilteredValues() {
 		for _, item := range newValues {
 			m.categoryCounts[nextCategory(item)]++
 		}
-		sort.SliceStable(newValues, func(i, j int) bool {
-			left, right := nextCategory(newValues[i]), nextCategory(newValues[j])
-			if left != right {
-				return left < right
-			}
-			return left == 2 && newValues[i].PackageName < newValues[j].PackageName
-		})
 		start := 0
 		for i, count := range m.categoryCounts {
 			m.categoryRows[i] = newValues[start : start+count]
@@ -722,36 +721,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		previousFocus := m.focusPane
+		var next tea.Model
+		var cmd tea.Cmd
 		switch m.inputMode {
 		case InputModeFilter:
-			return m.handleFilterKey(msg)
+			next, cmd = m.handleFilterKey(msg)
 		case InputModeChartSelect:
-			return m.handleComponentKey(msg)
+			next, cmd = m.handleComponentKey(msg)
 		case InputModeCommand:
-			return m.handleCommandKey(msg)
+			next, cmd = m.handleCommandKey(msg)
 		case InputModeScopeSelect:
-			return m.handleScopeKey(msg)
+			next, cmd = m.handleScopeKey(msg)
 		default:
-			return m.handleNormalKey(msg)
+			next, cmd = m.handleNormalKey(msg)
 		}
+		updated := next.(Model)
+		if updated.focusPane != previousFocus {
+			updated.resetSelectedRowScroll()
+			updated.refreshWorkspaceGeometry()
+		}
+		return updated, cmd
 	case pathScrollTickMsg:
 		if m.statusMessage != "" && !time.Time(msg).Before(m.statusExpiresAt) {
 			m.statusMessage = ""
 		}
+		m.stepAutoScroll()
 		return m, tickPathScroll()
 	case tea.WindowSizeMsg:
 		m.windowHeight = msg.Height
 		m.windowWidth = msg.Width
-		m.filterInput.Width = max(1, geometryFor(msg.Width).settings-6)
-		m.pathScroll = 0
-		m.pathScrollPause = 2
+		m.resetSelectedRowScroll()
 		m.compScroll = 0
 		m.compScrollPause = 2
-		m.ensureCursorVisible()
-		m.ensureMappingCursorVisible()
-		if m.focusPane == FocusInspector {
-			m.ensureDetailCursorVisible()
-		}
+		m.refreshWorkspaceGeometry()
 	}
 	return m, nil
 }

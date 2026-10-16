@@ -282,12 +282,17 @@ func (m Model) matchingScopes() []workspaceScope {
 	return out
 }
 func (m *Model) beginScopePicker() {
-	m.scopeReturnFocus = m.focusPane
+	if m.focusPane != FocusComponents {
+		m.scopeReturnFocus = m.focusPane
+	}
+	m.showOverview = false
 	if m.windowWidth >= wideLayoutWidth {
 		m.inputMode = InputModeNormal
 		m.chartInput.Blur()
 		m.focusPane = FocusComponents
-		m.syncScopeCursor()
+		if _, found := m.workspaceScope(m.scopeTreeKey); !found {
+			m.syncScopeCursor()
+		}
 		m.statusMessage = ""
 		return
 	}
@@ -320,7 +325,7 @@ func (m Model) handleScopeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.scopeCursor = clamp(m.scopeCursor+max(1, m.windowHeight-9), 0, len(choices)-1)
 	case "enter":
 		if len(choices) > 0 {
-			m.scopeTreeKey = choices[clamp(m.scopeCursor, 0, len(choices)-1)].key
+			m.setScopeTreeKey(choices[clamp(m.scopeCursor, 0, len(choices)-1)].key)
 			m.inputMode = InputModeNormal
 			m.chartInput.Blur()
 			m.applyScopeCursor()
@@ -392,7 +397,7 @@ func (m Model) matchesWorkspaceFilter(item DisplayItem) bool {
 			case "source":
 				matched = strings.Contains(strings.ToLower(m.itemSources(item)), value)
 			case "kind":
-				matched = strings.Contains(strings.ToLower(nextCategories[nextCategory(item)]), value)
+				matched = m.settingLayerMatches(item, value)
 			case "status":
 				switch value {
 				case "changed", "overridden":

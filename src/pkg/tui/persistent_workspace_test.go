@@ -66,6 +66,24 @@ func workspaceColumns(view string, start, width int) string {
 	return strings.Join(lines, "\n")
 }
 
+// Pane checks omit header/footer hints: "f Scope" must remain discoverable
+// even when no Scope pane is currently visible.
+func workspacePaneColumns(view string, start, width int) string {
+	lines := strings.Split(view, "\n")
+	if len(lines) > 2 {
+		lines = lines[1 : len(lines)-1]
+	}
+	return workspaceColumns(strings.Join(lines, "\n"), start, width)
+}
+
+func workspacePaneHeading(view string, start, width int) string {
+	lines := strings.Split(ansi.Strip(view), "\n")
+	if len(lines) < 3 {
+		return ""
+	}
+	return strings.Trim(ansi.Cut(lines[2], start, start+width), " ║│")
+}
+
 func assertWorkspaceSize(t *testing.T, model Model, width, height int) string {
 	t.Helper()
 	view := model.View()
@@ -76,8 +94,8 @@ func assertWorkspaceSize(t *testing.T, model Model, width, height int) string {
 }
 
 func TestPersistentWorkspaceWidePanesTrackSelectedSetting(t *testing.T) {
-	for _, size := range []struct{ width, height, scope, settings, inspector int }{
-		{120, 32, 24, 46, 50}, {160, 40, 28, 62, 70},
+	for _, size := range []struct{ width, height, settings, inspector int }{
+		{120, 32, 66, 54}, {160, 40, 88, 72},
 	} {
 		t.Run(fmt.Sprint(size.width), func(t *testing.T) {
 			m := persistentWorkspaceModel(t)
@@ -87,25 +105,28 @@ func TestPersistentWorkspaceWidePanesTrackSelectedSetting(t *testing.T) {
 				name         string
 				start, width int
 			}{
-				{"Scope", 0, size.scope}, {"Settings", size.scope, size.settings}, {"Inspector", size.scope + size.settings, size.inspector},
+				{"Settings", 0, size.settings}, {"Inspector", size.settings, size.inspector},
 			} {
-				if !strings.Contains(workspaceColumns(view, pane.start, pane.width), pane.name) {
+				if !strings.Contains(workspacePaneColumns(view, pane.start, pane.width), pane.name) {
 					t.Fatalf("%s missing from its persistent column:\n%s", pane.name, view)
 				}
 			}
-			inspector := workspaceColumns(view, size.scope+size.settings, size.inspector)
+			if workspacePaneHeading(view, 0, size.settings) != "Settings" || !strings.Contains(view, "f Scope") {
+				t.Fatal("initial workspace must collapse Scope while exposing its shortcut")
+			}
+			inspector := workspaceColumns(view, size.settings, size.inspector)
 			if !strings.Contains(inspector, "alpha") || !strings.Contains(inspector, "ALPHA_DEFAULT") || m.focusPane != FocusValues {
 				t.Fatalf("selected setting is not inspected before Enter:\n%s", inspector)
 			}
 			pressWorkspaceKey(&m, "j")
 			view = assertWorkspaceSize(t, m, size.width, size.height)
-			inspector = workspaceColumns(view, size.scope+size.settings, size.inspector)
+			inspector = workspaceColumns(view, size.settings, size.inspector)
 			if m.focusPane != FocusValues || !strings.Contains(inspector, "beta") || !strings.Contains(inspector, "BETA_DEFAULT") || strings.Contains(inspector, "ALPHA_DEFAULT") {
 				t.Fatalf("moving in Settings did not update the live inspector:\n%s", inspector)
 			}
 			pressWorkspaceKey(&m, "enter")
-			if m.focusPane != FocusInspector || !strings.Contains(m.View(), "Settings") || !strings.Contains(m.View(), "Scope") {
-				t.Fatal("Enter should focus the existing inspector without replacing sibling panes")
+			if m.focusPane != FocusInspector || !strings.Contains(m.View(), "Settings") || m.workspaceGeometry(size.width).scope != 0 {
+				t.Fatal("Enter should focus the existing inspector and keep Scope collapsed")
 			}
 		})
 	}
@@ -155,7 +176,7 @@ func TestPersistentWorkspaceMediumUsesScopeOverlay(t *testing.T) {
 	m := persistentWorkspaceModel(t)
 	resizeWorkspace(&m, 80, 24)
 	view := assertWorkspaceSize(t, m, 80, 24)
-	if !strings.Contains(workspaceColumns(view, 0, 36), "Settings") || !strings.Contains(workspaceColumns(view, 36, 44), "Inspector") || strings.Contains(workspaceColumns(view, 0, 36), "Scope") {
+	if workspacePaneHeading(view, 0, 36) != "Settings" || workspacePaneHeading(view, 36, 44) != "Inspector" {
 		t.Fatalf("medium workspace should keep Settings and Inspector together:\n%s", view)
 	}
 	pressWorkspaceKey(&m, "enter")
@@ -175,6 +196,12 @@ func TestPersistentWorkspaceNarrowShowsFocusedPane(t *testing.T) {
 	view := assertWorkspaceSize(t, m, 40, 12)
 	if !strings.Contains(view, "Settings") || strings.Contains(view, "Inspector") {
 		t.Fatalf("narrow Settings view contains another pane:\n%s", view)
+	}
+	footer := strings.Split(view, "\n")[11]
+	for _, hint := range []string{"enter view", "esc back", "? help", "q quit"} {
+		if !strings.Contains(footer, hint) {
+			t.Fatalf("40-column entry screen lost its %q hint: %q", hint, footer)
+		}
 	}
 	pressWorkspaceKey(&m, "enter")
 	view = assertWorkspaceSize(t, m, 40, 12)
@@ -270,7 +297,7 @@ func TestPersistentWorkspaceRuntimeSummaryHidesCacheSourceNames(t *testing.T) {
 	m.filteredValues = []DisplayItem{value}
 	m.cursor, m.focusPane = 0, FocusValues
 	m.buildDetailItems()
-	for _, size := range []struct{ width, start, inspector int }{{120, 70, 50}, {160, 90, 70}} {
+	for _, size := range []struct{ width, start, inspector int }{{120, 66, 54}, {160, 88, 72}} {
 		resizeWorkspace(&m, size.width, 32)
 		view := assertWorkspaceSize(t, m, size.width, 32)
 		inspector := workspaceColumns(view, size.start, size.inspector)
@@ -375,5 +402,126 @@ func TestPersistentWorkspaceRefocusKeepsResizedSourceActionVisible(t *testing.T)
 		if selectedRow < m.detailScrollOffset || selectedRow >= m.detailScrollOffset+visible || !strings.Contains(view, "> Template · line 16") {
 			t.Fatalf("refocus after resizing at %v hid the selected source: row=%d offset=%d visible=%d\n%s", size, selectedRow, m.detailScrollOffset, visible, view)
 		}
+	}
+}
+
+func TestPersistentWorkspaceScopeCollapsesWithoutChangingInspectorRoute(t *testing.T) {
+	for _, width := range []int{120, 160} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			m := persistentWorkspaceModel(t)
+			resizeWorkspace(&m, width, 32)
+			m.filterInput.SetValue("kind:helm")
+			m.updateFilteredValues()
+			pressWorkspaceKey(&m, "j")
+			selected, selectionKey := m.cursor, m.inspectorSelection
+			pressWorkspaceKey(&m, "shift+tab")
+			geometry := m.workspaceGeometry(width)
+			view := assertWorkspaceSize(t, m, width, 32)
+			if m.focusPane != FocusComponents || geometry.scope == 0 || workspacePaneHeading(view, 0, geometry.scope) != "Scope" ||
+				m.filterInput.Width != geometry.settings-6 {
+				t.Fatalf("ShiftTab did not open Scope with matching input geometry:\n%s", view)
+			}
+			pressWorkspaceKey(&m, "tab")
+			if m.focusPane != FocusValues || m.workspaceGeometry(width).scope != 0 || m.cursor != selected || m.inspectorSelection != selectionKey ||
+				m.filterInput.Width != width*55/100-6 {
+				t.Fatal("leaving Scope changed selection or failed to restore wider Settings")
+			}
+			pressWorkspaceKey(&m, "enter")
+			openInspectorTestPanel(t, &m, detailSources)
+			pressWorkspaceKey(&m, "G")
+			pressWorkspaceKey(&m, "enter")
+			if m.detailPanel != detailSourceFile || m.detailSource == nil {
+				t.Fatal("fixture did not open a nested inspector source")
+			}
+			wantHistory := append([]detailPanelReturn(nil), m.detailPanelHistory...)
+			wantSource, wantCursor, wantOffset := *m.detailSource, m.detailCursor, m.detailScrollOffset
+			for range 2 {
+				pressWorkspaceKey(&m, "f")
+			}
+			if m.scopeReturnFocus != FocusInspector || m.detailPanel != detailSourceFile {
+				t.Fatal("repeated Scope entry replaced its caller or Inspector route")
+			}
+			pressWorkspaceKey(&m, "esc")
+			view = assertWorkspaceSize(t, m, width, 32)
+			if m.focusPane != FocusInspector || m.workspaceGeometry(width).scope != 0 ||
+				m.detailPanel != detailSourceFile || m.detailSource == nil || !reflect.DeepEqual(*m.detailSource, wantSource) ||
+				!reflect.DeepEqual(m.detailPanelHistory, wantHistory) || m.detailCursor != wantCursor || m.detailScrollOffset != wantOffset ||
+				m.cursor != selected || m.inspectorSelection != selectionKey || m.filterInput.Value() != "kind:helm" || m.category != 5 {
+				t.Fatalf("closing Scope changed Inspector state: focus=%v panel=%v action=%d/%d offset=%d/%d selected=%d/%d sourceEqual=%t historyEqual=%t selectionEqual=%t:\n%s",
+					m.focusPane, m.detailPanel, m.detailCursor, wantCursor, m.detailScrollOffset, wantOffset, m.cursor, selected,
+					m.detailSource != nil && reflect.DeepEqual(*m.detailSource, wantSource), reflect.DeepEqual(m.detailPanelHistory, wantHistory), m.inspectorSelection == selectionKey, view)
+			}
+			settingsWidth := width * 55 / 100
+			if workspacePaneHeading(view, 0, settingsWidth) != "Settings" || workspacePaneHeading(view, settingsWidth, width-settingsWidth) != "Inspector" {
+				t.Fatalf("closing Scope did not restore the two pane headings:\n%s", view)
+			}
+		})
+	}
+}
+
+func TestPersistentWorkspaceScopeEntryFromOverviewAndCommandPalette(t *testing.T) {
+	for _, entry := range []string{"f", "command"} {
+		t.Run(entry, func(t *testing.T) {
+			m := persistentWorkspaceModel(t)
+			resizeWorkspace(&m, 160, 32)
+			pressWorkspaceKey(&m, "j")
+			selected, selectionKey := m.cursor, m.inspectorSelection
+			pressWorkspaceKey(&m, "0")
+			if !m.showOverview {
+				t.Fatal("fixture did not enter Overview")
+			}
+			if entry == "command" {
+				pressWorkspaceKey(&m, ":")
+				m.commandInput.SetValue("Select package or chart")
+				pressWorkspaceKey(&m, "enter")
+			} else {
+				pressWorkspaceKey(&m, "f")
+			}
+			view := assertWorkspaceSize(t, m, 160, 32)
+			geometry := m.workspaceGeometry(160)
+			if m.inputMode != InputModeNormal || m.showOverview || m.focusPane != FocusComponents ||
+				workspacePaneHeading(view, 0, geometry.scope) != "Scope" || m.filterInput.Width != geometry.settings-6 {
+				t.Fatalf("%s left Scope hidden or used stale geometry:\n%s", entry, view)
+			}
+			pressWorkspaceKey(&m, "esc")
+			if m.focusPane != FocusValues || m.showOverview || m.workspaceGeometry(160).scope != 0 ||
+				m.filterInput.Width != 88-6 || m.cursor != selected || m.inspectorSelection != selectionKey {
+				t.Fatal("closing Scope did not preserve the selected setting and collapsed geometry")
+			}
+		})
+	}
+}
+
+func TestPersistentWorkspaceScopeRoundTripKeepsMappingAndTrace(t *testing.T) {
+	m := scopedWorkspaceModel()
+	resizeWorkspace(&m, 160, 32)
+	m.filterInput.SetValue("pkg:api")
+	m.updateFilteredValues()
+	m.selectNextCategory(4)
+	pressWorkspaceKey(&m, "enter")
+	openInspectorTestMapping(t, &m)
+	table := m.mapping
+	pressWorkspaceKey(&m, "j")
+	wantMappingCursor, wantMappingOffset := table.cursor, table.offset
+	pressWorkspaceKey(&m, "tab")
+	related := DisplayItem{IsPackageValue: true, ValuePresent: true, PackageName: "api", Component: "Zarf Package Values",
+		ValueUsage: introspect.ValueUsage{Path: "settings.replicas", DefaultValue: 2}}
+	if !m.followTrace(DetailItem{Kind: DetailItemTrace, relatedValue: &related}) {
+		t.Fatal("fixture did not follow its package-input trace")
+	}
+	wantTrace := append([]traceReturn(nil), m.traceHistory...)
+	wantRef, wantSelection := m.detailRef, m.inspectorSelection
+	pressWorkspaceKey(&m, "f")
+	pressWorkspaceKey(&m, "esc")
+	if m.focusPane != FocusInspector || m.mapping != table || m.mapping.cursor != wantMappingCursor || m.mapping.offset != wantMappingOffset ||
+		m.detailRef != wantRef || !reflect.DeepEqual(m.traceHistory, wantTrace) || m.inspectorSelection != wantSelection ||
+		m.filterInput.Value() != "pkg:api" || m.category != 4 || m.workspaceGeometry(160).scope != 0 {
+		t.Fatal("Scope open/close reset the active mapping or pinned trace")
+	}
+	pressWorkspaceKey(&m, "shift+tab")
+	pressWorkspaceKey(&m, "shift+tab")
+	pressWorkspaceKey(&m, "tab")
+	if m.focusPane != FocusMapping || m.mapping != table || m.mapping.cursor != wantMappingCursor || m.detailRef != wantRef || !reflect.DeepEqual(m.traceHistory, wantTrace) {
+		t.Fatal("tabbing through Scope did not preserve the active mapped-row route")
 	}
 }
