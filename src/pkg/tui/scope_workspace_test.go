@@ -122,6 +122,7 @@ func TestScopePickerKeyboardSearchAndCancelPreservesScope(t *testing.T) {
 
 func TestAllCategorySearchCombinesOwnerAndChangeEvidence(t *testing.T) {
 	m := scopedWorkspaceModel()
+	m.selectSettingType(7)
 	m.beginFilter()
 	m.filterInput.SetValue("pkg:api status:changed replicas")
 	m.updateFilteredValues()
@@ -133,7 +134,7 @@ func TestAllCategorySearchCombinesOwnerAndChangeEvidence(t *testing.T) {
 		if v.Component == "api.extra/server/app" {
 			t.Fatal("unrelated package matched changed query")
 		}
-		if !m.valueChanged(v) {
+		if !v.settingContext && !m.valueChanged(v) {
 			t.Fatalf("unchanged item leaked into changed filter: %+v", v)
 		}
 		packageInput = packageInput || v.IsPackageValue
@@ -211,6 +212,7 @@ func TestTerminalDataCannotInjectCommandsOrRewriteRows(t *testing.T) {
 func TestSourceFilterFindsHelmTemplateLocations(t *testing.T) {
 	m := scopedWorkspaceModel()
 	m.components["api/server/app"].Values[0].Locations = []introspect.ValueUsageLocation{{File: "templates/deployment.yaml", Line: 12}}
+	m.selectSettingType(5)
 	m.beginFilter()
 	m.filterInput.SetValue("source:deployment.yaml")
 	m.updateFilteredValues()

@@ -1,6 +1,6 @@
 # Terminal workspace
 
-Neutrino's interactive workspace is a static configuration catalog. Browse package declarations, chart defaults, explicit schema properties, mappings, and observed template references without supplying live deployment configuration.
+Neutrino's interactive workspace is a static configuration catalog. Browse configured package values, chart defaults, mappings, and observed template references without supplying live deployment configuration.
 
 Inspection opens the workspace automatically when both input and output are terminals. Use `-i` to require it:
 
@@ -18,24 +18,30 @@ From 80 to 119 columns, Settings and Inspector remain side by side and `f` opens
 
 ## Find a setting
 
-Press `f` to focus the Scope tree at wide widths or open its picker at narrower widths. In the tree, use the right arrow to expand a branch and the left arrow to collapse it or move to its parent. Press `Enter` to apply the selected scope and return to Settings. `Esc` closes Scope and returns to the pane that opened it. Press `/` to edit the query in Settings; terms combine with AND. Examples include `pkg:api replica`, `chart:gateway`, `source:production.yaml`, and `status:changed`. Press `8` for all categories, or `0` for an inspection overview.
+Press `f` to focus the Scope tree at wide widths or open its picker at narrower widths. In the tree, use the right arrow to expand a branch and the left arrow to collapse it or move to its parent. Press `Enter` to apply the selected scope and return to Settings. `Esc` closes Scope and returns to the pane that opened it.
 
-Next bundles have seven category filters in Settings. The fifth, **Mappings & uses**, includes declared Package Values mappings and observed template references. Their kinds distinguish mappings from runtime uses; an observed reference is not itself a configurable declaration. Identical chart names in different packages retain separate owners. Source filenames are available through **Sources**, rather than consuming catalog columns.
+Settings has seven type tabs for every artifact: **Bundle vars**, **Bundle files**, **Zarf vars**, **Zarf values**, **Mappings**, **Helm**, and **Overrides**. Use `1`–`7`, or left/right while Settings is focused, to change type. The **All** tab (`8`) stays visible when narrower layouts show only neighboring types. Inspection starts on the artifact's own configuration surface. `0` opens an inspection overview.
 
-Settings bands distinguish **Bundle variables**, **Bundle values files**, **Legacy Zarf variables**, **Zarf values**, **Zarf schema · no input**, **Zarf → Helm mappings**, **Zarf runtime references**, **Helm inputs**, and **Legacy bundle overrides** (fixed or configurable). Package values name the surviving inspected origin: packaged, bundle, operator, mixed, or unknown. **Known input** means an unresolved source prevents claiming a final value. Equal overlays still own their input even when they do not change it. Bundle file rows show their declared filenames and inspection status; packages with no such files remain in Scope without adding an empty Settings row.
+Press `/` to search the selected type and scope; terms combine with AND. Examples include `pkg:api replica`, `chart:gateway`, `source:production.yaml`, and `status:changed`. Changing tabs preserves the query. Choose **All** explicitly to search across types. The changed and unresolved shortcuts also retain the selected type.
 
-Use layer names in filters, for example `kind:packaged`, `kind:schema`, `kind:files`, or `kind:configurable`. Long paths and values scroll independently on the focused selected row after a brief pause; navigation, resizing, or changing focus resets scrolling. Search, help, and the command palette pause it.
+**Mappings** includes declared Package Values mappings and observed template references. Their kinds distinguish mappings from runtime uses; an observed reference is not itself a configurable declaration. Identical chart names in different packages retain separate owners. Source filenames are available through **Sources**.
+
+Zarf values use an indented object hierarchy. A nonempty object is a **group**, and its children show relative names rather than repeating the parent's path. Empty objects, arrays, explicit nulls and scalar values remain inputs with their own mapping status. Full paths remain available for search, inspection and copying. Search retains matching inputs' ancestors as context. No mapping is inferred from a name: an optional component absent from the inspected package can leave real inputs without an inspected mapping.
+
+The Inspector names each package value's surviving inspected origin: packaged, bundle, operator, mixed, or unknown. **Known input** means an unresolved source prevents claiming a final value. Equal overlays still own their input even when they do not change it. Bundle file rows show their declared filenames and inspection status; packages with no such files remain in Scope without adding an empty Settings row.
+
+Use origin and kind filters such as `kind:packaged`, `kind:files`, or `kind:configurable`. Long paths and values scroll independently on the focused selected row after a brief pause; navigation, resizing, or changing focus resets scrolling. Search, help, and the command palette pause it.
 
 The catalog includes:
 
-- Configured Package Values and explicit properties declared in the package schema, including properties without supplied input.
+- Configured Package Values, with structural object groups for navigation.
 - Helm defaults from chart values files, observed template paths, and explicit chart schema properties.
 - Bundle `.vars` paths referenced by values files, including paths absent from defaults or configuration.
 - Legacy Zarf variable declarations, including unused declarations in standalone packages.
 
 A schema default is an **annotation**, separate from a supplied value or chart default. **Not supplied** differs from explicit `null`, `false`, `0`, or an empty string. A required property is required in its parent object; it is not necessarily required when that parent is absent. Dynamic Helm paths are marked as dynamic rather than resolved defaults.
 
-Static schema inventory follows explicit `properties`. Raw references, composition, and other constraints remain available in the schema view; the inventory does not expand every possible schema path or validate the inputs. Runtime enrichment is optional and is not needed to browse this catalog.
+Schema-only Zarf properties stay out of Settings. Press `S` on a package in Scope or one of its settings to view its entire schema, including properties without supplied inputs. The command palette also provides **View package schema**. Lowercase `s` opens the selected setting’s schema. Static schema inventory follows explicit `properties`; raw references, composition, and other constraints remain available in the schema view; the inventory does not expand every possible schema path or validate the inputs. Runtime enrichment is optional and is not needed to browse this catalog.
 
 ## Read a setting
 
@@ -76,8 +82,8 @@ Authoring examples use supplied input when known, otherwise a known chart defaul
 | --- | --- |
 | `f` | Focus Scope at wide widths; open the scope picker at narrower widths |
 | Left / right in Scope | Collapse or move to parent / expand branch |
-| `/` | Search within the selected scope |
-| `1`–`7` | Select a Next bundle category |
+| `/` | Search within the selected type and scope |
+| `1`–`7` / left-right in Settings | Select a setting type |
 | `0` / `8` | Overview / all inputs |
 | `c` / `u` | Toggle changed / unresolved filter |
 | `Tab` / `Shift+Tab` | Cycle workspace panes; open or collapse Scope as focus changes |
@@ -89,6 +95,7 @@ Authoring examples use supplied input when known, otherwise a known chart defaul
 | `Esc` | Back, close an overlay, or clear a filter |
 | `o` | Browse source locations |
 | `v` / `t` / `s` | Full value / input history / schema, when applicable |
+| `S` | Whole package schema from Scope or a package setting |
 | `b` / `Space` | Authoring example in the inspector |
 | `a` | Show/hide other paths in a mapping table |
 | `y` / `p` | Copy value path / selected mapping input path |

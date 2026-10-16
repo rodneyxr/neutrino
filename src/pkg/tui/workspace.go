@@ -53,6 +53,7 @@ const (
 	commandAllInputs
 	commandChanged
 	commandUnresolved
+	commandPackageSchema
 )
 
 type commandDefinition struct {
@@ -67,7 +68,7 @@ var commands = [...]commandDefinition{
 	{commandAllInputs, "All configuration inputs", "8", "Browse every owner in the selected scope"},
 	{commandChanged, "Changed inputs", "c", "Find inputs changed by a later source"},
 	{commandUnresolved, "Unresolved inputs", "u", "Find runtime values and missing input evidence"},
-	{commandSearch, "Filter values", "/", "Search paths across the selected component"},
+	{commandSearch, "Filter values", "/", "Search the selected setting type and scope"},
 	{commandComponents, "Select package or chart", "f", "Navigate the package, component and chart hierarchy"},
 	{commandNextComponent, "Next component", "n / ]", "Jump to the next component"},
 	{commandPrevComponent, "Previous component", "N / [", "Jump to the previous component"},
@@ -75,6 +76,7 @@ var commands = [...]commandDefinition{
 	{commandUDSSummary, "Toggle bundle overrides", "U", "Show the cross-package override summary"},
 	{commandBundleMode, "Toggle authoring snippets", "b", "Show Package Values and UDS authoring snippets in Details"},
 	{commandSchema, "View value schema", "s", "Open schema annotations in a separate view"},
+	{commandPackageSchema, "View package schema", "S", "Inspect the selected package schema without adding schema rows"},
 	{commandOpenSource, "View sources", "o", "Browse observed sources before opening an editor"},
 	{commandCopyPath, "Copy value path", "y", "Copy the selected path through terminal OSC 52"},
 	{commandHelp, "Show keyboard help", "?", "Open the context-sensitive shortcut reference"},
@@ -194,9 +196,9 @@ func (m *Model) jumpComponent(delta int) {
 			return
 		}
 		if delta > 0 {
-			curr := m.filteredValues[m.cursor].Component
+			curr := m.settingGroupKey(m.filteredValues[m.cursor])
 			for i := m.cursor + 1; i < len(m.filteredValues); i++ {
-				if m.filteredValues[i].Component != curr {
+				if m.settingGroupKey(m.filteredValues[i]) != curr {
 					m.cursor = i
 					m.resetSelectedRowScroll()
 					m.ensureCursorVisible()
@@ -205,15 +207,15 @@ func (m *Model) jumpComponent(delta int) {
 				}
 			}
 		} else {
-			curr := m.filteredValues[m.cursor].Component
+			curr := m.settingGroupKey(m.filteredValues[m.cursor])
 			startIdx := m.cursor
-			for startIdx > 0 && m.filteredValues[startIdx-1].Component == curr {
+			for startIdx > 0 && m.settingGroupKey(m.filteredValues[startIdx-1]) == curr {
 				startIdx--
 			}
 			if startIdx == m.cursor && startIdx > 0 {
 				prevIdx := startIdx - 1
-				prevComp := m.filteredValues[prevIdx].Component
-				for prevIdx > 0 && m.filteredValues[prevIdx-1].Component == prevComp {
+				prevComp := m.settingGroupKey(m.filteredValues[prevIdx])
+				for prevIdx > 0 && m.settingGroupKey(m.filteredValues[prevIdx-1]) == prevComp {
 					prevIdx--
 				}
 				m.cursor = prevIdx
@@ -303,12 +305,11 @@ func (m *Model) beginFilter() {
 	m.mappingRowDetail = false
 	m.focusPane = FocusValues
 	m.previousFilter = m.filterInput.Value()
-	m.allCategories = true
 	m.showOverview = false
 	m.updateFilteredValues()
 	m.inputMode = InputModeFilter
 	m.filterInput.Focus()
-	m.setStatus("Type to filter values")
+	m.setStatus("Search " + m.selectedSettingTypeLabel())
 }
 
 func (m *Model) beginComponentFilter() {
@@ -371,12 +372,7 @@ func (m *Model) executeCommand(command commandDefinition) tea.Cmd {
 		m.overviewOffset = 0
 		m.focusPane = m.centralFocus()
 	case commandAllInputs:
-		m.mapping = nil
-		m.mappingRowDetail = false
-		m.focusPane = FocusValues
-		m.showOverview = false
-		m.allCategories = true
-		m.updateFilteredValues()
+		m.selectSettingType(7)
 	case commandChanged:
 		m.focusStatus("changed")
 	case commandUnresolved:
@@ -402,6 +398,8 @@ func (m *Model) executeCommand(command commandDefinition) tea.Cmd {
 		if m.focusPane == FocusInspector && ok && !runtimeReference(value) && m.selectedValueSchema(value) != nil {
 			m.openDetailPanel(detailSchema, nil)
 		}
+	case commandPackageSchema:
+		m.openPackageSchema()
 	case commandOpenSource:
 		return m.openSelectedSource()
 	case commandCopyPath:
@@ -541,15 +539,8 @@ func (m Model) workspaceHeader(width int) string {
 		panes = "3 panes"
 	}
 	right := fmt.Sprintf("%d settings  •  %s", len(m.filteredValues), panes)
-	if m.nextRail {
-		mode := nextCategories[m.category]
-		if m.allCategories {
-			mode = "all inputs"
-		}
-		if m.showOverview {
-			mode = "overview"
-		}
-		right = fmt.Sprintf("%d settings · %s", len(m.filteredValues), mode)
+	if !m.showOverview {
+		right = fmt.Sprintf("%d settings · %s", len(m.filteredValues), m.selectedSettingTypeLabel())
 	}
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 1 {
@@ -602,17 +593,13 @@ func (m Model) workspaceFooter(width int) string {
 		case m.showOverview:
 			primary = helpStyle.Render("j/k scroll  8 browse  f scope  ? help  q quit")
 		case m.focusPane == FocusComponents:
-			primary = helpStyle.Render("↑↓ scope  ← parent  → expand  enter apply  tab settings  ? help")
+			primary = helpStyle.Render("↑↓ scope  ← parent  → expand  enter apply  S schema  tab settings  ? help")
 		case m.focusPane == FocusMapping:
 			primary = helpStyle.Render("j/k select  enter inspector  tab panes  f scope  esc back  ? help")
 		case m.focusPane == FocusInspector:
 			primary = helpStyle.Render(m.inspectorFooter(width))
 		default:
-			if m.nextRail {
-				primary = helpStyle.Render("tab panes  j/k select  enter inspector  / search  f scope  1-7 category  8 all  ? help")
-			} else {
-				primary = helpStyle.Render("tab panes  j/k select  enter inspector  / search  f scope  : commands  ? help")
-			}
+			primary = helpStyle.Render("←/→ type  8 all  j/k select  enter inspect  / search  f scope  tab panes  ? help")
 		}
 	}
 	if m.inputMode == InputModeNormal && m.statusMessage != "" {
@@ -623,7 +610,7 @@ func (m Model) workspaceFooter(width int) string {
 		}
 		return footerBarStyle.Width(width).Render(m.statusMessage + strings.Repeat(" ", gap) + hint)
 	}
-	if (width < 100 || m.nextRail && width < 115) && m.inputMode == InputModeNormal && m.statusMessage == "" {
+	if width < 100 && m.inputMode == InputModeNormal && m.statusMessage == "" {
 		switch {
 		case m.showOverview:
 			primary = helpStyle.Render("j/k scroll  8 browse  esc back  ? help  q quit")
@@ -634,7 +621,7 @@ func (m Model) workspaceFooter(width int) string {
 		case m.focusPane == FocusInspector:
 			primary = helpStyle.Render("enter open  tab panes  esc back  ? help  q quit")
 		default:
-			primary = helpStyle.Render("enter inspect  tab panes  / search  f scope  ? help  q quit")
+			primary = helpStyle.Render("←/→ type  8 all  enter inspect  / search  f scope  ? help")
 		}
 	}
 	line := primary
@@ -799,8 +786,8 @@ func (m Model) valuesPane(width, height int) string {
 	// ANSI after rendering would also erase the selected-row highlight.
 	add := func(line string) { content.WriteString(line + "\n") }
 	add(paneHeadingStyle.Render("Settings"))
+	add(m.settingsTabs(inner))
 	add(filterStyle.Render(m.settingsQueryLine(inner)))
-	add(helpStyle.Render(m.settingsFilterLine(inner)))
 	pathWidth, valWidth, typeWidth, _, metadata := m.columnWidths(inner)
 	heading := fmt.Sprintf("  %-*s %-*s", pathWidth, "Setting", valWidth, "Value")
 	if metadata {
@@ -840,13 +827,26 @@ func (m Model) valuesPane(width, height int) string {
 		line = truncateCell(marker+line, inner)
 		if index == m.cursor {
 			add(selectedRowStyle.Render(line))
+		} else if value.settingChildren > 0 {
+			add(groupHeadingStyle.Render(line))
 		} else {
 			add(kindStyleFor(value).Render(line))
 		}
 		used++
 	}
 	if len(m.filteredValues) == 0 {
-		add(helpStyle.Render("No settings match"))
+		typeName := "settings"
+		if !m.allCategories {
+			typeName = settingTabLabels[m.category]
+		}
+		message := "No " + typeName + " in this scope"
+		if strings.TrimSpace(m.filterInput.Value()) != "" {
+			message = "No matching " + typeName
+		}
+		add(helpStyle.Render(truncateCell(message, inner)))
+		if !m.allCategories && available > 1 {
+			add(helpStyle.Render(truncateCell("8 All types · / change search", inner)))
+		}
 	}
 	return paneFrame(width, height, m.focusPane == FocusValues).Render(strings.TrimSuffix(content.String(), "\n"))
 }
@@ -854,6 +854,9 @@ func (m Model) valuesPane(width, height int) string {
 // The package band carries the owner; keep the full path on DisplayItem for
 // searching, Details, and copying.
 func (m Model) valueListPath(value DisplayItem) string {
+	if value.settingLabel != "" {
+		return strings.Repeat("  ", value.settingDepth) + value.settingLabel
+	}
 	if value.IsPackageValue && value.Component == "UDS Next bundle" && len(value.ValueFiles) > 0 {
 		return value.PackageName + " · " + strings.Join(value.ValueFiles, ", ")
 	}
@@ -889,7 +892,17 @@ func (m Model) valueLineCount(start, end int) int {
 	return lines
 }
 
+func settingsEntryCount(count int) string {
+	if count == 1 {
+		return "1 entry"
+	}
+	return fmt.Sprintf("%d entries", count)
+}
+
 func displayValue(value DisplayItem) string {
+	if value.settingChildren > 0 {
+		return settingsEntryCount(value.settingChildren)
+	}
 	if value.IsPackageMapping {
 		if runtimeReference(value) {
 			if referenceRequiresDeployment(value) {
@@ -933,6 +946,9 @@ func displayValue(value DisplayItem) string {
 }
 
 func displayKind(value DisplayItem) string {
+	if value.settingChildren > 0 {
+		return "group"
+	}
 	switch {
 	case value.IsBundleVariable:
 		return "variable"
@@ -1143,17 +1159,16 @@ func (m Model) helpView(width, height int) string {
 	navigation := "next / previous owner group"
 	space := "apply scope / Inspector authoring"
 	enter := "apply scope / inspect / follow action"
-	if m.nextRail {
-		content += "1–7               category filter; 8 all\n1 Bundle vars · 2 Next files · 3 Zarf vars\n4 Package values · 5 Mappings & uses\n6 Helm values · 7 Legacy overrides\n"
-	}
+	content += "1–7               setting type; 8 all\n1 Bundle vars · 2 Bundle files · 3 Zarf vars\n4 Zarf values · 5 Mappings & uses\n6 Helm values · 7 Legacy overrides\n"
 	content += "Tab / Shift+Tab   Scope / Settings / Inspector\n" +
-		"h / l, ← / →      pane focus; tree collapse/expand\n" +
+		"h / l             focus previous / next pane\n" +
+		"← / →             Settings type / Scope fold\n" +
 		"j / k, ↑ / ↓      move 1 line in focused pane\n" +
 		"J / K             jump 5 lines in focused pane\n" +
 		"n / N, ] / [     " + navigation + "\n" +
 		"g / G             first / last item\n" +
 		"Enter             " + enter + "\n" +
-		"/                 search all inputs in scope\n" +
+		"/                 search selected type and scope\n" +
 		"f                 package / component / chart\n" +
 		":                 command palette\n" +
 		"Space             " + space + "\n" +
@@ -1162,6 +1177,7 @@ func (m Model) helpView(width, height int) string {
 		"y                 copy value path\n" +
 		"p                 copy selected mapping input path\n" +
 		"v / t / s         full value / history / schema\n" +
+		"S                 whole package schema\n" +
 		"Z / U             summary toggles\n" +
 		"b                 Package Values / UDS authoring\n" +
 		"Esc               back / clear\n" +
@@ -1423,13 +1439,10 @@ func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.nextRail {
-		key := msg.String()
-		if len(key) == 1 && key[0] >= '1' && key[0] <= '7' {
-			m.selectNextCategory(int(key[0] - '1'))
-			m.focusPane = FocusValues
-			return m, nil
-		}
+	key := msg.String()
+	if len(key) == 1 && key[0] >= '1' && key[0] <= '8' {
+		m.selectSettingType(int(key[0] - '1'))
+		return m, nil
 	}
 	if m.showOverview {
 		switch msg.String() {
@@ -1461,15 +1474,23 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveFocus(1)
 	case "shift+tab":
 		m.moveFocus(-1)
-	case "h", "left":
+	case "h":
+		m.moveFocus(-1)
+	case "l":
+		m.moveFocus(1)
+	case "left":
 		if m.focusPane == FocusComponents {
 			m.scopeTreeLeft()
+		} else if m.focusPane == FocusValues {
+			m.selectSettingType(m.adjacentSettingType(-1))
 		} else {
 			m.moveFocus(-1)
 		}
-	case "l", "right":
+	case "right":
 		if m.focusPane == FocusComponents {
 			m.scopeTreeRight()
+		} else if m.focusPane == FocusValues {
+			m.selectSettingType(m.adjacentSettingType(1))
 		} else {
 			m.moveFocus(1)
 		}
@@ -1505,15 +1526,6 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showOverview = !m.showOverview
 		m.overviewOffset = 0
 		m.focusPane = m.centralFocus()
-	case "8":
-		m.mapping = nil
-		m.mappingRowDetail = false
-		m.showOverview = false
-		m.allCategories = true
-		m.focusPane = FocusValues
-		m.updateFilteredValues()
-		m.cursor, m.viewportOffset = 0, 0
-		m.syncInspectorSelection()
 	case "c":
 		m.focusStatus("changed")
 	case "u":
@@ -1611,6 +1623,8 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.openDetailPanel(detailSchema, nil)
 			}
 		}
+	case "S":
+		m.openPackageSchema()
 	case "o":
 		cmd := m.openSelectedSource()
 		return m, cmd

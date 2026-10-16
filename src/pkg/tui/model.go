@@ -91,6 +91,11 @@ type DisplayItem struct {
 	MappingStatus      string
 	mappingRef         *valueMapping
 	authoring          *valueAuthoring
+	settingLabel       string
+	settingParent      string
+	settingDepth       int
+	settingChildren    int
+	settingContext     bool
 }
 
 type zarfVariableReference struct {
@@ -213,20 +218,11 @@ func NewModel(report introspect.InspectionReport) Model {
 		valuePolicy:          newPackageValuesPolicy(report),
 		bundle:               report.Bundle,
 		nextRail:             report.Bundle != nil && report.Bundle.Format == "next",
-		allCategories:        report.Bundle != nil && report.Bundle.Format == "next",
 		showZarfSummary:      len(pkgVariables) > 0 || report.Bundle != nil && report.Bundle.Format == "next",
 	}
 
 	m.updateFilteredValues()
-	if m.nextRail && !m.allCategories && m.categoryCounts[m.category] == 0 {
-		for i, count := range m.categoryCounts {
-			if count > 0 {
-				m.category = i
-				m.filteredValues = m.categoryRows[i]
-				break
-			}
-		}
-	}
+	m.selectNextCategory(m.initialSettingCategory())
 	m.syncScopeCursor()
 	m.syncInspectorSelection()
 	return m
@@ -559,34 +555,26 @@ func (m *Model) updateFilteredValues() {
 	if m.nextRail {
 		newValues = m.consolidateNextZarfVariables(newValues, filter)
 	}
-	filtered := newValues[:0]
-	for _, item := range newValues {
-		item = m.filteredReferences(item)
-		if m.itemInScope(item) && m.matchesWorkspaceFilter(item) {
-			filtered = append(filtered, item)
-		}
+	newValues = m.projectSettingsCatalog(newValues)
+	for i := range newValues {
+		newValues[i] = m.filteredReferences(newValues[i])
 	}
-	newValues = m.orderSettingsLayers(filtered)
+	newValues = m.orderSettingsLayers(m.filterSettingsCatalog(newValues))
 	m.allValues = newValues
-	if m.nextRail {
-		for i := range m.categoryCounts {
-			m.categoryCounts[i] = 0
-		}
-		for _, item := range newValues {
-			m.categoryCounts[nextCategory(item)]++
-		}
-		start := 0
-		for i, count := range m.categoryCounts {
-			m.categoryRows[i] = newValues[start : start+count]
-			start += count
-		}
-		m.allValues = newValues
-		m.filteredValues = m.categoryRows[m.category]
-		if m.allCategories {
-			m.filteredValues = m.allValues
-		}
-	} else {
-		m.filteredValues = newValues
+	for i := range m.categoryCounts {
+		m.categoryCounts[i] = 0
+	}
+	for _, item := range newValues {
+		m.categoryCounts[nextCategory(item)]++
+	}
+	start := 0
+	for i, count := range m.categoryCounts {
+		m.categoryRows[i] = newValues[start : start+count]
+		start += count
+	}
+	m.filteredValues = m.categoryRows[m.category]
+	if m.allCategories {
+		m.filteredValues = m.allValues
 	}
 	newValues = m.filteredValues
 

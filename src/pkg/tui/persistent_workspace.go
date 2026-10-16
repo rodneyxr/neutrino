@@ -134,14 +134,7 @@ func (m Model) persistentWorkspace(width, height int) string {
 }
 
 func (m Model) settingsFilterLine(width int) string {
-	if !m.nextRail {
-		return truncateCell(fmt.Sprintf("All kinds · %d settings", len(m.filteredValues)), width)
-	}
-	label := "All settings"
-	if m.nextRail && !m.allCategories {
-		label = fmt.Sprintf("%d %s", m.category+1, nextCategories[m.category])
-	}
-	return truncateCell(label+" · 1–7 / 8 all", width)
+	return m.settingsTabs(width)
 }
 
 func (m Model) settingsQueryLine(width int) string {
@@ -159,7 +152,7 @@ func (m Model) settingsQueryLine(width int) string {
 		return truncateCell("/ "+before+"▏"+string(runes[position:]), width)
 	}
 	if query == "" {
-		return truncateCell("/ Search settings", width)
+		return truncateCell("/ Search "+m.selectedSettingTypeLabel(), width)
 	}
 	return truncateCell("/ "+query, width)
 }

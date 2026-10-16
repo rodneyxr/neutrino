@@ -383,10 +383,7 @@ func (m Model) matchesWorkspaceFilter(item DisplayItem) bool {
 		if qualified {
 			switch key {
 			case "package", "pkg":
-				owner := item.PackageName
-				if owner == "" {
-					owner = m.nextPackageFor(item.Component, "/")
-				}
+				owner := m.scopeItemOwner(item)
 				matched = strings.Contains(strings.ToLower(owner), value)
 			case "chart":
 				charts := item.Component + " " + item.Chart + " " + item.MappingChart
@@ -405,7 +402,7 @@ func (m Model) matchesWorkspaceFilter(item DisplayItem) bool {
 				case "runtime", "unresolved":
 					matched = m.valueUnresolved(item)
 				case "excluded", "unmapped", "mapped", "mixed":
-					matched = item.MappingStatus == value
+					matched = item.settingChildren == 0 && item.MappingStatus == value
 				default:
 					matched = false
 				}
@@ -479,7 +476,6 @@ func (m *Model) focusStatus(status string) {
 		query = ""
 	}
 	m.filterInput.SetValue(query)
-	m.allCategories = true
 	m.showOverview = false
 	m.mapping = nil
 	m.mappingRowDetail = false

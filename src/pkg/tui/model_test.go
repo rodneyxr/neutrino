@@ -266,7 +266,7 @@ func TestNewStatusRefreshesExpiry(t *testing.T) {
 	}
 }
 
-func TestValuesAreGroupedByConfigurationLayerAndOwner(t *testing.T) {
+func TestAllSettingsAreGroupedByTypeAndOwner(t *testing.T) {
 	const first = "core-base/istio-controlplane/istiod"
 	const second = "core-base/istio-admin-gateway/gateway"
 	model := Model{
@@ -274,8 +274,9 @@ func TestValuesAreGroupedByConfigurationLayerAndOwner(t *testing.T) {
 			first:  {ChartName: "istiod"},
 			second: {ChartName: "gateway"},
 		},
-		chartNames:   []string{"All Charts", first, second},
-		currentChart: "All Charts",
+		chartNames:    []string{"All Charts", first, second},
+		currentChart:  "All Charts",
+		allCategories: true,
 		filteredValues: []DisplayItem{
 			{ValueUsage: introspect.ValueUsage{Path: "REGISTRY_URL"}, Component: "Zarf Package Variables", IsPkgVar: true},
 			{ValueUsage: introspect.ValueUsage{Path: "IMAGE_TAG"}, Component: first, IsZarfVar: true},
@@ -289,9 +290,9 @@ func TestValuesAreGroupedByConfigurationLayerAndOwner(t *testing.T) {
 	}
 
 	view := model.valuesPane(110, 28)
-	headings := []string{"━━ Legacy Zarf variables ━", "Legacy Zarf variables · " + first,
-		"Legacy bundle overrides · configurable · " + first, "Helm inputs · " + first,
-		"Legacy bundle overrides · fixed · " + second}
+	headings := []string{"━━ Zarf variables ━", "Zarf variables · " + first,
+		"Legacy overrides · " + first, "Helm values · " + first,
+		"Legacy overrides · " + second}
 	previous := -1
 	for _, heading := range headings {
 		index := strings.Index(view, heading)
@@ -311,7 +312,7 @@ func TestValuesAreGroupedByConfigurationLayerAndOwner(t *testing.T) {
 	}
 	model.viewportOffset = 2
 	scrolled := model.valuesPane(110, 28)
-	if !strings.Contains(scrolled, "Legacy bundle overrides · configurable · "+first) || !strings.Contains(scrolled, "PROXY_MEMORY") {
+	if !strings.Contains(scrolled, "Legacy overrides · "+first) || !strings.Contains(scrolled, "PROXY_MEMORY") {
 		t.Fatalf("scrolling into a layer must retain its meaning and destination:\n%s", scrolled)
 	}
 }
@@ -333,20 +334,29 @@ func TestWorkspaceColumnWidthsExpandSettingsWhileScopeIsClosed(t *testing.T) {
 	}
 }
 
-func TestLeftAndRightArrowsNavigateSettingsAndInspector(t *testing.T) {
+func TestSettingsArrowsSelectTypesAndLettersNavigatePanes(t *testing.T) {
 	model := testWorkspaceModel()
 	resizeWorkspace(&model, 120, 28)
+	originalCategory := model.category
 	pressWorkspaceKey(&model, "right")
+	if model.focusPane != FocusValues || model.allCategories || model.category != (originalCategory+1)%8 {
+		t.Fatal("right arrow did not select the next Settings type")
+	}
+	pressWorkspaceKey(&model, "left")
+	if model.focusPane != FocusValues || model.allCategories || model.category != originalCategory {
+		t.Fatal("left arrow did not restore the Settings type")
+	}
+	pressWorkspaceKey(&model, "l")
 	if model.focusPane != FocusInspector {
-		t.Fatal("right arrow did not focus Inspector")
+		t.Fatal("l did not focus Inspector")
 	}
-	pressWorkspaceKey(&model, "left")
+	pressWorkspaceKey(&model, "h")
 	if model.focusPane != FocusValues {
-		t.Fatal("left arrow did not return to Settings")
+		t.Fatal("h did not return to Settings")
 	}
-	pressWorkspaceKey(&model, "left")
+	pressWorkspaceKey(&model, "h")
 	if model.focusPane != FocusComponents {
-		t.Fatal("left arrow did not focus Scope")
+		t.Fatal("h did not focus Scope")
 	}
 }
 
@@ -545,6 +555,7 @@ func TestDetailsKeepFullVariableDescriptions(t *testing.T) {
 			model := testWorkspaceModel()
 			tc.setup(&model)
 			model.updateFilteredValues()
+			model.selectSettingType(7)
 			for index, item := range model.filteredValues {
 				if !tc.match(item) {
 					continue
@@ -847,14 +858,17 @@ func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.
 			}},
 		}},
 	})
-	if len(model.filteredValues) != 1 || model.filteredValues[0].Path != "database.host" {
-		t.Fatalf("package leaf should appear once without charts: %+v", model.filteredValues)
+	model.selectSettingType(3)
+	if len(model.filteredValues) != 2 || model.filteredValues[0].Path != "database" || model.filteredValues[0].settingChildren != 1 ||
+		model.filteredValues[1].Path != "database.host" || model.filteredValues[1].settingParent != "database" {
+		t.Fatalf("package leaf should appear once beneath its object without charts: %+v", model.filteredValues)
 	}
 	model.filterInput.SetValue("database.hostname")
 	model.updateFilteredValues()
-	if len(model.filteredValues) != 1 || model.filteredValues[0].MappingStatus != "runtime" {
+	if len(model.filteredValues) != 2 || !model.filteredValues[0].settingContext || model.filteredValues[1].Path != "database.host" || model.filteredValues[1].MappingStatus != "runtime" {
 		t.Fatalf("mapping target should find its configured value: %+v", model.filteredValues)
 	}
+	model.cursor = 1
 	model.focusPane = FocusInspector
 	model.buildDetailItems()
 	body, _ := model.inspectorContent(100, true)
@@ -879,9 +893,10 @@ func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.
 	model = updated.(Model)
 	model.filterInput.SetValue("zarf-values.yaml")
 	model.updateFilteredValues()
-	if len(model.filteredValues) != 1 {
+	if len(model.filteredValues) != 2 || model.filteredValues[1].Path != "database.host" {
 		t.Fatalf("file provenance should remain searchable: %+v", model.filteredValues)
 	}
+	model.cursor = 1
 	updated, _ = model.Update(key("enter"))
 	model = updated.(Model)
 	body, _ = model.inspectorContent(100, true)
@@ -974,6 +989,7 @@ func TestMappingChartFirstRootAndSubtree(t *testing.T) {
 	model = updated.(Model)
 	updated, _ = model.Update(key("esc"))
 	model = updated.(Model)
+	model.selectSettingType(4)
 	for i, item := range model.filteredValues {
 		if item.IsPackageMapping && item.MappingChart == "web" {
 			model.cursor = i
@@ -1036,6 +1052,7 @@ func TestMappingPackageOwnershipAndMissingSource(t *testing.T) {
 			{PackageName: "b", Values: map[string]interface{}{}, Usages: []introspect.PackageValueUsage{usage}},
 		},
 	})
+	model.selectSettingType(4)
 	for i, item := range model.filteredValues {
 		if item.IsPackageMapping && item.PackageName == "b" {
 			model.cursor = i
@@ -1086,8 +1103,13 @@ func TestPackageValuesKeepPackageBandsDistinct(t *testing.T) {
 	})
 	model.windowWidth, model.windowHeight = 140, 22
 	view := model.valuesPane(140, 20)
-	if !strings.Contains(view, "Zarf values · unknown · api") || !strings.Contains(view, "Zarf values · unknown · worker") {
-		t.Fatalf("each package must retain its owner and unknown source provenance:\n%s", view)
+	if !strings.Contains(view, "━━ api ━") || !strings.Contains(view, "━━ worker ━") {
+		t.Fatalf("each package must retain its own heading:\n%s", view)
+	}
+	for _, item := range model.filteredValues {
+		if origin, pending := model.settingPackageOrigin(item); origin != "unknown" || pending {
+			t.Fatalf("package source provenance must remain unknown without snapshots: %+v", item)
+		}
 	}
 }
 
@@ -1107,7 +1129,7 @@ func TestNextBundleMetadataNeverSuggestsLegacyAuthoring(t *testing.T) {
 			}},
 		},
 	})
-	if !model.nextRail || !model.allCategories || model.categoryCounts[0] != 1 ||
+	if !model.nextRail || model.allCategories || model.category != 0 || len(model.filteredValues) != 1 || !model.filteredValues[0].IsBundleVariable || model.categoryCounts[0] != 1 ||
 		model.categoryCounts[1] != 1 || model.categoryCounts[5] != 1 {
 		t.Fatalf("Next metadata and Helm defaults must have separate categories: %+v", model.categoryCounts)
 	}
@@ -1161,21 +1183,30 @@ func TestNextCategoryFiltersKeepConfigurationOwnersSeparate(t *testing.T) {
 			Packages:  []introspect.BundlePackageMetadata{{ID: "api", ValuesFiles: []string{"values/api/0.yaml"}}},
 		},
 	})
-	if !m.nextRail || m.categoryCounts != [7]int{1, 1, 1, 1, 1, 1, 1} {
+	if !m.nextRail || m.categoryCounts != [7]int{1, 1, 1, 2, 1, 1, 1} {
 		t.Fatalf("configuration owners should each have a visible category: %+v", m.categoryCounts)
 	}
 	for _, tc := range []struct {
-		key  string
-		path string
+		key   string
+		paths []string
 	}{
-		{"1", "cluster"}, {"2", "api"}, {"3", "REGISTRY"}, {"4", "image.tag"},
-		{"5", ".image.tag"}, {"6", "image.tag"}, {"7", "replicas"},
+		{"1", []string{"cluster"}}, {"2", []string{"api"}}, {"3", []string{"REGISTRY"}}, {"4", []string{"image", "image.tag"}},
+		{"5", []string{".image.tag"}}, {"6", []string{"image.tag"}}, {"7", []string{"replicas"}},
 	} {
 		updated, _ := m.Update(key(tc.key))
 		m = updated.(Model)
-		if len(m.filteredValues) != 1 || m.filteredValues[0].Path != tc.path ||
-			nextCategory(m.filteredValues[0]) != int(tc.key[0]-'1') {
+		var paths []string
+		for _, item := range m.filteredValues {
+			paths = append(paths, item.Path)
+			if nextCategory(item) != int(tc.key[0]-'1') {
+				t.Fatalf("category %s mixed input kinds: %+v", tc.key, m.filteredValues)
+			}
+		}
+		if !reflect.DeepEqual(paths, tc.paths) {
 			t.Fatalf("category %s mixed input kinds: %+v", tc.key, m.filteredValues)
+		}
+		if tc.key == "4" && (m.filteredValues[0].settingChildren != 1 || m.filteredValues[1].settingParent != "image") {
+			t.Fatalf("package inputs lost their object hierarchy: %+v", m.filteredValues)
 		}
 	}
 	updated, _ := m.Update(key("6"))
@@ -1201,7 +1232,7 @@ func TestNextCategoryFilterRemainsIndependentOfScope(t *testing.T) {
 	for _, width := range []int{100, 72} {
 		resizeWorkspace(&m, width, 30)
 		view := assertWorkspaceSize(t, m, width, 30)
-		if !strings.Contains(view, "Settings") || !strings.Contains(view, "1–7") || strings.Contains(view, "CATEGORIES") {
+		if !strings.Contains(view, "Settings") || !strings.Contains(view, "[1 Bundle vars]") || !strings.Contains(view, "8 All") || strings.Contains(view, "CATEGORIES") {
 			t.Fatalf("category choices should be a Settings filter at %d columns:\n%s", width, view)
 		}
 	}
@@ -1212,27 +1243,31 @@ func TestNextCategoryFilterRemainsIndependentOfScope(t *testing.T) {
 	m.currentChart = "api/server/app"
 	m.updateFilteredValues()
 	m.selectNextCategory(0)
-	if len(m.filteredValues) != 0 || !strings.Contains(m.View(), "No settings match") {
+	if len(m.filteredValues) != 0 || !strings.Contains(m.View(), "No Bundle vars in this scope") {
 		t.Fatal("chart scope must not leak bundle-wide inputs through the category filter")
 	}
 }
 
-func TestNextWorkspaceStartsWithAllAvailableInputs(t *testing.T) {
+func TestNextWorkspaceStartsWithBundleFilesAndAllExposesEveryType(t *testing.T) {
 	m := NewModel(introspect.InspectionReport{
 		Components: map[string]*introspect.IntrospectResult{"api/server/app": {Values: []introspect.ValueUsage{{Path: "enabled"}}}},
 		Bundle: &introspect.BundleMetadata{
 			Format: "next", Packages: []introspect.BundlePackageMetadata{{ID: "api", ValuesFiles: []string{"values.yaml"}}},
 		},
 	})
+	if m.allCategories || m.category != 1 || len(m.filteredValues) != 1 || m.filteredValues[0].Path != "api" || m.filteredValues[0].Component != "UDS Next bundle" {
+		t.Fatalf("initial Settings should select the available bundle file type: %+v", m.filteredValues)
+	}
+	pressWorkspaceKey(&m, "8")
 	if !m.allCategories || len(m.filteredValues) != 2 {
-		t.Fatalf("initial Settings should include the package and Helm value: %+v", m.filteredValues)
+		t.Fatalf("All should include both bundle files and Helm values: %+v", m.filteredValues)
 	}
 	found := map[string]bool{}
 	for _, item := range m.filteredValues {
 		found[item.Path] = true
 	}
 	if !found["api"] || !found["enabled"] {
-		t.Fatalf("initial Settings omitted a configuration owner: %+v", m.filteredValues)
+		t.Fatalf("All Settings omitted a configuration owner: %+v", m.filteredValues)
 	}
 }
 
@@ -1270,7 +1305,7 @@ func TestNextZarfVariablesGroupByOwningPackage(t *testing.T) {
 		t.Fatalf("grouping must retain package identity, declaration and both chart references: %+v", m.filteredValues)
 	}
 	view := m.valuesPane(100, 28)
-	for _, band := range []string{"Legacy Zarf variables · api ", "Legacy Zarf variables · api.v2 "} {
+	for _, band := range []string{"━━ api ━", "━━ api.v2 ━"} {
 		if strings.Count(view, band) != 1 {
 			t.Fatalf("expected exactly one package section %q:\n%s", band, view)
 		}
@@ -1422,6 +1457,7 @@ func TestChartDetailsShareMappingContextAndRestoreEntryPoints(t *testing.T) {
 		},
 	})
 	model.windowWidth, model.windowHeight = 120, 36
+	model.selectSettingType(5)
 	for i, item := range model.filteredValues {
 		if item.Component == "b/server/web" && item.Path == "config.enabled" && !item.IsPackageValue && !item.IsPackageMapping {
 			model.cursor = i
@@ -1495,6 +1531,7 @@ func TestChartDetailsShareMappingContextAndRestoreEntryPoints(t *testing.T) {
 	if model.focusPane != FocusValues || model.cursor != originCursor {
 		t.Fatal("main chart Details did not preserve workspace selection")
 	}
+	model.selectSettingType(4)
 	for i, item := range model.filteredValues {
 		if item.IsPackageMapping && item.PackageName == "b" && item.ValueSource == ".app" {
 			model.cursor = i
@@ -1537,6 +1574,7 @@ func TestMappingDetailsKeepRelatedValuesOutsideWorkspaceFilter(t *testing.T) {
 		updated, _ := model.Update(key(k))
 		model = updated.(Model)
 	}
+	model.selectSettingType(5)
 	model.filterInput.SetValue("config.enabled")
 	model.updateFilteredValues()
 	for i, value := range model.filteredValues {
@@ -1548,6 +1586,7 @@ func TestMappingDetailsKeepRelatedValuesOutsideWorkspaceFilter(t *testing.T) {
 	press("enter")
 	direct, _ := model.inspectorContent(116, true)
 	press("esc")
+	model.selectSettingType(3)
 	model.filterInput.SetValue("app")
 	model.updateFilteredValues()
 	model.cursor = 0

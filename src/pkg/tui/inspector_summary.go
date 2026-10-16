@@ -129,6 +129,9 @@ func inspectorKind(value DisplayItem) string {
 		if value.Component == "UDS Next bundle" {
 			return "Bundle values-file input"
 		}
+		if value.settingChildren > 0 {
+			return "Package values group"
+		}
 		return "Package value"
 	case value.IsPkgVar || value.IsZarfVar:
 		return "Legacy Zarf variable"
@@ -258,6 +261,18 @@ func (m Model) inspectorDocument(value DisplayItem) inspectorDocument {
 		field("Default", m.compactInput(value, value.DefaultValue))
 	default:
 		field("Default", "Not supplied")
+	}
+	if value.IsPackageValue && value.Component != "UDS Next bundle" && value.ValuePresent {
+		origin, pending := m.settingPackageOrigin(value)
+		if pending {
+			origin += " · known input"
+		}
+		field("Origin", origin)
+		if value.settingChildren > 0 {
+			field("Contains", settingsEntryCount(value.settingChildren))
+		} else if value.MappingStatus == "unmapped" {
+			field("Mapping", "No inspected mapping")
+		}
 	}
 	if !runtimeReference(value) && !value.Wildcard {
 		if annotation, exists := schema["default"]; exists {

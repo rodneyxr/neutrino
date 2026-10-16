@@ -15,6 +15,25 @@ var nextCategories = [...]string{
 	"Mappings & uses", "Helm values", "Legacy overrides",
 }
 
+// Start with the configuration surface owned by the inspected artifact. All
+// remains an explicit tab for deliberate cross-type searches.
+func (m Model) initialSettingCategory() int {
+	order := []int{5, 2, 3, 4, 6, 0, 1}
+	if m.nextRail {
+		order = []int{0, 1, 3, 2, 5, 4, 6}
+	} else if len(m.udsOverrideValues)+len(m.udsOverrideVariables) > 0 {
+		order = []int{6, 3, 2, 5, 4, 0, 1}
+	} else if len(m.report.PackageValues) > 0 {
+		order = []int{3, 2, 4, 5, 6, 0, 1}
+	}
+	for _, index := range order {
+		if m.categoryCounts[index] > 0 {
+			return index
+		}
+	}
+	return order[0]
+}
+
 func nextCategory(item DisplayItem) int {
 	switch {
 	case item.IsBundleVariable:
@@ -119,6 +138,24 @@ func (m *Model) selectNextCategory(index int) {
 	m.viewportOffset = clamp(m.categoryOffsets[index], 0, m.cursor)
 	m.resetSelectedRowScroll()
 	m.syncInspectorSelection()
+}
+
+func (m *Model) selectSettingType(index int) {
+	if index < len(nextCategories) {
+		m.selectNextCategory(index)
+	} else {
+		if !m.allCategories {
+			m.categoryCursors[m.category], m.categoryOffsets[m.category] = m.cursor, m.viewportOffset
+		}
+		m.mapping, m.mappingRowDetail = nil, false
+		m.showOverview, m.allCategories = false, true
+		m.filteredValues = m.allValues
+		m.cursor, m.viewportOffset = 0, 0
+		m.resetSelectedRowScroll()
+		m.syncInspectorSelection()
+	}
+	m.focusPane = FocusValues
+	m.ensureCursorVisible()
 }
 
 func (m Model) nextCategoryRail(width, height int) string {

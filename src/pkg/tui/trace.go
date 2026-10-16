@@ -24,6 +24,7 @@ type traceSection struct {
 }
 
 type traceReturn struct {
+	focus       FocusPane
 	ref         *DisplayItem
 	cursor      int
 	offset      int
@@ -38,7 +39,7 @@ func (m *Model) followTrace(detail DetailItem) bool {
 	if detail.Kind != DetailItemTrace || detail.relatedValue == nil {
 		return false
 	}
-	m.traceHistory = append(m.traceHistory, traceReturn{ref: m.detailRef, cursor: m.detailCursor,
+	m.traceHistory = append(m.traceHistory, traceReturn{focus: m.focusPane, ref: m.detailRef, cursor: m.detailCursor,
 		offset: m.detailScrollOffset, rowDetail: m.mappingRowDetail, schemaShown: m.detailSchemaShown,
 		panel: m.detailPanel, panels: append([]detailPanelReturn(nil), m.detailPanelHistory...), source: m.detailSource})
 	target := *detail.relatedValue
@@ -58,6 +59,7 @@ func (m *Model) returnTrace() bool {
 	last := len(m.traceHistory) - 1
 	previous := m.traceHistory[last]
 	m.traceHistory = m.traceHistory[:last]
+	m.focusPane = previous.focus
 	m.detailRef = previous.ref
 	m.mappingRowDetail = previous.rowDetail
 	m.detailSchemaShown = previous.schemaShown

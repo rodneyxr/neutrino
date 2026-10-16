@@ -116,8 +116,12 @@ func TestSettingLayerSeparatesSurfacesAndPreservesCategories(t *testing.T) {
 	if model.settingGroupKey(input) == model.settingGroupKey(use) {
 		t.Fatal("runtime observations must not inherit a structured-input group")
 	}
-	if label := model.settingGroupLabel(use); label != "Zarf template references · app" {
-		t.Fatalf("group label must identify surface and owner: %s", label)
+	if label := model.settingGroupLabel(use); label != "app" {
+		t.Fatalf("selected type already identifies the surface; band must identify owner: %s", label)
+	}
+	model.allCategories = true
+	if label := model.settingGroupLabel(use); label != "Mappings & uses · app" {
+		t.Fatalf("All must identify type and owner: %s", label)
 	}
 	if !model.settingLayerMatches(use, "template") || !model.settingLayerMatches(use, "mappings") {
 		t.Fatal("kind matching must accept displayed layers and existing category aliases")

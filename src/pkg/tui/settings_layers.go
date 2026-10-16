@@ -141,16 +141,19 @@ func (m Model) settingOwner(item DisplayItem) (string, string) {
 
 func (m Model) settingGroupKey(item DisplayItem) string {
 	owner, _ := m.settingOwner(item)
-	return m.settingLayer(item).key + "\x00" + owner
+	return nextCategories[nextCategory(item)] + "\x00" + owner
 }
 
 func (m Model) settingGroupLabel(item DisplayItem) string {
-	label := m.settingLayer(item).label
 	_, owner := m.settingOwner(item)
-	if owner != "" {
-		label += " · " + owner
+	if !m.allCategories && owner != "" {
+		return owner
 	}
-	return label
+	label := nextCategories[nextCategory(item)]
+	if owner == "" {
+		return label
+	}
+	return label + " · " + owner
 }
 
 // orderSettingsLayers returns a copy grouped by semantic layer and then owner.
@@ -174,13 +177,15 @@ func (m Model) orderSettingsLayers(items []DisplayItem) []DisplayItem {
 		ranked = append(ranked, rankedItem{item: item, layer: m.settingLayer(item), ownerOrder: order})
 	}
 	sort.SliceStable(ranked, func(i, j int) bool {
-		if ranked[i].layer.order != ranked[j].layer.order {
-			return ranked[i].layer.order < ranked[j].layer.order
+		if ranked[i].layer.category != ranked[j].layer.category {
+			return ranked[i].layer.category < ranked[j].layer.category
 		}
-		if ranked[i].layer.key != ranked[j].layer.key {
-			return ranked[i].layer.key < ranked[j].layer.key
+		if ranked[i].ownerOrder != ranked[j].ownerOrder {
+			return ranked[i].ownerOrder < ranked[j].ownerOrder
 		}
-		return ranked[i].ownerOrder < ranked[j].ownerOrder
+		// The package projection already supplies tree preorder. Lexical
+		// sorting would put an app-sibling between app and app.child.
+		return false
 	})
 	result := make([]DisplayItem, len(ranked))
 	for i := range ranked {

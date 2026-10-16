@@ -23,6 +23,7 @@ func TestPackageValuesAuthoringUsesNestedInputPath(t *testing.T) {
 	})
 	model.currentChart = component
 	model.updateFilteredValues()
+	model.selectSettingType(5)
 	for i, value := range model.filteredValues {
 		if value.Path == "base.excludedCRDs" {
 			model.cursor = i
