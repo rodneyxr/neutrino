@@ -755,7 +755,7 @@ func (m *Model) ensureCursorVisible() {
 		return
 	}
 	m.cursor = clamp(m.cursor, 0, len(m.filteredValues)-1)
-	visibleLines := max(2, m.windowHeight-8)
+	visibleLines := max(2, m.windowHeight-10)
 	if m.cursor < m.viewportOffset {
 		m.viewportOffset = m.cursor
 	}

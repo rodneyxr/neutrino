@@ -794,7 +794,7 @@ func (m Model) valuesPane(width, height int) string {
 		heading += " Kind"
 	}
 	add(tableHeaderStyle.Render(truncateCell(heading, inner)))
-	available := max(1, height-6)
+	available := max(2, height-8)
 	used := 0
 	lastOwner := ""
 	start := clamp(m.viewportOffset, 0, max(0, len(m.filteredValues)-1))

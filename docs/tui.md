@@ -20,7 +20,7 @@ From 80 to 119 columns, Settings and Inspector remain side by side and `f` opens
 
 Press `f` to focus the Scope tree at wide widths or open its picker at narrower widths. In the tree, use the right arrow to expand a branch and the left arrow to collapse it or move to its parent. Press `Enter` to apply the selected scope and return to Settings. `Esc` closes Scope and returns to the pane that opened it.
 
-Settings has seven type tabs for every artifact: **Bundle vars**, **Bundle files**, **Zarf vars**, **Zarf values**, **Mappings**, **Helm**, and **Overrides**. Use `1`–`7`, or left/right while Settings is focused, to change type. The **All** tab (`8`) stays visible when narrower layouts show only neighboring types. Inspection starts on the artifact's own configuration surface. `0` opens an inspection overview.
+Settings has seven type tabs for every artifact: **Bundle vars**, **Bundle files**, **Zarf vars**, **Zarf values**, **Mappings**, **Helm**, and **Overrides**. Use `1`–`7`, or left/right while Settings is focused, to change type. Each bordered tab shows the number of rows matching the current scope and query; empty types show `0` in a muted style. The selected tab opens into the content below. The **All** tab (`8`) stays visible when narrower layouts show only neighboring types. Inspection starts on the artifact's own configuration surface. `0` opens an inspection overview.
 
 Press `/` to search the selected type and scope; terms combine with AND. Examples include `pkg:api replica`, `chart:gateway`, `source:production.yaml`, and `status:changed`. Changing tabs preserves the query. Choose **All** explicitly to search across types. The changed and unresolved shortcuts also retain the selected type.
 

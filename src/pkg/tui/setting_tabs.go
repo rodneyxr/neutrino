@@ -9,7 +9,7 @@ import (
 
 // Tab order keeps the existing 1–7 shortcuts; All has shortcut 8. All is
 // pinned first visually so a narrow Settings pane always exposes its search
-// scope escape hatch. Counts belong in the pane heading, not the tab labels.
+// scope escape hatch. Counts reflect the current scope and query.
 var settingTabLabels = [...]string{
 	"Bundle vars", "Bundle files", "Zarf vars", "Zarf values",
 	"Mappings", "Helm", "Overrides",
@@ -34,53 +34,108 @@ func (m Model) adjacentSettingType(delta int) int {
 	return (current + delta%count + count) % count
 }
 
+// A selected tab opens into the content below. Its border shape preserves the
+// selected state on terminals without color; zero counts remain explicit.
+type settingTab struct {
+	shortcut int
+	label    string
+	count    int
+	selected bool
+}
+
+func (tab settingTab) text() string {
+	return fmt.Sprintf("%d %s %d", tab.shortcut, tab.label, tab.count)
+}
+
+func (tab settingTab) render(width, padding int) string {
+	inner := max(0, width-2)
+	padding = min(padding, max(0, (inner-3)/2))
+	room := max(0, inner-padding*2)
+	count := fmt.Sprint(tab.count)
+	prefix := fmt.Sprintf("%d ", tab.shortcut)
+	label := truncateCell(tab.label, max(0, room-len(prefix)-len(count)-1))
+	text := prefix + label + " " + count
+	if label == "" {
+		text = fmt.Sprintf("%d %s", tab.shortcut, count)
+	}
+	text = truncateCell(text, room)
+	text = strings.Repeat(" ", padding) + text + strings.Repeat(" ", padding)
+	text += strings.Repeat(" ", max(0, inner-lipgloss.Width(text)))
+
+	border, face, badge := settingsTabBorderStyle, settingsTabStyle, settingsTabCountStyle
+	if tab.count == 0 {
+		face = settingsTabEmptyStyle
+	}
+	bottom := "┴" + strings.Repeat("─", inner) + "┴"
+	if tab.selected {
+		border, face, badge = settingsTabActiveBorderStyle, settingsTabActiveStyle, settingsTabActiveCountStyle
+		bottom = "┘" + strings.Repeat(" ", inner) + "└"
+	}
+	middle := face.Render(text)
+	// Style the trailing count independently without splitting an elided label.
+	if room >= len(count)+2 {
+		at := strings.LastIndex(text, count)
+		if at >= 0 {
+			middle = face.Render(text[:at]) + badge.Render(count) + face.Render(text[at+len(count):])
+		}
+	}
+	lines := []string{
+		border.Render("╭" + strings.Repeat("─", inner) + "╮"),
+		border.Render("│") + middle + border.Render("│"),
+		border.Render(bottom),
+	}
+	for i := range lines {
+		if width < 2 {
+			lines[i] = truncateCell(lines[i], width)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (m Model) settingsTabs(width int) string {
 	if width <= 0 {
 		return ""
 	}
-	all := "8 All"
-	if m.allCategories {
-		all = "[" + all + "]"
+	padding := 1
+	if width < 60 {
+		padding = 0
 	}
-	allWidth := lipgloss.Width(all)
-	if width < allWidth {
-		return selectedRowStyle.Render(truncateCell(all, width))
+	var total int
+	for _, count := range m.categoryCounts {
+		total += count
 	}
-	allTab := helpStyle.Render(all)
-	if m.allCategories {
-		allTab = selectedRowStyle.Render(all)
+	all := settingTab{shortcut: 8, label: "All", count: total, selected: m.allCategories}
+	tabs := make([]settingTab, len(settingTabLabels))
+	for i, label := range settingTabLabels {
+		tabs[i] = settingTab{shortcut: i + 1, label: label, count: m.categoryCounts[i], selected: !m.allCategories && i == m.category}
 	}
-	const divider = " │ "
-	available := width - allWidth - lipgloss.Width(divider)
-	if available < 3 {
-		return allTab
-	}
-
-	selected := clamp(m.category, 0, len(settingTabLabels)-1)
+	tabWidth := func(tab settingTab) int { return lipgloss.Width(tab.text()) + 2 + padding*2 }
+	allWidth := tabWidth(all)
+	selected := clamp(m.category, 0, len(tabs)-1)
 	anchor := selected
 	if m.allCategories {
 		anchor = 0
 	}
-	labels := make([]string, len(settingTabLabels))
-	for i, label := range settingTabLabels {
-		labels[i] = fmt.Sprintf("%d %s", i+1, label)
-		if !m.allCategories && i == selected {
-			labels[i] = "[" + labels[i] + "]"
+	// Very small panes prioritize a readable selected tab over a clipped pair.
+	if width < allWidth+8 {
+		if !m.allCategories {
+			return tabs[selected].render(width, 0)
 		}
+		return all.render(width, padding)
 	}
-
-	// Seven types make an exhaustive window search inexpensive. Keep the
-	// selected type visible, fit the most complete neighboring tabs, then prefer
-	// a balanced window. Overflow arrows take real terminal cells in this budget.
-	start, end, bestCount, bestBalance, bestWidth := anchor, anchor, 0, len(labels), 0
+	available := width - allWidth - 1
+	start, end, bestCount, bestBalance, bestWidth := anchor, anchor, 0, len(tabs), 0
 	for left := 0; left <= anchor; left++ {
-		for right := anchor; right < len(labels); right++ {
-			used := lipgloss.Width(strings.Join(labels[left:right+1], " "))
-			if left > 0 {
-				used += 2 // "← "
+		for right := anchor; right < len(tabs); right++ {
+			used := right - left // one cell between tabs
+			for i := left; i <= right; i++ {
+				used += tabWidth(tabs[i])
 			}
-			if right < len(labels)-1 {
-				used += 2 // " →"
+			if left > 0 {
+				used++
+			}
+			if right < len(tabs)-1 {
+				used++
 			}
 			if used > available {
 				continue
@@ -91,38 +146,61 @@ func (m Model) settingsTabs(width int) string {
 				balance = -balance
 			}
 			if count > bestCount || count == bestCount && (balance < bestBalance || balance == bestBalance && used > bestWidth) {
-				start, end = left, right
-				bestCount, bestBalance, bestWidth = count, balance, used
+				start, end, bestCount, bestBalance, bestWidth = left, right, count, balance, used
 			}
 		}
 	}
+	parts := []string{all.render(allWidth, padding), settingsTabGap(1)}
 	if bestCount == 0 {
-		// Below normal pane widths, keep All intact and bracket the shortened
-		// selected type. Truncate before styling so ANSI color remains intact.
-		label := truncateCell(strings.Trim(labels[anchor], "[]"), available-2)
-		if !m.allCategories {
-			return allTab + helpStyle.Render(divider) + selectedRowStyle.Render("["+label+"]")
+		// Preserve shortcut and exact count when only the selected name needs
+		// shortening. All remains visible at supported pane widths.
+		before, after := 0, 0
+		if anchor > 0 {
+			before = 1
 		}
-		return allTab + helpStyle.Render(divider+truncateCell(labels[anchor], available))
-	}
-	var tabs strings.Builder
-	tabs.WriteString(allTab)
-	tabs.WriteString(helpStyle.Render(divider))
-	if start > 0 {
-		tabs.WriteString(helpStyle.Render("← "))
-	}
-	for i := start; i <= end; i++ {
-		if i > start {
-			tabs.WriteByte(' ')
+		if anchor < len(tabs)-1 {
+			after = 1
 		}
-		if !m.allCategories && i == selected {
-			tabs.WriteString(selectedRowStyle.Render(labels[i]))
-		} else {
-			tabs.WriteString(helpStyle.Render(labels[i]))
+		if before > 0 {
+			parts = append(parts, settingsTabOverflow("‹"))
+		}
+		parts = append(parts, tabs[anchor].render(max(1, available-before-after), padding))
+		if after > 0 {
+			parts = append(parts, settingsTabOverflow("›"))
+		}
+	} else {
+		if start > 0 {
+			parts = append(parts, settingsTabOverflow("‹"))
+		}
+		for i := start; i <= end; i++ {
+			if i > start {
+				parts = append(parts, settingsTabGap(1))
+			}
+			parts = append(parts, tabs[i].render(tabWidth(tabs[i]), padding))
+		}
+		if end < len(tabs)-1 {
+			parts = append(parts, settingsTabOverflow("›"))
 		}
 	}
-	if end < len(labels)-1 {
-		tabs.WriteString(helpStyle.Render(" →"))
+	strip := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	lines := strings.Split(strip, "\n")
+	for i, line := range lines {
+		remaining := width - lipgloss.Width(line)
+		if remaining > 0 {
+			if i == 2 {
+				lines[i] += settingsTabBorderStyle.Render(strings.Repeat("─", remaining))
+			} else {
+				lines[i] += strings.Repeat(" ", remaining)
+			}
+		}
 	}
-	return tabs.String()
+	return strings.Join(lines, "\n")
+}
+
+func settingsTabGap(width int) string {
+	return strings.Repeat(" ", width) + "\n" + strings.Repeat(" ", width) + "\n" + settingsTabBorderStyle.Render(strings.Repeat("─", width))
+}
+
+func settingsTabOverflow(arrow string) string {
+	return " \n" + helpStyle.Render(arrow) + "\n" + settingsTabBorderStyle.Render("─")
 }

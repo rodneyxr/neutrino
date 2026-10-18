@@ -1232,7 +1232,7 @@ func TestNextCategoryFilterRemainsIndependentOfScope(t *testing.T) {
 	for _, width := range []int{100, 72} {
 		resizeWorkspace(&m, width, 30)
 		view := assertWorkspaceSize(t, m, width, 30)
-		if !strings.Contains(view, "Settings") || !strings.Contains(view, "[1 Bundle vars]") || !strings.Contains(view, "8 All") || strings.Contains(view, "CATEGORIES") {
+		if !strings.Contains(view, "Settings") || !strings.Contains(view, "1 Bundle vars") || !strings.Contains(view, "8 All") || strings.Contains(view, "CATEGORIES") {
 			t.Fatalf("category choices should be a Settings filter at %d columns:\n%s", width, view)
 		}
 	}

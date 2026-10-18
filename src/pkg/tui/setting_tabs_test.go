@@ -10,24 +10,33 @@ import (
 )
 
 func TestSettingsTabsFitEveryTypeAtPaneWidths(t *testing.T) {
-	for _, width := range []int{32, 36, 42, 62, 84} {
+	counts := [7]int{0, 12, 0, 32, 6, 1550, 0}
+	for _, width := range []int{32, 36, 42, 62, 84, 160} {
 		for category := 0; category <= len(settingTabLabels); category++ {
 			t.Run(fmt.Sprintf("%d/type%d", width, category), func(t *testing.T) {
-				m := Model{category: category % len(settingTabLabels), allCategories: category == len(settingTabLabels)}
-				line := m.settingsTabs(width)
-				plain := ansi.Strip(line)
-				if lipgloss.Width(line) > width || strings.ContainsAny(plain, "\n\r\t") {
-					t.Fatalf("tabs exceed one %d-cell line: %q (%d cells)", width, plain, lipgloss.Width(line))
+				m := Model{category: category % len(settingTabLabels), allCategories: category == len(settingTabLabels), categoryCounts: counts}
+				strip := m.settingsTabs(width)
+				lines := strings.Split(ansi.Strip(strip), "\n")
+				if lipgloss.Width(strip) > width || len(lines) != 3 {
+					t.Fatalf("tabs must fit three %d-cell lines: %q", width, lines)
 				}
-				if !strings.HasPrefix(plain, "8 All │ ") && !strings.HasPrefix(plain, "[8 All] │ ") {
-					t.Fatalf("All must remain pinned first: %q", plain)
+				if !strings.Contains(lines[0], "╭") || !strings.Contains(lines[1], "8 All 1600") {
+					t.Fatalf("bordered All tab and total must remain visible: %q", lines)
 				}
-				selected := "[8 All]"
+				if strings.Count(lines[2], "┘") != 1 || strings.Count(lines[2], "└") != 1 {
+					t.Fatalf("one tab must open into its content without relying on color: %q", lines[2])
+				}
 				if !m.allCategories {
-					selected = fmt.Sprintf("[%d %s]", m.category+1, settingTabLabels[m.category])
-				}
-				if strings.Count(plain, selected) != 1 || strings.Count(plain, "[") != 1 || strings.Count(plain, "]") != 1 {
-					t.Fatalf("selected type must be unambiguous without color: want %q in %q", selected, plain)
+					start := strings.Index(lines[2], "┘")
+					end := strings.Index(lines[2], "└")
+					// Borders are multibyte: terminal cell offsets identify the tab.
+					start = lipgloss.Width(lines[2][:start])
+					end = lipgloss.Width(lines[2][:end])
+					middle := []rune(lines[1])[start+1 : end]
+					text := strings.TrimSpace(string(middle))
+					if !strings.HasPrefix(text, fmt.Sprintf("%d ", m.category+1)) || !strings.HasSuffix(text, fmt.Sprintf(" %d", counts[m.category])) {
+						t.Fatalf("selected shortcut and exact count lost: %q", text)
+					}
 				}
 			})
 		}
@@ -36,59 +45,73 @@ func TestSettingsTabsFitEveryTypeAtPaneWidths(t *testing.T) {
 
 func TestSettingsTabsExposeNeighborsAndOverflow(t *testing.T) {
 	m := Model{category: 3}
-	for _, tc := range []struct {
-		width int
-		want  string
-	}{
-		{32, "8 All │ ← [4 Zarf values] →"},
-		{36, "8 All │ ← [4 Zarf values] →"},
-		{42, "8 All │ ← 3 Zarf vars [4 Zarf values] →"},
-		{62, "8 All │ ← 3 Zarf vars [4 Zarf values] 5 Mappings 6 Helm →"},
-		{84, "8 All │ 1 Bundle vars 2 Bundle files 3 Zarf vars [4 Zarf values] 5 Mappings 6 Helm →"},
-	} {
-		t.Run(fmt.Sprint(tc.width), func(t *testing.T) {
-			if got := ansi.Strip(m.settingsTabs(tc.width)); got != tc.want {
-				t.Fatalf("got %q, want %q", got, tc.want)
-			}
-		})
+	narrow := ansi.Strip(m.settingsTabs(32))
+	wide := ansi.Strip(m.settingsTabs(84))
+	if !strings.Contains(narrow, "‹") || !strings.Contains(narrow, "›") || !strings.Contains(narrow, "4 Zarf values 0") {
+		t.Fatalf("narrow tabs must keep selected type and advertise overflow: %s", narrow)
+	}
+	if !strings.Contains(wide, "3 Zarf vars 0") || !strings.Contains(wide, "5 Mappings 0") {
+		t.Fatalf("wider tabs must expose neighboring types with counts: %s", wide)
 	}
 	first := ansi.Strip((Model{category: 0}).settingsTabs(32))
 	last := ansi.Strip((Model{category: 6}).settingsTabs(32))
-	if strings.Contains(first, "←") || !strings.Contains(first, "→") {
-		t.Fatalf("first type should advertise only later hidden types: %q", first)
-	}
-	if !strings.Contains(last, "←") || strings.Contains(last, "→") {
-		t.Fatalf("last type should advertise only earlier hidden types: %q", last)
+	if strings.Contains(first, "‹") || !strings.Contains(first, "›") || !strings.Contains(last, "‹") || strings.Contains(last, "›") {
+		t.Fatalf("overflow direction must match hidden neighbors: first=%s last=%s", first, last)
 	}
 }
 
-func TestSettingsTabsWideShowsEveryStableShortcut(t *testing.T) {
+func TestSettingsTabsWideShowsEveryCountIncludingEmptyTypes(t *testing.T) {
+	counts := [7]int{1, 12, 0, 32, 6, 1550, 0}
 	for _, all := range []bool{false, true} {
-		m := Model{category: 3, allCategories: all}
-		plain := ansi.Strip(m.settingsTabs(160))
-		if strings.ContainsAny(plain, "←→") {
-			t.Fatalf("all types fit; no overflow arrows expected: %q", plain)
+		m := Model{category: 3, allCategories: all, categoryCounts: counts}
+		plain := ansi.Strip(m.settingsTabs(240))
+		if strings.ContainsAny(plain, "‹›") {
+			t.Fatalf("no overflow expected: %s", plain)
 		}
 		for i, label := range settingTabLabels {
-			if strings.Count(plain, fmt.Sprintf("%d %s", i+1, label)) != 1 {
-				t.Fatalf("shortcut %d must appear exactly once, even with no rows: %q", i+1, plain)
+			if text := fmt.Sprintf("%d %s %d", i+1, label, counts[i]); strings.Count(plain, text) != 1 {
+				t.Fatalf("missing exact type/count %q: %s", text, plain)
 			}
+		}
+		if !strings.Contains(plain, "8 All 1601") {
+			t.Fatalf("wrong total: %s", plain)
 		}
 	}
 }
 
 func TestSettingsTabsTinyWidthsUseTerminalCells(t *testing.T) {
 	for _, all := range []bool{false, true} {
-		m := Model{category: 3, allCategories: all}
-		for width := -1; width <= 31; width++ {
-			line := m.settingsTabs(width)
-			if lipgloss.Width(line) > max(0, width) || strings.ContainsAny(ansi.Strip(line), "\n\r") {
-				t.Fatalf("width %d, all %v: %q occupies %d cells", width, all, line, lipgloss.Width(line))
+		m := Model{category: 3, allCategories: all, categoryCounts: [7]int{1000000, 12, 0, 32, 6, 1550, 0}}
+		for width := -1; width <= 40; width++ {
+			strip := m.settingsTabs(width)
+			if lipgloss.Width(strip) > max(0, width) || strings.ContainsAny(ansi.Strip(strip), "\r\t") {
+				t.Fatalf("width%d,All%v: %q", width, all, strip)
 			}
-			if width >= 7 && !strings.Contains(ansi.Strip(line), "8 All") {
-				t.Fatalf("All shortcut lost at width %d: %q", width, line)
+			if width > 0 && lipgloss.Height(strip) != 3 {
+				t.Fatalf("height changed at width %d: %q", width, strip)
 			}
 		}
+	}
+}
+
+func TestSettingsTabCountsFollowScopeAndQuery(t *testing.T) {
+	m := settingsTypesModel()
+	m.currentChart = "package:api"
+	m.updateFilteredValues()
+	m.selectSettingType(7)
+	m.filterInput.SetValue("replicas")
+	m.updateFilteredValues()
+	plain := ansi.Strip(m.settingsTabs(240))
+	for _, want := range []string{"8 All 2", "1 Bundle vars 0", "4 Zarf values 1", "6 Helm 1"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("scoped query must determine tab counts, missing %q: %s", want, plain)
+		}
+	}
+	m.filterInput.SetValue("missing")
+	m.updateFilteredValues()
+	plain = ansi.Strip(m.settingsTabs(240))
+	if !strings.Contains(plain, "8 All 0") || !strings.Contains(plain, "4 Zarf values 0") {
+		t.Fatalf("query miss must zero counts: %s", plain)
 	}
 }
 

@@ -99,7 +99,7 @@ func TestSettingsTypeDefaultsFollowInspectedArtifact(t *testing.T) {
 			if len(m.filteredValues) == 0 || m.focusPane != FocusValues || m.nextRail != tc.next {
 				t.Fatalf("default lost inputs, Settings focus, or format identity: %+v; focus %v, Next %v", m.filteredValues, m.focusPane, m.nextRail)
 			}
-			selected := fmt.Sprintf("[%d %s]", tc.category+1, settingTabLabels[tc.category])
+			selected := fmt.Sprintf("%d %s %d", tc.category+1, settingTabLabels[tc.category], m.categoryCounts[tc.category])
 			pane := m.valuesPane(84, 24)
 			if !strings.Contains(pane, selected) || !strings.Contains(pane, "8 All") {
 				t.Fatalf("Settings pane must render type tabs in every format; want %q:\n%s", selected, pane)
