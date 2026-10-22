@@ -697,17 +697,18 @@ func TestDetailsSourcesUseFriendlyLabelsAndPreserveFileIdentity(t *testing.T) {
 	model.focusPane = FocusInspector
 	model.buildDetailItems()
 	body, _ := model.inspectorContent(106, true)
-	if !strings.Contains(body, "Sources (3)") || strings.Contains(body, source) || strings.Contains(body, "deployment.yaml") {
-		t.Fatalf("summary must link to sources without embedding file paths:\n%s", body)
+	compact := strings.Join(strings.Fields(body), "")
+	if !strings.Contains(body, "All source locations (3)") || !strings.Contains(compact, "values.yaml:4") || !strings.Contains(compact, "child/templates/workload.yaml:7") {
+		t.Fatalf("summary must preview recorded filenames and lines and link to every source:\n%s", body)
 	}
 	openInspectorTestPanel(t, &model, detailSources)
 	body, _ = model.inspectorContent(106, true)
-	if strings.Contains(body, source) {
-		t.Fatalf("source list contains an absolute source path:\n%s", body)
+	if len(model.detailItems) != len(locations) {
+		t.Fatalf("source list lost recorded occurrences: %+v", model.detailItems)
 	}
 	for index, location := range locations {
-		if model.detailItems[index].Location != location || !strings.Contains(body, fmt.Sprintf("line %d", location.Line)) {
-			t.Fatalf("source %d lost its location or friendly label: %+v\n%s", index, model.detailItems, body)
+		if model.detailItems[index].Location != location || !strings.Contains(strings.Join(strings.Fields(body), ""), fmt.Sprintf("%s:%d", location.File, location.Line)) {
+			t.Fatalf("source %d lost its location or filename-and-line label: %+v\n%s", index, model.detailItems, body)
 		}
 		model.detailCursor = index
 		updated, _ := model.Update(key("enter"))
@@ -745,14 +746,14 @@ func TestDetailsKeepsSelectedSourceVisibleWhileScrolling(t *testing.T) {
 	if model.detailCursor != 15 {
 		t.Fatalf("selected action = %d, want 15", model.detailCursor)
 	}
-	if !strings.Contains(model.View(), "> Template · line 15") {
-		t.Fatalf("selected source should remain visible with its friendly label:\n%s", model.View())
+	if !strings.Contains(model.View(), "> "+filepath.Join(source, "templates", "subdir", "15.yaml")+":15") {
+		t.Fatalf("selected source should remain visible with its filename and line:\n%s", model.View())
 	}
 	for range 15 {
 		updated, _ = model.Update(key("k"))
 		model = updated.(Model)
 	}
-	if !strings.Contains(model.View(), "> Template · line 148") {
+	if !strings.Contains(model.View(), "> "+filepath.Join(source, "templates", "deployment.yaml")+":148") {
 		t.Fatalf("first source should be visible again:\n%s", model.View())
 	}
 }
@@ -818,8 +819,9 @@ func TestValuesAlwaysConsolidateLocations(t *testing.T) {
 		if len(model.filteredValues) != 2 || len(model.filteredValues[0].Locations) != 2 {
 			t.Fatalf("%q changed consolidated values: %+v", shortcut, model.filteredValues)
 		}
-		if !strings.Contains(model.View(), "Sources (2)") {
-			t.Fatalf("%q removed the consolidated source count", shortcut)
+		selected, ok := model.selectedValue()
+		if !ok || len(model.inspectorSources(selected)) != 2 {
+			t.Fatalf("%q removed a consolidated source occurrence", shortcut)
 		}
 	}
 	if got := commandMatchCount("consolidated locations"); got != 0 {
@@ -831,7 +833,7 @@ func TestValuesAlwaysConsolidateLocations(t *testing.T) {
 	if len(model.detailItems) != 2 {
 		t.Fatalf("Details should list both source locations, got %+v", model.detailItems)
 	}
-	for _, location := range []string{"Template · line 148", "Template · line 20"} {
+	for _, location := range []string{"deployment.yaml:148", "service.yaml:20"} {
 		if !strings.Contains(model.View(), location) {
 			t.Fatalf("Details did not render %s", location)
 		}
@@ -900,8 +902,9 @@ func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.
 	updated, _ = model.Update(key("enter"))
 	model = updated.(Model)
 	body, _ = model.inspectorContent(100, true)
-	if !strings.Contains(body, "Sources (2)") || !strings.Contains(body, "Schema") || strings.Contains(body, "type: object") || strings.Contains(body, "../..") || strings.Contains(body, root) {
-		t.Fatalf("summary should offer compact source and schema links: %s", body)
+	if !strings.Contains(strings.Join(strings.Fields(body), ""), "src/my-package/zarf-values.yaml") || !strings.Contains(strings.Join(strings.Fields(body), ""), "001/zarf-values.yaml") ||
+		!strings.Contains(body, "Schema") || strings.Contains(body, "type: object") || strings.Contains(body, "../..") {
+		t.Fatalf("summary should show distinct source paths and a separate schema link: %s", body)
 	}
 	openInspectorTestPanel(t, &model, detailSources)
 	if len(model.detailItems) != 2 || model.detailItems[0].Kind != DetailItemSource ||
@@ -963,8 +966,7 @@ func TestMappingChartFirstRootAndSubtree(t *testing.T) {
 	if model.focusPane != FocusInspector {
 		t.Fatal("package input should first open its compact summary")
 	}
-	updated, _ = model.Update(key("enter"))
-	model = updated.(Model)
+	openInspectorTestMapping(t, &model)
 	if model.focusPane != FocusMapping || model.mapping.inside != 3 {
 		t.Fatalf("empty source should expose three chart paths: %+v", model.mapping)
 	}
@@ -1065,7 +1067,7 @@ func TestMappingPackageOwnershipAndMissingSource(t *testing.T) {
 	if model.mapping == nil || model.mapping.pkg.PackageName != "b" || model.mapping.inside != 1 || model.mapping.rows[0].present {
 		t.Fatalf("missing-source declaration must reveal chart candidates owned by b: %+v", model.mapping)
 	}
-	for _, want := range []string{"not supplied", ".missing.enabled", "config.enabled"} {
+	for _, want := range []string{"Not supplied", ".missing.enabled", "config.enabled"} {
 		if !strings.Contains(model.View(), want) {
 			t.Fatalf("live Inspector lost missing-input evidence %q: %s", want, model.View())
 		}
@@ -1076,6 +1078,7 @@ func TestMappingPackageOwnershipAndMissingSource(t *testing.T) {
 	model = updated.(Model)
 	updated, _ = model.Update(key("esc"))
 	model = updated.(Model)
+	pressWorkspaceKey(&model, "esc")
 	pressWorkspaceKey(&model, "esc")
 	model.currentChart = "b/server/web"
 	model.updateFilteredValues()
@@ -1316,7 +1319,7 @@ func TestNextZarfVariablesGroupByOwningPackage(t *testing.T) {
 	updated, _ := m.Update(key("enter"))
 	detailModel := updated.(Model)
 	details := detailModel.View()
-	for _, want := range []string{"api.ADMIN_DOMAINS", "Admin domains", "Sources (2)"} {
+	for _, want := range []string{"api.ADMIN_DOMAINS", "Admin domains", "Files & references"} {
 		if !strings.Contains(details, want) {
 			t.Fatalf("variable Details lost %q:\n%s", want, details)
 		}
@@ -1395,6 +1398,9 @@ func openInspectorTestMapping(t *testing.T, model *Model) {
 	if model.focusPane != FocusInspector {
 		t.Fatalf("mapping declaration must first focus Inspector, got %v", model.focusPane)
 	}
+	if model.detailPanel != detailMappingRules {
+		openInspectorTestPanel(t, model, detailMappingRules)
+	}
 	for index, item := range model.detailItems {
 		if item.Kind != DetailItemMapping {
 			continue
@@ -1420,6 +1426,13 @@ func openInspectorTestPanel(t *testing.T, model *Model, panel detailPanel) {
 		*model = updated.(Model)
 		if model.detailPanel != panel || model.focusPane != FocusInspector {
 			t.Fatalf("panel %v action did not open its page", panel)
+		}
+		return
+	}
+	if panel == detailSources {
+		pressWorkspaceKey(model, "o")
+		if model.detailPanel != detailSources || model.focusPane != FocusInspector {
+			t.Fatal("o shortcut did not open the complete source list")
 		}
 		return
 	}
@@ -1471,11 +1484,22 @@ func TestChartDetailsShareMappingContextAndRestoreEntryPoints(t *testing.T) {
 		model = updated.(Model)
 	}
 	press("enter")
-	if len(model.detailItems) != 3 || model.detailItems[0].Kind != DetailItemMapping || model.detailItems[1].Kind != DetailItemMapping ||
-		model.detailItems[2].Kind != DetailItemPanel || model.detailItems[2].panel != detailSources {
-		t.Fatalf("want two owning-package mappings and one Sources action: %+v", model.detailItems)
+	if len(model.detailItems) != 3 || model.detailItems[0].Kind != DetailItemPanel || model.detailItems[0].panel != detailAffected ||
+		model.detailItems[1].Kind != DetailItemPanel || model.detailItems[1].panel != detailMappingRules ||
+		model.detailItems[2].Kind != DetailItemSource || model.detailItems[2].Location != location {
+		t.Fatalf("want underlying values first, mapping explanation, and the exact source: %+v", model.detailItems)
 	}
-	first, second := model.detailItems[0].packageMapping, model.detailItems[1].packageMapping
+	direct, _ := model.inspectorContent(116, true)
+	openInspectorTestPanel(t, &model, detailMappingRules)
+	if len(model.detailItems) != 2 || model.detailItems[0].Kind != DetailItemMapping || model.detailItems[1].Kind != DetailItemMapping {
+		t.Fatalf("mapping explanation must retain both declaration occurrences: %+v", model.detailItems)
+	}
+	selected, _ := model.detailValue()
+	details := model.valuePolicy.details(selected.Component, selected.ValueUsage)
+	if len(details) != 2 || model.detailItems[0].mappingRef != details[0].mapping || model.detailItems[1].mappingRef != details[1].mapping {
+		t.Fatalf("explanation changed mapping identity or declaration order: %+v", model.detailItems)
+	}
+	first, second := details[0], details[1]
 	if first.pkg.PackageName != "b" || !first.row.present || first.row.input != false ||
 		first.row.packagePath != ".app.enabled" || second.row.status != "excluded" ||
 		!second.row.present || second.row.input != nil || second.row.exclusion != ".fallback.enabled" {
@@ -1485,7 +1509,6 @@ func TestChartDetailsShareMappingContextAndRestoreEntryPoints(t *testing.T) {
 		len(model.inspectorSources(model.filteredValues[model.cursor])) != 1 || model.inspectorSources(model.filteredValues[model.cursor])[0].Location != location {
 		t.Fatal("ordered inputs or editor location lost")
 	}
-	direct, _ := model.inspectorContent(116, true)
 	model.detailCursor = 0
 	press("enter")
 	if model.focusPane != FocusMapping {
@@ -1497,6 +1520,7 @@ func TestChartDetailsShareMappingContextAndRestoreEntryPoints(t *testing.T) {
 	if direct != viaMapping {
 		t.Fatalf("same chart value differs by entry point:\nDIRECT:\n%s\nMAPPING:\n%s", direct, viaMapping)
 	}
+	openInspectorTestPanel(t, &model, detailMappingRules)
 	model.detailCursor = 0
 	press("j")
 	if model.detailCursor != 1 {
@@ -1507,25 +1531,32 @@ func TestChartDetailsShareMappingContextAndRestoreEntryPoints(t *testing.T) {
 		t.Fatal("alternative mapping link did not open its declaration")
 	}
 	press("esc")
-	if model.focusPane != FocusInspector || !model.mappingRowDetail || model.mapping != table || model.detailCursor != 1 {
+	if model.focusPane != FocusInspector || !model.mappingRowDetail || model.mapping != table || model.detailCursor != 1 || model.detailPanel != detailMappingRules {
 		t.Fatal("nested mapping did not restore originating Details selection")
 	}
-	press("j")
-	press("enter")
+	press("esc")
+	if model.detailPanel != detailSummary || model.detailCursor != 1 {
+		t.Fatal("mapping explanation did not restore its summary action")
+	}
+	press("o")
 	if model.detailPanel != detailSources || len(model.detailItems) != 1 || model.detailItems[0].Location != location {
 		t.Fatal("mapping-origin Details cannot reach the template source")
 	}
 	press("esc")
-	if model.detailPanel != detailSummary || model.detailCursor != 2 {
-		t.Fatal("source list did not restore the selected Sources action")
+	if model.detailPanel != detailSummary || model.detailCursor != 1 {
+		t.Fatal("source list did not restore its originating summary selection")
 	}
 	press("esc")
 	if model.focusPane != FocusMapping || model.mapping != table {
 		t.Fatal("mapping-origin Details did not return to its table")
 	}
 	press("esc")
-	if model.focusPane != FocusInspector || model.mapping != nil || model.mappingRowDetail || model.cursor != originCursor {
-		t.Fatal("table did not restore main chart Details")
+	if model.focusPane != FocusInspector || model.mapping != nil || model.mappingRowDetail || model.cursor != originCursor || model.detailPanel != detailMappingRules {
+		t.Fatal("table did not restore the main chart mapping explanation")
+	}
+	press("esc")
+	if model.detailPanel != detailSummary || model.detailCursor != 1 {
+		t.Fatal("mapping explanation did not restore the main chart summary")
 	}
 	press("esc")
 	if model.focusPane != FocusValues || model.cursor != originCursor {
@@ -1546,6 +1577,7 @@ func TestChartDetailsShareMappingContextAndRestoreEntryPoints(t *testing.T) {
 	if fromPackage != direct {
 		t.Fatalf("package entry lost common chart Details:\n%s", fromPackage)
 	}
+	press("esc")
 	press("esc")
 	press("esc")
 	press("esc")
@@ -1596,10 +1628,10 @@ func TestMappingDetailsKeepRelatedValuesOutsideWorkspaceFilter(t *testing.T) {
 		}
 	}
 	press("enter")
-	press("enter")
+	openInspectorTestMapping(t, &model)
 	press("enter")
 	mapped, _ := model.inspectorContent(116, true)
-	if mapped != direct || len(model.detailItems) != 4 {
+	if mapped != direct || len(model.detailItems) != 5 {
 		t.Fatalf("filter changed chart Details or hid related values:\n%s", mapped)
 	}
 	press("G")

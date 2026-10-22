@@ -45,7 +45,7 @@ Schema-only Zarf properties stay out of Settings. Press `S` on a package in Scop
 
 ## Read a setting
 
-The Inspector follows the selected setting and shows its name, owner, kind, known value or absence, available description, and proven mapping actions. Press `Enter` from Settings to focus the Inspector; at wide and medium widths the surrounding workspace remains visible. Long descriptions and values have separate views within the Inspector. Additional evidence does not fill the primary screen just because the terminal is wide.
+The Inspector starts with the configurable setting and its supplied or known input. **Underlying values** compares the inspected chart input with the setting input at each recorded chart path, including supplied, absent, excluded, unavailable, and pending states. These are inspected inputs; the final deployment value is not evaluated. Press **View underlying values** to open the complete comparison and select a chart setting. **Mapping explanation** keeps routing rules, exclusions, and the chart-path browser in a separate page. The Inspector also shows the setting’s name, owner, kind and available description. Press `Enter` from Settings to focus the Inspector; at wide and medium widths the surrounding workspace remains visible. Long descriptions and values have separate views within the Inspector. Additional evidence does not fill the primary screen just because the terminal is wide.
 
 For example, a legacy `.Variables.CA_BUNDLE_CERTS` reference appears as a **Zarf runtime reference**, with **Requires deployment context** and a Sources action. It is not renamed to Package `.Values`, and no Helm destination is invented. `.Constants`, `.Pkg`, and unsupported static template expressions say **Expression not evaluated**. An empty target on a template reference is not a chart-root mapping.
 
@@ -53,7 +53,7 @@ Secondary views are explicit actions:
 
 | Action | Evidence |
 | --- | --- |
-| **Sources** (`o`) | Friendly source roles and known line numbers. Select a source to see its exact path; an existing local source can then open in `$EDITOR`. Unavailable coordinates are not displayed as `:0:0`. |
+| **Sources** (`o`) | Actual source filenames and known `file:line` coordinates, with their roles. Main previews preserve the end of long paths; the source list wraps complete paths. Select a source to see its exact path; an existing local source can then open in `$EDITOR`. Unknown files and lines are stated explicitly. Raw chart `values.yaml` locations identify declarations, while template locations identify uses; they do not establish the winning source of a merged chart input. No `:0:0` location is fabricated. |
 | **Full value** (`v`) | Copyable YAML for the inspected value, with sensitive values masked. |
 | **Input history** (`t`) | Inspected source layers from low to high precedence, shadowed contributions, and the inspected result when all layers are known. |
 | **Schema** (`s`) | Raw schema annotations, with sensitive defaults and examples masked. Schema presence does not mean validation ran. |
@@ -66,9 +66,9 @@ Only applicable actions appear. With the Inspector focused, `j`/`k` selects an a
 
 ## Explore mappings
 
-A Package Value's inspector links to its declared chart destinations. Selecting a destination opens the chart mapping table at the corresponding path in the Settings area, with the selected mapping row shown in the Inspector. Inspect a declaration in **Mappings & uses** and follow its mapping action to explore it, even when its input is empty or absent. `Esc` restores the originating settings or inspector state.
+A Package Value's Inspector previews the chart paths it can configure, including child mappings of an object group. **View underlying values** opens stacked comparisons that retain both inputs even in narrow layouts. An empty object supplies no child fields. From **Mapping explanation**, browse all chart paths for a declared rule, including rules with empty or absent input. `Esc` restores the originating settings or inspector state.
 
-The mapping view separates **Chart default** from **Package input**; the Inspector shows the selected path's input when the table is too narrow for both. **Available** means a chart path is reachable through the declaration, not that an input was supplied or deployment succeeded. **Excluded** paths retain their exclusion reason. Press `a` to show chart paths outside a subtree destination. An explicit `targetPath: .` is a chart-root mapping; a missing target is not.
+The advanced mapping view separates **Chart input** from **Setting input**; the Inspector shows the selected path's input when the table is too narrow for both. **Available** means a chart path is reachable through the declaration, not that an input was supplied or deployment succeeded. **Excluded** paths retain their exclusion reason. Press `a` to show chart paths outside a subtree destination. An explicit `targetPath: .` is a chart-root mapping; a missing target is not.
 
 Chart values opened directly and through mapping rows share the same inspector. Proven mappings show their owning package input paths. Multiple mappings remain separate; the inspector does not select a final Helm winner from incomplete evidence.
 

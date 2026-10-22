@@ -16,10 +16,16 @@ func (m Model) packageValuesSnippet(value DisplayItem) string {
 		// primary selection so an alternate mapping still authors that input.
 		primary := m
 		primary.detailPanel = detailSummary
+		for i := len(m.detailPanelHistory) - 1; i >= 0; i-- {
+			if m.detailPanelHistory[i].panel != detailAuthoring {
+				primary.detailPanel = m.detailPanelHistory[i].panel
+				break
+			}
+		}
 		primary.buildDetailItems()
 		details, cursor = primary.detailItems, 0
 		for i := len(m.detailPanelHistory) - 1; i >= 0; i-- {
-			if m.detailPanelHistory[i].panel == detailSummary {
+			if m.detailPanelHistory[i].panel == primary.detailPanel {
 				cursor = m.detailPanelHistory[i].cursor
 				break
 			}
@@ -29,8 +35,26 @@ func (m Model) packageValuesSnippet(value DisplayItem) string {
 	if cursor >= 0 && cursor < len(details) {
 		mapping = details[cursor].packageMapping
 	}
+	if mapping == nil && cursor >= 0 && cursor < len(details) && details[cursor].mappingRef != nil {
+		ref := details[cursor].mappingRef
+		for _, candidate := range m.valuePolicy.details(value.Component, value.ValueUsage) {
+			if candidate.mapping == ref {
+				copy := candidate
+				mapping = &copy
+				break
+			}
+		}
+	}
 	if mapping == nil {
 		for _, detail := range details {
+			if detail.packageMapping != nil {
+				mapping = detail.packageMapping
+				break
+			}
+		}
+	}
+	if mapping == nil && !value.IsPackageValue && !value.IsPackageMapping {
+		for _, detail := range m.technicalItems(value) {
 			if detail.packageMapping != nil {
 				mapping = detail.packageMapping
 				break

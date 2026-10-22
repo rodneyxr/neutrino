@@ -291,7 +291,7 @@ func TestPersistentWorkspacePreservesSecondaryPageAcrossFocusAndResize(t *testin
 	}
 }
 
-func TestPersistentWorkspaceRuntimeSummaryHidesCacheSourceNames(t *testing.T) {
+func TestPersistentWorkspaceRuntimeSummaryShowsActualSourceFilename(t *testing.T) {
 	m, value, file := inspectorRuntimeFixture(t, ".Variables.CA_BUNDLE_CERTS", "runtimeContext", 37)
 	m.detailRef = nil
 	m.filteredValues = []DisplayItem{value}
@@ -304,12 +304,15 @@ func TestPersistentWorkspaceRuntimeSummaryHidesCacheSourceNames(t *testing.T) {
 		if strings.Contains(view, "Zarf Package Values") {
 			t.Fatalf("runtime owner band invented a Package Values identity:\n%s", view)
 		}
-		for _, want := range []string{"CA_BUNDLE_CERTS", "Zarf runtime reference", "Requires deployment context", "Sources (1)"} {
+		for _, want := range []string{"CA_BUNDLE_CERTS", "Zarf runtime reference", "Requires deployment context", "Files & references (1)"} {
 			if !strings.Contains(inspector, want) {
 				t.Fatalf("persistent runtime inspector lost %q:\n%s", want, inspector)
 			}
 		}
-		for _, unwanted := range []string{file, "neutrino-cache", "sha256-", "operator-config-0.1.0-0", "0.yaml", ".Values.Variables", "Helm .Values", "Input history", ".vars.scale"} {
+		if !strings.Contains(inspector, filepath.Base(file)+":37") {
+			t.Fatalf("runtime summary hides source filename: %s", inspector)
+		}
+		for _, unwanted := range []string{".Values.Variables", "Helm .Values", "Input history", ".vars.scale"} {
 			if strings.Contains(inspector, unwanted) {
 				t.Fatalf("primary runtime inspector disclosed %q:\n%s", unwanted, inspector)
 			}
@@ -399,7 +402,7 @@ func TestPersistentWorkspaceRefocusKeepsResizedSourceActionVisible(t *testing.T)
 		}
 		_, selectedRow := m.inspectorContent(max(1, m.inspectorWidth()-4), true)
 		visible := m.inspectorVisibleLines()
-		if selectedRow < m.detailScrollOffset || selectedRow >= m.detailScrollOffset+visible || !strings.Contains(view, "> Template · line 16") {
+		if selectedRow < m.detailScrollOffset || selectedRow >= m.detailScrollOffset+visible || !strings.Contains(strings.Join(strings.Fields(strings.ReplaceAll(strings.ReplaceAll(view, "║", ""), "│", "")), ""), "deployment.yaml:16") {
 			t.Fatalf("refocus after resizing at %v hid the selected source: row=%d offset=%d visible=%d\n%s", size, selectedRow, m.detailScrollOffset, visible, view)
 		}
 	}

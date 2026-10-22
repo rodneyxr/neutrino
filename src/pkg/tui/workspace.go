@@ -1058,12 +1058,27 @@ func (m *Model) ensureDetailCursorVisible() {
 	if len(m.detailItems) == 0 {
 		return
 	}
-	_, row := m.inspectorContent(max(1, m.inspectorWidth()-4), true)
+	width := max(1, m.inspectorWidth()-4)
+	_, row := m.inspectorContent(width, true)
 	visible := m.inspectorVisibleLines()
+	selectedHeight := 1
+	if value, ok := m.detailValue(); ok {
+		index := 0
+		for _, line := range m.inspectorDocument(value).lines {
+			if line.action == nil {
+				continue
+			}
+			if index == m.detailCursor && line.action.Kind == DetailItemSource && m.detailPanel != detailSummary {
+				selectedHeight = min(visible, strings.Count(wrapCell(line.text, max(1, width-2)), "\n")+1)
+				break
+			}
+			index++
+		}
+	}
 	if row < m.detailScrollOffset {
 		m.detailScrollOffset = row
-	} else if row >= m.detailScrollOffset+visible {
-		m.detailScrollOffset = row - visible + 1
+	} else if row+selectedHeight > m.detailScrollOffset+visible {
+		m.detailScrollOffset = row + selectedHeight - visible
 	}
 	m.detailScrollOffset = clamp(m.detailScrollOffset, 0, m.detailScrollLimit())
 }

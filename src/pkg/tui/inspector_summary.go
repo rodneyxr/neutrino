@@ -23,6 +23,8 @@ const (
 	detailAuthoring
 	detailDescription
 	detailReferences
+	detailAffected
+	detailMappingRules
 )
 
 type detailPanelReturn struct {
@@ -34,6 +36,7 @@ type detailPanelReturn struct {
 type inspectorLine struct {
 	label, text string
 	action      *DetailItem
+	section     bool
 }
 
 type inspectorDocument struct {
@@ -257,10 +260,16 @@ func (m Model) inspectorDocument(value DisplayItem) inspectorDocument {
 		}
 	case value.IsUDSOverrideValue:
 		field("Bundle override", m.compactInput(value, value.OverrideValue))
+	case value.IsUDSOverrideVar || value.IsPkgVar || value.IsZarfVar:
+		if value.DefaultPresent || value.DefaultValue != nil {
+			field("Input", m.compactInput(value, value.DefaultValue))
+		} else {
+			field("Input", "Not supplied")
+		}
 	case value.DefaultPresent || value.DefaultValue != nil:
-		field("Default", m.compactInput(value, value.DefaultValue))
+		field("Chart input", m.compactInput(value, value.DefaultValue))
 	default:
-		field("Default", "Not supplied")
+		field("Chart input", "Not supplied")
 	}
 	if value.IsPackageValue && value.Component != "UDS Next bundle" && value.ValuePresent {
 		origin, pending := m.settingPackageOrigin(value)
@@ -271,7 +280,7 @@ func (m Model) inspectorDocument(value DisplayItem) inspectorDocument {
 		if value.settingChildren > 0 {
 			field("Contains", settingsEntryCount(value.settingChildren))
 		} else if value.MappingStatus == "unmapped" {
-			field("Mapping", "No inspected mapping")
+			field("Destination", "No inspected chart destination")
 		}
 	}
 	if !runtimeReference(value) && !value.Wildcard {
@@ -297,41 +306,41 @@ func (m Model) inspectorDocument(value DisplayItem) inspectorDocument {
 		}
 	}
 	technical := m.technicalItems(value)
-	if value.IsPackageMapping && !runtimeReference(value) && value.mappingRef != nil {
-		action("Explore mapped settings", DetailItem{Kind: DetailItemMapping, Mapping: value.mappingRef.usage, mappingRef: value.mappingRef})
+	impacts := m.configurationImpacts(value)
+	if len(impacts) > 0 {
+		doc.lines = append(doc.lines, inspectorLine{text: "Underlying values", section: true})
+		field("Compared paths", impactCountLabel(impacts))
+		preview := 1
+		if m.windowHeight >= 36 {
+			preview = 2
+		}
+		doc.lines = append(doc.lines, m.impactLines(impacts, preview, false)...)
+		panel(fmt.Sprintf("View underlying values (%d)", len(impacts)), detailAffected)
+
+	} else if value.IsBundleVariable {
+		field("Used by", "Bundle values templates · output leaves not evaluated")
+	} else if value.IsPkgVar || value.IsZarfVar {
+		field("Used by", "Legacy substitution sites · Helm paths not inferred")
 	}
-	for _, detail := range technical {
-		if detail.Kind != DetailItemMapping || detail.Mapping.TargetPath == "" || detail.Mapping.Runtime {
-			continue
+	if len(m.configurationMappings(value)) > 0 {
+		panel("Mapping explanation", detailMappingRules)
+	}
+	sources := m.inspectorSources(value)
+	if len(sources) > 0 {
+		doc.lines = append(doc.lines, inspectorLine{text: fmt.Sprintf("Files & references (%d)", len(sources)), section: true})
+		for _, source := range sources[:min(2, len(sources))] {
+			action(source.Label, source)
 		}
-		label := "Used by " + detail.Mapping.ComponentName + "/" + detail.Mapping.ChartName + " · " + detail.Mapping.TargetPath
-		if detail.packageMapping != nil {
-			row := detail.packageMapping.row
-			if row.status == "other" {
-				continue
-			}
-			state := "not supplied"
-			if row.status == "excluded" {
-				state = "excluded"
-			} else if row.present {
-				state = m.compactInput(DisplayItem{ValueUsage: introspect.ValueUsage{Path: row.packagePath}, IsPackageValue: true, PackageName: detail.packageMapping.pkg.PackageName}, row.input)
-			}
-			label = "Package input: " + state + " · " + row.packagePath
-		} else {
-			for _, route := range value.Routes {
-				if route.mapping == detail.mappingRef && route.Target != "" {
-					label = "Used by " + detail.Mapping.ComponentName + "/" + detail.Mapping.ChartName + " · " + route.Target
-				}
-			}
+		if len(sources) > 2 {
+			panel(fmt.Sprintf("All source locations (%d)", len(sources)), detailSources)
 		}
-		action(label, detail)
+	} else {
+		field("Sources", "File and line unavailable")
 	}
 	if m.canViewFullValue(value) && isLongInspectorValue(m.displayValue(value, inspectorRawValue(value))) {
 		panel("View full value", detailFullValue)
 	}
-	if count := len(m.inspectorSources(value)); count > 0 {
-		panel(fmt.Sprintf("Sources (%d)", count), detailSources)
-	}
+
 	if m.hasValueHistory(value) {
 		panel("Input history", detailProvenance)
 	}
@@ -359,6 +368,21 @@ func (m Model) inspectorDocument(value DisplayItem) inspectorDocument {
 		if detail.Kind == DetailItemCrossRef {
 			action(strings.TrimPrefix(detail.Label, "→ "), detail)
 		}
+	}
+	if m.windowHeight > 0 && m.windowHeight <= 14 {
+		var compact []inspectorLine
+		hasInput := false
+		for _, line := range doc.lines {
+			if line.action != nil {
+				compact = append(compact, line)
+				continue
+			}
+			if !hasInput && (line.label == "Value" || line.label == "Input" || line.label == "Known input" || line.label == "Inspected input" || line.label == "Bundle override" || line.label == "Chart input") {
+				compact = append(compact, line)
+				hasInput = true
+			}
+		}
+		doc.lines = compact
 	}
 	return doc
 }
@@ -476,13 +500,34 @@ func (m Model) inspectorContent(width int, focused bool) (string, int) {
 				hadAction = true
 			}
 			text := truncateCell(row.text, max(1, width-2))
-			if focused && actionIndex == m.detailCursor {
-				selected = lineNumber
-				add(selectedRowStyle.Width(width).Render("> " + text))
-			} else {
-				add(codeStyle.Render("  " + text))
+			if row.action.Kind == DetailItemSource {
+				if m.detailPanel == detailSummary {
+					file, line := inspectorSourceCoordinates(*row.action)
+					text = tailCell(sourceCoordinateLabel(file, line), max(1, width-2))
+				} else {
+					text = wrapCell(row.text, max(1, width-2))
+				}
+			}
+			for i, line := range strings.Split(text, "\n") {
+				marker := "  "
+				if focused && actionIndex == m.detailCursor {
+					if i == 0 {
+						selected = lineNumber
+						marker = "> "
+					}
+					add(selectedRowStyle.Width(width).Render(marker + line))
+				} else {
+					add(codeStyle.Render(marker + line))
+				}
 			}
 			actionIndex++
+			continue
+		}
+		if row.section {
+			if !compact {
+				add("")
+			}
+			add(detailSectionStyle.Render(row.text))
 			continue
 		}
 		if row.label == "" {
@@ -532,10 +577,10 @@ func sourceRole(location introspect.ValueUsageLocation) string {
 	case "schema":
 		return "Values schema"
 	case "values", "default":
-		return "Chart defaults"
+		return "Chart value declaration"
 	case "value":
 		if filepath.Base(location.File) == "values.yaml" {
-			return "Chart defaults"
+			return "Chart value declaration"
 		}
 		return "Template"
 	case "runtimeContext", "runtimeTemplate", "packageValue", "templatedValues":
@@ -552,7 +597,8 @@ func sourceRole(location introspect.ValueUsageLocation) string {
 func (m Model) inspectorSources(value DisplayItem) []DetailItem {
 	var sources []DetailItem
 	seen := map[string]bool{}
-	for _, detail := range m.technicalItems(value) {
+	details := append(m.technicalItems(value), m.configurationImpactSources(value)...)
+	for _, detail := range details {
 		if detail.Kind != DetailItemLocation && detail.Kind != DetailItemFile && !(detail.Kind == DetailItemTrace && detail.File != "") {
 			continue
 		}
@@ -570,11 +616,6 @@ func (m Model) inspectorSources(value DisplayItem) []DetailItem {
 			_, component, chart := parseComponentKey(detail.sourceComponent)
 			label = strings.Trim(component+"/"+chart, "/") + " · " + label
 		}
-		if detail.Location.Line > 0 {
-			label += fmt.Sprintf(" · line %d", detail.Location.Line)
-		} else {
-			label += " · location unavailable"
-		}
 		if detail.Kind != DetailItemLocation {
 			label = "Values source"
 			if pkg := m.tracePackage(value); pkg != nil {
@@ -587,6 +628,7 @@ func (m Model) inspectorSources(value DisplayItem) []DetailItem {
 			}
 		}
 		detail.Kind, detail.File, detail.Label = DetailItemSource, file, label
+		detail.Label = inspectorSourceLabel(detail)
 		sources = append(sources, detail)
 	}
 	return sources
@@ -598,6 +640,10 @@ func (m Model) inspectorSecondaryDocument(value DisplayItem, doc inspectorDocume
 		doc.lines = append(doc.lines, inspectorLine{text: label, action: &detail})
 	}
 	switch m.detailPanel {
+	case detailAffected:
+		return m.configurationImpactDocument(value, doc)
+	case detailMappingRules:
+		return m.configurationMappingDocument(value, doc)
 	case detailDescription:
 		doc.kind = "Description"
 		field("", inspectorDescription(value))
@@ -646,13 +692,14 @@ func (m Model) inspectorSecondaryDocument(value DisplayItem, doc inspectorDocume
 	case detailSourceFile:
 		doc.kind = "Source details"
 		if source := m.detailSource; source != nil {
-			field("Role", source.Label)
-			field("File", source.File)
-			if source.Location.Line > 0 {
-				field("Line", fmt.Sprint(source.Location.Line))
-			} else {
-				field("Location", "Unavailable")
+			file, line := inspectorSourceCoordinates(*source)
+			coordinate := sourceCoordinateLabel(file, line)
+			role := strings.TrimPrefix(source.Label, coordinate+" · ")
+			if role == source.Label {
+				role = sourceRole(source.Location)
 			}
+			field("Role", role)
+			field("Location", coordinate)
 			if sourceFileAvailable(source.File) {
 				action("Open file in editor", DetailItem{Kind: DetailItemFile, File: source.File, Location: source.Location})
 			} else {

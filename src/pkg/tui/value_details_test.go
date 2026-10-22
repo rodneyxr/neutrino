@@ -89,6 +89,10 @@ func TestAuthoringPanelRetainsSelectedAlternateMapping(t *testing.T) {
 	value := DisplayItem{Component: "core/server/web", ValueUsage: introspect.ValueUsage{Path: "enabled", DefaultValue: true}}
 	model.focusPane, model.detailRef = FocusInspector, &value
 	model.buildDetailItems()
+	openInspectorTestPanel(t, &model, detailMappingRules)
+	if len(model.detailItems) != 2 || model.detailItems[1].Kind != DetailItemMapping || model.detailItems[1].Mapping.Path != ".alternate" {
+		t.Fatalf("mapping explanation lost the alternate declaration: %+v", model.detailItems)
+	}
 	model.detailCursor = 1
 	model.openDetailPanel(detailAuthoring, nil)
 	body, _ := model.inspectorContent(100, true)
@@ -96,7 +100,7 @@ func TestAuthoringPanelRetainsSelectedAlternateMapping(t *testing.T) {
 		t.Fatalf("authoring switched selected mapping: %s", body)
 	}
 	model.backDetailPanel()
-	if model.detailCursor != 1 {
-		t.Fatal("authoring lost primary mapping selection")
+	if model.detailPanel != detailMappingRules || model.detailCursor != 1 || model.detailItems[1].Mapping.Path != ".alternate" {
+		t.Fatal("authoring lost its originating mapping explanation and selection")
 	}
 }

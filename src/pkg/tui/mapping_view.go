@@ -205,7 +205,7 @@ func (m Model) mappingPane(width, height int) string {
 	inner := max(1, width-4)
 	var content strings.Builder
 	add := func(line string) { content.WriteString(truncateCell(line, inner) + "\n") }
-	add(paneHeadingStyle.Render("Mapped settings"))
+	add(paneHeadingStyle.Render("Chart paths · mapping rule"))
 	add(screen.usage.ComponentName + "/" + screen.usage.ChartName)
 	add("Target: " + screen.usage.TargetPath + " · a other paths")
 	pathWidth, statusWidth, defaultWidth, inputWidth := mappingColumnWidths(inner)
@@ -213,9 +213,9 @@ func (m Model) mappingPane(width, height int) string {
 	if statusWidth > 0 {
 		heading += " " + padRowCell(scrollRowCell("STATUS", 0, statusWidth), statusWidth)
 	}
-	heading += " " + padRowCell(scrollRowCell("CHART DEFAULT", 0, defaultWidth), defaultWidth)
+	heading += " " + padRowCell(scrollRowCell("CHART INPUT", 0, defaultWidth), defaultWidth)
 	if inputWidth > 0 {
-		heading += " PACKAGE INPUT"
+		heading += " SETTING INPUT"
 	}
 	add(tableHeaderStyle.Render(heading))
 	available := max(1, height-6)

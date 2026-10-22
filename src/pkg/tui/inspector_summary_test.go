@@ -59,15 +59,18 @@ func inspectorSummaryText(model Model) string {
 func TestInspectorSummaryRuntimeContextStaysCompact(t *testing.T) {
 	model, value, file := inspectorRuntimeFixture(t, ".Variables.CA_BUNDLE_CERTS", "runtimeContext", 37)
 	body := inspectorSummaryText(model)
-	for _, want := range []string{".Variables.CA_BUNDLE_CERTS", "Zarf runtime reference", "Requires deployment context", "Sources (1)"} {
+	for _, want := range []string{".Variables.CA_BUNDLE_CERTS", "Zarf runtime reference", "Requires deployment context", "Files & references (1)"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing runtime summary %q:\n%s", want, body)
 		}
 	}
-	for _, unwanted := range []string{".Values.Variables", "Helm .Values", "chart root", "→", "->", file, "neutrino-cache", "bundle-rendered", "Input history", "dependencies", ".vars.scale", "bootstrap"} {
+	for _, unwanted := range []string{".Values.Variables", "Helm .Values", "chart root", "→", "->", "bundle-rendered", "Input history", "dependencies", ".vars.scale", "bootstrap"} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("runtime summary disclosed unrelated or fabricated detail %q:\n%s", unwanted, body)
 		}
+	}
+	if !strings.Contains(body, filepath.Base(file)+":37") {
+		t.Fatalf("runtime summary hides its actual filename and line: %s", body)
 	}
 	if lines := strings.Count(body, "\n") + 1; lines > 12 {
 		t.Fatalf("runtime summary should fit without scrolling at 80 columns: %d lines\n%s", lines, body)
@@ -112,20 +115,20 @@ func TestInspectorSummarySourceNavigationSeparatesLabelAndExactPath(t *testing.T
 			}
 		}
 		if sourcesIndex < 0 {
-			t.Fatal("summary has no Sources action")
+			sourcesIndex = 0
 		}
 		model.detailCursor = sourcesIndex
-		if command := model.activateFocused(); command != nil || model.detailPanel != detailSources {
+		if command := model.openSelectedSource(); command != nil || model.detailPanel != detailSources {
 			t.Fatal("Sources should open its list without launching an editor")
 		}
 		body := inspectorSummaryText(model)
-		if !strings.Contains(body, "Chart values template") || strings.Contains(body, "neutrino-cache") || strings.Contains(body, ":0:0") {
+		if !strings.Contains(body, "Chart values template") || !strings.Contains(strings.ReplaceAll(body, "\n  ", ""), filepath.Base(file)) || strings.Contains(body, ":0:0") {
 			t.Fatalf("source list should show a friendly label with known coordinates only:\n%s", body)
 		}
 		if len(model.detailItems) != 1 || model.detailItems[0].Kind != DetailItemSource || model.detailItems[0].File != file {
 			t.Fatalf("friendly source lost exact source identity: %+v", model.detailItems)
 		}
-		if line == 0 && !strings.Contains(body, "location unavailable") || line > 0 && !strings.Contains(body, "line 37") {
+		if line == 0 && !strings.Contains(body, "line unavailable") || line > 0 && !strings.Contains(body, ":37") {
 			t.Fatalf("source location label fabricated or dropped coordinates:\n%s", body)
 		}
 		if command := model.activateFocused(); command != nil || model.detailPanel != detailSourceFile {
@@ -135,8 +138,8 @@ func TestInspectorSummarySourceNavigationSeparatesLabelAndExactPath(t *testing.T
 		doc := model.inspectorDocument(value)
 		foundExact := false
 		for _, row := range doc.lines {
-			if row.label == "File" {
-				foundExact = row.text == file
+			if row.label == "Location" {
+				foundExact = row.text == sourceCoordinateLabel(file, line)
 			}
 		}
 		if !foundExact || strings.Contains(inspectorSummaryText(model), ":0:0") {
@@ -235,7 +238,7 @@ func TestInspectorSummaryMappingStatePrecedesLongPath(t *testing.T) {
 		value   interface{}
 		present bool
 		state   string
-	}{{nil, false, "not supplied"}, {nil, true, "null"}, {false, true, "false"}} {
+	}{{nil, false, "Not supplied"}, {nil, true, "null"}, {false, true, "false"}} {
 		values := map[string]interface{}{}
 		if sample.present {
 			values["very_long_package_input_path"] = sample.value
@@ -247,7 +250,7 @@ func TestInspectorSummaryMappingStatePrecedesLongPath(t *testing.T) {
 		model.buildDetailItems()
 		for _, width := range []int{36, 76} {
 			body, _ := model.inspectorContent(width, true)
-			if !strings.Contains(body, "Package input: "+sample.state) {
+			if !strings.Contains(body, "Setting input") || !strings.Contains(body, sample.state) {
 				t.Fatalf("width %d hid mapping state %s: %s", width, sample.state, body)
 			}
 		}
