@@ -14,7 +14,7 @@ Explicit `--output table|json|yaml` and `--interactive=false` print reports. Pip
 
 At 120 columns and wider, **Settings** and **Inspector** share the screen. **Scope** opens when focused with `f` or pane navigation, then collapses when focus leaves it. Its tree selects a package, component, or chart and retains its cursor and expanded branches when reopened. Settings contains the query and results; moving its selection updates the Inspector immediately. `Tab` and `Shift+Tab` move between panes, and the focused pane has a highlighted border.
 
-From 80 to 119 columns, Settings and Inspector remain side by side and `f` opens the scope picker. Below 80 columns, one pane is visible at a time: `Enter` opens the Inspector and `Esc` returns to Settings. Resizing changes the layout while retaining the scope, query, selected setting, and inspector history.
+From 80 to 119 columns, Settings and Inspector share the screen while browsing and `f` opens the scope picker. Below 100 columns, focusing the Inspector gives it the full width; `Tab` or `Esc` returns to Settings. Below 80 columns, one pane is always visible at a time. Resizing retains the scope, query, selected setting, and inspector history. Destination actions wrap rather than hiding the chart setting path.
 
 ## Find a setting
 
@@ -28,7 +28,7 @@ Press `/` to search the selected type and scope; terms combine with AND. Example
 
 Zarf values use an indented object hierarchy. A nonempty object is a **group**, and its children show relative names rather than repeating the parent's path. Empty objects, arrays, explicit nulls and scalar values remain inputs with their own mapping status. Full paths remain available for search, inspection and copying. Search retains matching inputs' ancestors as context. No mapping is inferred from a name: an optional component absent from the inspected package can leave real inputs without an inspected mapping.
 
-The Inspector names each package value's surviving inspected origin: packaged, bundle, operator, mixed, or unknown. **Known input** means an unresolved source prevents claiming a final value. Equal overlays still own their input even when they do not change it. Bundle file rows show their declared filenames and inspection status; packages with no such files remain in Scope without adding an empty Settings row.
+**Known input** means an unresolved source prevents claiming a final value. **Input history** identifies surviving contributions as packaged, bundle, operator, mixed, or unknown. Equal overlays still own their input even when they do not change it. Bundle file rows show their declared filenames and inspection status; packages with no such files remain in Scope without adding an empty Settings row.
 
 Use origin and kind filters such as `kind:packaged`, `kind:files`, or `kind:configurable`. Long paths and values scroll independently on the focused selected row after a brief pause; navigation, resizing, or changing focus resets scrolling. Search, help, and the command palette pause it.
 
@@ -45,7 +45,7 @@ Schema-only Zarf properties stay out of Settings. Press `S` on a package in Scop
 
 ## Read a setting
 
-The Inspector starts with the configurable setting and its supplied or known input. **Underlying values** compares the inspected chart input with the setting input at each recorded chart path, including supplied, absent, excluded, unavailable, and pending states. These are inspected inputs; the final deployment value is not evaluated. Press **View underlying values** to open the complete comparison and select a chart setting. **Mapping explanation** keeps routing rules, exclusions, and the chart-path browser in a separate page. The Inspector also shows the setting’s name, owner, kind and available description. Press `Enter` from Settings to focus the Inspector; at wide and medium widths the surrounding workspace remains visible. Long descriptions and values have separate views within the Inspector. Additional evidence does not fill the primary screen just because the terminal is wide.
+The Inspector starts with the configurable setting and one supplied or known input. **Underlying values** previews related chart inputs and their supplied, absent, excluded, unavailable, or pending state. A leaf's setting input is not repeated in the preview. These are inspected inputs; the final deployment value is not evaluated. **View underlying values** opens complete comparisons and chart-setting navigation, with separate **View full setting input** and **View full chart input** actions for long values. **Mapping explanation** keeps routing rules, exclusions, and the chart-path browser in a separate page. Missing inputs, parse errors, unavailable content, and runtime dependencies retain specific reasons in the summary and mapping details. The Inspector also shows the setting’s name, owner, kind and available description. Press `Enter` from Settings to focus it. Long descriptions and values have separate views. Additional evidence does not fill the primary screen just because the terminal is wide.
 
 For example, a legacy `.Variables.CA_BUNDLE_CERTS` reference appears as a **Zarf runtime reference**, with **Requires deployment context** and a Sources action. It is not renamed to Package `.Values`, and no Helm destination is invented. `.Constants`, `.Pkg`, and unsupported static template expressions say **Expression not evaluated**. An empty target on a template reference is not a chart-root mapping.
 
@@ -53,13 +53,13 @@ Secondary views are explicit actions:
 
 | Action | Evidence |
 | --- | --- |
-| **Sources** (`o`) | Actual source filenames and known `file:line` coordinates, with their roles. Main previews preserve the end of long paths; the source list wraps complete paths. Select a source to see its exact path; an existing local source can then open in `$EDITOR`. Unknown files and lines are stated explicitly. Raw chart `values.yaml` locations identify declarations, while template locations identify uses; they do not establish the winning source of a merged chart input. No `:0:0` location is fabricated. |
+| **Sources** (`o`) | Short filenames and known `file:line` coordinates, with their roles. Repeated filenames gain meaningful relative parent paths or package/chart owners. Cache digests and filesystem prefixes stay out of normal labels. Select a source to see its exact path and coordinate availability; an existing local source can then open in `$EDITOR`. Display shortening never changes editor targets. Raw chart `values.yaml` locations identify declarations, while template locations identify uses; they do not establish the winning source of a merged chart input. No `:0:0` location is fabricated. |
 | **Full value** (`v`) | Copyable YAML for the inspected value, with sensitive values masked. |
 | **Input history** (`t`) | Inspected source layers from low to high precedence, shadowed contributions, and the inspected result when all layers are known. |
 | **Schema** (`s`) | Raw schema annotations, with sensitive defaults and examples masked. Schema presence does not mean validation ran. |
 | **Values files using this variable** | File-level bundle variable references. A file reference does not prove which output leaf an expression generates. |
 | **Other inputs in source files** | Other observed bundle inputs read by the package's values files; these are not dependencies of the selected leaf. |
-| **Package references / Observed uses** | Package source, ordering metadata, or separately recorded template usage. |
+| **Package references / Template uses** | Package source, ordering metadata, or navigable recorded template `file:line` usage. Runtime uses without a known Helm target stay visible as observations; they do not become inferred chart destinations. |
 | **Authoring example** (`b` or `Space`) | Optional Package Values or legacy UDS configuration example to review before use. |
 
 Only applicable actions appear. With the Inspector focused, `j`/`k` selects an action and `Enter` follows it. `Esc` returns to the preceding inspector page and restores its selection and scroll position, then returns focus to Settings. Moving to a different setting starts that setting's summary; changing focus or resizing alone preserves the current evidence view. Short terminals keep the primary identity and value concise; secondary evidence can be scrolled.

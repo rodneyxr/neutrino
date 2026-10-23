@@ -38,21 +38,32 @@ const (
 	DetailItemTrace
 	DetailItemPanel
 	DetailItemSource
+	DetailItemPreview
 )
 
 // DetailItem represents a single navigable row in the detail view.
 type DetailItem struct {
-	traceID         string
-	Kind            DetailItemKind
-	Location        introspect.ValueUsageLocation // valid when Kind == DetailItemLocation
-	sourceComponent string                        // owning chart when a package variable links to chart usage
-	relatedValue    *DisplayItem                  // target independent of workspace filtering
-	Label           string                        // rendered label for cross-ref items
-	Mapping         introspect.PackageValueUsage  // valid when Kind == DetailItemMapping
-	packageMapping  *valueMappingDetail
-	mappingRef      *valueMapping
-	File            string // resolved path when Kind == DetailItemFile
-	panel           detailPanel
+	traceID           string
+	Kind              DetailItemKind
+	Location          introspect.ValueUsageLocation // valid when Kind == DetailItemLocation
+	sourceComponent   string                        // owning chart when a package variable links to chart usage
+	sourceRole        string                        // display role kept separately from shortened coordinates
+	sourceDisplayPath string                        // display only; File/Location retain exact source identity
+	relatedValue      *DisplayItem                  // target independent of workspace filtering
+	Label             string                        // rendered label for cross-ref items
+	Mapping           introspect.PackageValueUsage  // valid when Kind == DetailItemMapping
+	packageMapping    *valueMappingDetail
+	mappingRef        *valueMapping
+	File              string // resolved path when Kind == DetailItemFile
+	panel             detailPanel
+	preview           *inspectorValuePreview
+}
+
+// inspectorValuePreview contains the already-masked input for one explicit
+// comparison action, independent of the selected setting or chart baseline.
+type inspectorValuePreview struct {
+	title string
+	value interface{}
 }
 
 type DisplayItem struct {
@@ -856,6 +867,12 @@ func (m *Model) buildTechnicalDetailItems() {
 					Kind: DetailItemMapping, Mapping: route.Usage, mappingRef: route.mapping,
 				})
 			}
+		}
+	}
+	for _, usage := range m.observedValueUsages(v) {
+		for _, location := range usage.Locations {
+			items = append(items, DetailItem{Kind: DetailItemLocation, Location: location,
+				Label: "Template use", sourceComponent: observedUsageOwner(v, usage)})
 		}
 	}
 

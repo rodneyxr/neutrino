@@ -157,6 +157,62 @@ func TestPersistentWorkspaceFocusCyclesVisiblePanes(t *testing.T) {
 	}
 }
 
+func TestPersistentWorkspaceFocusedInspectorUsesConstrainedTerminalWidth(t *testing.T) {
+	for _, width := range []int{40, 80, 99, 100} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			m := persistentWorkspaceModel(t)
+			resizeWorkspace(&m, width, 24)
+			m.filterInput.SetValue("alpha")
+			m.updateFilteredValues()
+			selected := m.inspectorSelection
+			pressWorkspaceKey(&m, "enter")
+			view := assertWorkspaceSize(t, m, width, 24)
+			geometry := m.workspaceGeometry(width)
+			if width < 100 {
+				if geometry.settings != 0 || m.inspectorWidth() != width || workspacePaneHeading(view, 0, width) != "Inspector" {
+					t.Fatalf("focused Inspector should use the whole constrained terminal:\n%s", view)
+				}
+			} else if geometry.settings == 0 || !strings.Contains(view, "Settings") {
+				t.Fatalf("100 columns should retain the two-pane workspace:\n%s", view)
+			}
+			pressWorkspaceKey(&m, "esc")
+			view = assertWorkspaceSize(t, m, width, 24)
+			if m.focusPane != FocusValues || m.workspaceGeometry(width).settings == 0 || m.filterInput.Value() != "alpha" || m.inspectorSelection != selected || !strings.Contains(view, "Settings") {
+				t.Fatal("returning from Inspector lost Settings, query, or selection")
+			}
+		})
+	}
+}
+
+func TestPersistentWorkspaceKeepsWholeWrappedPanelActionVisible(t *testing.T) {
+	m := scopedWorkspaceModel()
+	resizeWorkspace(&m, 30, 12)
+	pressWorkspaceKey(&m, "5")
+	pressWorkspaceKey(&m, "enter")
+	value, ok := m.detailValue()
+	if !ok || len(m.detailItems) == 0 || m.detailItems[0].Kind != DetailItemPanel || m.detailItems[0].panel != detailAffected {
+		t.Fatal("fixture must start on the underlying-values panel action")
+	}
+	label := ""
+	for _, line := range m.inspectorDocument(value).lines {
+		if line.action != nil {
+			label = line.text
+			break
+		}
+	}
+	inner := max(1, m.inspectorWidth()-4)
+	wrapped := strings.Split(wrapCell(label, max(1, inner-2)), "\n")
+	if len(wrapped) < 2 {
+		t.Fatal("fixture must wrap a panel action over multiple lines")
+	}
+	_, selectedRow := m.inspectorContent(inner, true)
+	view := assertWorkspaceSize(t, m, 30, 12)
+	visible := strings.Join(strings.Fields(strings.ReplaceAll(strings.ReplaceAll(view, "║", ""), "│", "")), "")
+	if selectedRow < m.detailScrollOffset || selectedRow+len(wrapped) > m.detailScrollOffset+m.inspectorVisibleLines() || !strings.Contains(visible, strings.Join(strings.Fields(label), "")) {
+		t.Fatalf("selected panel action must remain visible in full:\n%s", view)
+	}
+}
+
 func TestPersistentWorkspaceSearchCaretSurvivesLongQuery(t *testing.T) {
 	m := persistentWorkspaceModel(t)
 	m.inputMode = InputModeFilter
@@ -291,7 +347,7 @@ func TestPersistentWorkspacePreservesSecondaryPageAcrossFocusAndResize(t *testin
 	}
 }
 
-func TestPersistentWorkspaceRuntimeSummaryShowsActualSourceFilename(t *testing.T) {
+func TestPersistentWorkspaceRuntimeSummaryOffersCompactSources(t *testing.T) {
 	m, value, file := inspectorRuntimeFixture(t, ".Variables.CA_BUNDLE_CERTS", "runtimeContext", 37)
 	m.detailRef = nil
 	m.filteredValues = []DisplayItem{value}
@@ -304,13 +360,13 @@ func TestPersistentWorkspaceRuntimeSummaryShowsActualSourceFilename(t *testing.T
 		if strings.Contains(view, "Zarf Package Values") {
 			t.Fatalf("runtime owner band invented a Package Values identity:\n%s", view)
 		}
-		for _, want := range []string{"CA_BUNDLE_CERTS", "Zarf runtime reference", "Requires deployment context", "Files & references (1)"} {
+		for _, want := range []string{"CA_BUNDLE_CERTS", "Zarf runtime reference", "Requires deployment context", "Sources (1)", "Template uses"} {
 			if !strings.Contains(inspector, want) {
 				t.Fatalf("persistent runtime inspector lost %q:\n%s", want, inspector)
 			}
 		}
-		if !strings.Contains(inspector, filepath.Base(file)+":37") {
-			t.Fatalf("runtime summary hides source filename: %s", inspector)
+		if strings.Contains(inspector, filepath.Base(file)) || strings.Contains(inspector, "neutrino-cache") {
+			t.Fatalf("runtime summary should group source paths behind the Sources action: %s", inspector)
 		}
 		for _, unwanted := range []string{".Values.Variables", "Helm .Values", "Input history", ".vars.scale"} {
 			if strings.Contains(inspector, unwanted) {

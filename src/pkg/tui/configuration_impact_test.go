@@ -32,13 +32,13 @@ func selectConfigurationPath(t *testing.T, m *Model, path string) DisplayItem {
 	return DisplayItem{}
 }
 
-func TestConfigurationSummaryShowsComparisonAndFileCoordinatesBeforeRules(t *testing.T) {
+func TestConfigurationSummaryLeadsToUnderlyingValuesAndRecordedSources(t *testing.T) {
 	m := configurationFixture()
 	resizeWorkspace(&m, 160, 40)
 	selectConfigurationPath(t, &m, "app.enabled")
 	m.activateFocused()
 	body, _ := m.inspectorContent(76, true)
-	for _, want := range []string{"app.enabled", "Underlying values", "Chart input", "true", "Setting input", "false", "Supplied to this chart path", "values.yaml:3", "templates/configmap.yaml:8", "View underlying values (1)", "Mapping explanation"} {
+	for _, want := range []string{"app.enabled", "Underlying values", "Chart input", "true", "false", "Supplied to this chart path", "View underlying values (1)", "Mapping explanation", "Sources (2)"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q: %s", want, body)
 		}
@@ -49,6 +49,16 @@ func TestConfigurationSummaryShowsComparisonAndFileCoordinatesBeforeRules(t *tes
 	m.activateFocused()
 	if m.detailPanel != detailAffected || len(m.detailItems) != 1 || m.detailItems[0].Kind != DetailItemTrace {
 		t.Fatal("underlying view must navigate actual chart settings")
+	}
+	body, _ = m.inspectorContent(76, true)
+	if !strings.Contains(body, "Setting input") || !strings.Contains(body, "false") {
+		t.Fatal("detailed comparison lost supplied input")
+	}
+	sources := m.inspectorSources(m.filteredValues[m.cursor])
+	if len(sources) != 2 || sources[0].File != "values.yaml" || sources[0].Location.Line != 3 ||
+		sources[1].File != "templates/configmap.yaml" || sources[1].Location.Line != 8 ||
+		!strings.Contains(sources[0].Label, "values.yaml:3") || !strings.Contains(sources[1].Label, "configmap.yaml:8") {
+		t.Fatalf("recorded source coordinates lost: %+v", sources)
 	}
 	m.activateFocused()
 	value, _ := m.detailValue()
@@ -215,5 +225,237 @@ func TestUnavailableChartComparisonRetainsSelectedLeaf(t *testing.T) {
 	rows := m.configurationImpacts(value)
 	if len(rows) != 1 || rows[0].settingPath != "app.enabled" || rows[0].path != "config.enabled" || rows[0].input != false || !rows[0].present {
 		t.Fatalf("selected leaf lost identity: %+v", rows)
+	}
+}
+
+func TestConfigurationDiagnosticKindsRemainActionable(t *testing.T) {
+	for _, tc := range []struct {
+		status introspect.ValueStatus
+		state  string
+	}{
+		{introspect.ValueMissing, "Missing configuration input"},
+		{introspect.ValueParseError, "Input could not be parsed"},
+		{introspect.ValueUnavailable, "Input unavailable for inspection"},
+		{introspect.ValueDynamic, "Pending deployment context"},
+	} {
+		t.Run(string(tc.status), func(t *testing.T) {
+			report := configurationFixture().report
+			report.PackageValues[0].Usages[0].Status = tc.status
+			report.PackageValues[0].Usages[0].Diagnostic = "Recorded inspection reason"
+			if tc.status == introspect.ValueMissing {
+				report.PackageValues[0].Values = nil
+			}
+			m := NewModel(report)
+			value := DisplayItem{Component: "api/server/web", ValueUsage: report.Components["api/server/web"].Values[0]}
+			rows := m.configurationImpacts(value)
+			if len(rows) != 1 || rows[0].state() != tc.state {
+				t.Fatalf("wrong diagnostic state: %+v", rows)
+			}
+			if tc.status == introspect.ValueMissing && (rows[0].present || m.impactSettingInput(rows[0]) != "Not supplied") {
+				t.Fatal("missing source became a supplied input")
+			}
+			checkReason := func(lines []inspectorLine) {
+				t.Helper()
+				for _, line := range lines {
+					if line.label == "Reason" && strings.Contains(line.text, "Recorded inspection reason") {
+						return
+					}
+				}
+				t.Fatal("recorded diagnostic is inaccessible")
+			}
+			checkReason(m.impactLines(rows, 0, true))
+			checkReason(m.configurationMappingDocument(value, inspectorDocument{}).lines)
+			excluded := rows[0]
+			excluded.status, excluded.exclusion = "excluded", ".app.enabled"
+			if excluded.state() != "Excluded by .app.enabled" {
+				t.Fatal("source diagnostic erased the exclusion")
+			}
+		})
+	}
+}
+
+func TestConfigurationProblemsIncludeSourcesWithoutStaticMappings(t *testing.T) {
+	report := introspect.InspectionReport{PackageValues: []introspect.PackageValues{{PackageName: "api",
+		Values: map[string]interface{}{"enabled": true},
+		Sources: []introspect.ValueSource{{Status: introspect.ValueParseError,
+			Diagnostics: []introspect.ValueDiagnostic{{Status: introspect.ValueParseError, Message: "Invalid values file"}}}},
+		Usages: []introspect.PackageValueUsage{{Path: ".enabled", Runtime: true, Status: introspect.ValueDynamic,
+			Diagnostic: "Observed template requires evaluation", Locations: []introspect.ValueUsageLocation{{Kind: "field"}}}},
+	}}}
+	m := NewModel(report)
+	value := selectConfigurationPath(t, &m, "enabled")
+	if len(m.configurationMappings(value)) != 0 {
+		t.Fatal("runtime observation acquired a static chart mapping")
+	}
+	reasons := strings.Join(m.configurationProblems(value), "\n")
+	if !strings.Contains(reasons, "Invalid values file") || !strings.Contains(reasons, "Observed template requires evaluation") {
+		t.Fatalf("source/runtime reason lost without static mappings: %s", reasons)
+	}
+	if !strings.HasPrefix(reasons, "parse error:") {
+		t.Fatalf("fixable error hidden behind runtime evaluation: %s", reasons)
+	}
+}
+
+func TestConfigurationPreviewsKeepSettingInputSeparateFromChartBaseline(t *testing.T) {
+	setting, baseline := strings.Repeat("setting-", 12), strings.Repeat("baseline-", 12)
+	m := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{"api/server/web": {
+			Values: []introspect.ValueUsage{{Path: "message", DefaultValue: baseline, DefaultPresent: true}},
+		}},
+		PackageValues: []introspect.PackageValues{{PackageName: "api", Values: map[string]interface{}{"app": map[string]interface{}{"message": setting}},
+			Usages: []introspect.PackageValueUsage{{Path: ".app", TargetPath: ".", ComponentName: "server", ChartName: "web"}},
+		}},
+	})
+	value := selectConfigurationPath(t, &m, "app")
+	rows := m.configurationImpacts(value)
+	lines := m.impactLines(rows, 0, true)
+	if len(lines) == 0 || lines[0].action == nil || lines[0].action.Kind != DetailItemTrace {
+		t.Fatal("chart navigation must remain the first action")
+	}
+	want := map[string]interface{}{"View full setting input": setting, "View full chart input": baseline}
+	for _, line := range lines {
+		if strings.Contains(line.text, "open chart value") {
+			t.Fatal("comparison advertises an ambiguous chart-value action")
+		}
+		if expected, ok := want[line.text]; ok {
+			if line.action == nil || line.action.Kind != DetailItemPreview || line.action.preview == nil || line.action.preview.value != expected {
+				t.Fatalf("preview opens wrong value: %+v", line)
+			}
+			delete(want, line.text)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing independently selectable previews: %v", want)
+	}
+	m.focusPane, m.detailRef = FocusInspector, &value
+	m.openDetailPanel(detailAffected, nil)
+	for _, expected := range []string{setting, baseline} {
+		found := false
+		for i, item := range m.detailItems {
+			if item.Kind == DetailItemPreview && item.preview.value == expected {
+				m.detailCursor = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatal("preview missing from navigable inspector actions")
+		}
+		m.activateFocused()
+		body, _ := m.inspectorContent(70, true)
+		body = strings.Join(strings.Fields(body), "")
+		if !strings.Contains(body, expected) {
+			t.Fatalf("preview navigation showed another input: %s", body)
+		}
+		pressWorkspaceKey(&m, "esc")
+		if m.detailPanel != detailAffected {
+			t.Fatal("preview did not restore comparison navigation")
+		}
+	}
+}
+
+func TestConfigurationPreviewsStoreOnlyMaskedValues(t *testing.T) {
+	input := map[string]interface{}{"public": strings.Repeat("visible", 12), "sourceHidden": "SOURCE_PRIVATE", "destinationHidden": "DESTINATION_PRIVATE"}
+	before := formatYAMLValue(input)
+	property := func(name string) map[string]interface{} {
+		return map[string]interface{}{"properties": map[string]interface{}{name: map[string]interface{}{"writeOnly": true}}}
+	}
+	report := introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{"api/server/web": {Values: []introspect.ValueUsage{
+			{Path: "payload", DefaultValue: input, DefaultPresent: true, Schema: property("destinationHidden")},
+		}}},
+		PackageValues: []introspect.PackageValues{{PackageName: "api", Values: map[string]interface{}{"payload": input},
+			Schema: map[string]interface{}{"properties": map[string]interface{}{"payload": property("sourceHidden")}},
+			Usages: []introspect.PackageValueUsage{{Path: ".payload", TargetPath: ".payload", ComponentName: "server", ChartName: "web"}},
+		}},
+	}
+	m := NewModel(report)
+	value := selectConfigurationPath(t, &m, "payload")
+	previews := 0
+	var rows []configurationImpact
+	for _, row := range m.configurationImpacts(value) {
+		if row.path == "payload" {
+			rows = append(rows, row)
+		}
+	}
+	for _, line := range m.impactLines(rows, 0, true) {
+		if line.action == nil || line.action.Kind != DetailItemPreview {
+			continue
+		}
+		previews++
+		text := formatYAMLValue(line.action.preview.value)
+		if strings.Contains(text, "PRIVATE") || !strings.Contains(text, "visible") || !strings.Contains(text, redactedValue) {
+			t.Fatalf("preview lost masking or public input: %s", text)
+		}
+	}
+	if previews < 2 || before != formatYAMLValue(input) {
+		t.Fatal("preview missing or borrowed inspection input mutated")
+	}
+}
+
+func TestConfigurationProblemsPrioritizeFixableUsageErrors(t *testing.T) {
+	report := configurationFixture().report
+	report.PackageValues[0].Sources = []introspect.ValueSource{{Status: introspect.ValueDynamic}}
+	report.PackageValues[0].Usages[0].Status = introspect.ValueParseError
+	report.PackageValues[0].Usages[0].Diagnostic = "Fix the malformed configuration"
+	m := NewModel(report)
+	value := selectConfigurationPath(t, &m, "app.enabled")
+	reasons := m.configurationProblems(value)
+	if len(reasons) < 2 || !strings.Contains(reasons[0], "Fix the malformed configuration") {
+		t.Fatalf("runtime source obscured actionable error: %v", reasons)
+	}
+}
+
+func TestConfigurationProblemsRetainDistinctMissingVariablesAndFiles(t *testing.T) {
+	sources := []introspect.ValueSource{
+		{Name: "/project/base/values.yaml", Kind: "bundle-values", Status: introspect.ValueMissing, Diagnostics: []introspect.ValueDiagnostic{
+			{Status: introspect.ValueMissing, Path: ".domain", Message: "Bundle variable is absent from inspected defaults and configuration."},
+			{Status: introspect.ValueMissing, Path: ".region", Message: "Bundle variable is absent from inspected defaults and configuration."},
+		}},
+		{Name: "/project/env/values.yaml", Kind: "bundle-values", Status: introspect.ValueMissing, Diagnostics: []introspect.ValueDiagnostic{
+			{Status: introspect.ValueMissing, Path: ".domain", Message: "Bundle variable is absent from inspected defaults and configuration."},
+		}},
+	}
+	reasons := configurationDiagnostics(nil, sources)
+	if len(reasons) != 3 {
+		t.Fatalf("distinct missing variables/files collapsed: %v", reasons)
+	}
+	for i, want := range []string{"base/values.yaml · .domain", "base/values.yaml · .region", "env/values.yaml · .domain"} {
+		if !strings.Contains(reasons[i], want) || strings.Contains(reasons[i], "/project/") {
+			t.Fatalf("diagnostic lost actionable context or used an absolute display path: %v", reasons)
+		}
+	}
+}
+
+func TestUnavailableAndUnparsedTemplateEvidenceIsNotRuntimeWait(t *testing.T) {
+	for _, sample := range []struct {
+		kind   string
+		status introspect.ValueStatus
+		reason string
+	}{
+		{"unavailableTemplate", introspect.ValueUnavailable, "unavailable input"},
+		{"unparsedTemplate", introspect.ValueParseError, "parse error"},
+	} {
+		usage := introspect.PackageValueUsage{Path: ".", Runtime: true, Locations: []introspect.ValueUsageLocation{{Kind: sample.kind}}}
+		if got := configurationUsageStatus(usage); got != sample.status {
+			t.Fatalf("%s became %s", sample.kind, got)
+		}
+		reasons := strings.Join(configurationDiagnostics(&usage, nil), "\n")
+		if !strings.Contains(reasons, sample.reason) || strings.Contains(reasons, "Needs evaluation") {
+			t.Fatalf("actionable template evidence became a runtime wait: %s", reasons)
+		}
+	}
+}
+
+func TestConfigurationProblemsConsolidateEquivalentRuntimeCauses(t *testing.T) {
+	m := NewModel(introspect.InspectionReport{PackageValues: []introspect.PackageValues{{PackageName: "api",
+		Values: map[string]interface{}{"global": map[string]interface{}{"domain": "known"}}, Usages: []introspect.PackageValueUsage{
+			{Path: ".global", Runtime: true, Diagnostic: "Package reference requires runtime evaluation.", Locations: []introspect.ValueUsageLocation{{Kind: "field"}}},
+			{Path: ".global.domain", Runtime: true, Diagnostic: "Package reference requires runtime evaluation.", Locations: []introspect.ValueUsageLocation{{Kind: "field"}}},
+		},
+	}}})
+	v := selectConfigurationPath(t, &m, "global.domain")
+	if reasons := m.configurationProblems(v); len(reasons) != 1 {
+		t.Fatalf("equivalent parent and leaf runtime causes repeat: %v", reasons)
 	}
 }

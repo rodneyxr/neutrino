@@ -152,9 +152,15 @@ func (m *Model) moveWithinFocusedPane(delta int) {
 	case FocusMapping:
 		m.moveMappingCursor(delta)
 	case FocusInspector:
+		previous := m.detailCursor
 		m.detailCursor = clamp(m.detailCursor+delta, 0, len(m.detailItems)-1)
 		m.detailScrollOffset = clamp(m.detailScrollOffset+delta, 0, m.detailScrollLimit())
-		m.ensureDetailCursorVisible()
+		// At the first/last action the remaining evidence can extend beyond
+		// that action's heading. Let the viewport reach it without snapping
+		// back to an unchanged cursor, especially on short terminals.
+		if m.detailCursor != previous {
+			m.ensureDetailCursorVisible()
+		}
 	}
 }
 
@@ -268,6 +274,10 @@ func (m *Model) activateFocused() tea.Cmd {
 		}
 		if detail.Kind == DetailItemSource {
 			m.openDetailPanel(detailSourceFile, &detail)
+			return nil
+		}
+		if detail.Kind == DetailItemPreview {
+			m.openDetailPanel(detailInputPreview, &detail)
 			return nil
 		}
 		if detail.Kind == DetailItemMapping {
@@ -854,6 +864,9 @@ func (m Model) valuesPane(width, height int) string {
 // The package band carries the owner; keep the full path on DisplayItem for
 // searching, Details, and copying.
 func (m Model) valueListPath(value DisplayItem) string {
+	if runtimeReference(value) && inspectorAbsolutePath(value.Path) {
+		return m.referenceDisplayPath(value)
+	}
 	if value.settingLabel != "" {
 		return strings.Repeat("  ", value.settingDepth) + value.settingLabel
 	}
@@ -1068,7 +1081,7 @@ func (m *Model) ensureDetailCursorVisible() {
 			if line.action == nil {
 				continue
 			}
-			if index == m.detailCursor && line.action.Kind == DetailItemSource && m.detailPanel != detailSummary {
+			if index == m.detailCursor {
 				selectedHeight = min(visible, strings.Count(wrapCell(line.text, max(1, width-2)), "\n")+1)
 				break
 			}

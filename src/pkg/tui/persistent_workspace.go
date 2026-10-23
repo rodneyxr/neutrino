@@ -25,6 +25,11 @@ func geometryFor(width int) workspaceGeometry {
 // Scope borrows space only while it has focus. Its cursor and expansion state
 // live independently of this layout, so closing it never changes the selection.
 func (m Model) workspaceGeometry(width int) workspaceGeometry {
+	// A focused inspector needs enough room to retain destination identity and
+	// comparison labels. Settings remains one Tab/Esc away at constrained widths.
+	if width < 100 && m.focusPane == FocusInspector {
+		return workspaceGeometry{inspector: width}
+	}
 	if width >= wideLayoutWidth && m.focusPane != FocusComponents {
 		settings := width * 55 / 100
 		return workspaceGeometry{settings: settings, inspector: width - settings}
@@ -107,6 +112,9 @@ func (m Model) focusedActionValue() (DisplayItem, bool) {
 
 func (m Model) persistentWorkspace(width, height int) string {
 	geometry := m.workspaceGeometry(width)
+	if geometry.settings == 0 && m.focusPane == FocusInspector {
+		return m.inspectorPane(width, height)
+	}
 	if width < mediumLayoutWidth {
 		switch m.focusPane {
 		case FocusComponents:

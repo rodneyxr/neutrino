@@ -144,3 +144,154 @@ func TestInspectorSourceLabelsUseResolvedValueSourceTargets(t *testing.T) {
 		}
 	}
 }
+
+func TestLabelInspectorSourcesUsesUniqueFilenamesAndPreservesTargets(t *testing.T) {
+	sources := []DetailItem{
+		{Kind: DetailItemSource, File: "/home/reader/project/templates/deployment.yaml", Label: "Template",
+			Location: introspect.ValueUsageLocation{File: "/home/reader/project/templates/deployment.yaml", Line: 12, Column: 4}},
+		{Kind: DetailItemSource, File: "/home/reader/project/values.yaml", Label: "Chart value declaration",
+			Location: introspect.ValueUsageLocation{File: "/home/reader/project/values.yaml", Line: 3}},
+		{Kind: DetailItemSource, File: "/home/reader/project/templates/deployment.yaml", Label: "Template",
+			Location: introspect.ValueUsageLocation{File: "/home/reader/project/templates/deployment.yaml", Line: 27}},
+	}
+	before := append([]DetailItem(nil), sources...)
+	model := Model{}
+	labeled := model.labelInspectorSources(sources)
+	want := []string{"deployment.yaml:12 · Template", "values.yaml:3 · Chart value declaration", "deployment.yaml:27 · Template"}
+	for i, source := range labeled {
+		if source.Label != want[i] {
+			t.Fatalf("source %d: got %q, want %q", i, source.Label, want[i])
+		}
+		copy := source
+		copy.Label, copy.sourceRole, copy.sourceDisplayPath = before[i].Label, before[i].sourceRole, before[i].sourceDisplayPath
+		if !reflect.DeepEqual(copy, before[i]) {
+			t.Fatalf("labeling changed recorded source/editor identity: %+v", copy)
+		}
+	}
+	if !reflect.DeepEqual(sources, before) {
+		t.Fatal("labeling mutated its input slice")
+	}
+	if !reflect.DeepEqual(model.labelInspectorSources(labeled), labeled) {
+		t.Fatal("batch labeling is not idempotent")
+	}
+	if got := inspectorSourcePreviews(labeled, 2); !reflect.DeepEqual(got, want[:2]) {
+		t.Fatalf("previews replaced shortened labels: %q", got)
+	}
+}
+
+func TestLabelInspectorSourcesDisambiguatesBeforePreviewLimit(t *testing.T) {
+	sources := []DetailItem{
+		{File: "/work/project/api/templates/config.yaml", Label: "Template"},
+		{File: "/work/project/worker/templates/config.yaml", Label: "Template"},
+	}
+	labeled := (Model{}).labelInspectorSources(sources)
+	for i, want := range []string{"api/templates/config.yaml", "worker/templates/config.yaml"} {
+		if labeled[i].sourceDisplayPath != want || labeled[i].Label != want+" · Template" {
+			t.Fatalf("source %d did not use its shortest distinct suffix: %+v", i, labeled[i])
+		}
+	}
+	if got := inspectorSourcePreviews(labeled, 1); len(got) != 1 || !strings.HasPrefix(got[0], "api/templates/config.yaml") {
+		t.Fatalf("preview truncation lost source-set ambiguity: %q", got)
+	}
+}
+
+func TestLabelInspectorSourcesUsesChartOwnershipInsteadOfCacheRoots(t *testing.T) {
+	const rootA = "/tmp/neutrino/package-views/0123456789abcdef/0/charts/shared"
+	const rootB = "/tmp/neutrino/package-views/fedcba9876543210/2/charts/shared"
+	model := Model{components: map[string]*introspect.IntrospectResult{
+		"alpha/component/shared": {Source: rootA},
+		"beta/component/shared":  {Source: rootB},
+	}}
+	sources := []DetailItem{
+		{File: rootA + "/values.yaml", Label: "Chart value declaration"},
+		{File: rootB + "/values.yaml", Label: "Chart value declaration"},
+	}
+	labeled := model.labelInspectorSources(sources)
+	for i, want := range []string{"alpha/component/shared/values.yaml", "beta/component/shared/values.yaml"} {
+		if labeled[i].sourceDisplayPath != want {
+			t.Fatalf("source %d lost chart/package ownership: %q", i, labeled[i].Label)
+		}
+	}
+	// Relative paths with different recorded owners are not the same file.
+	sources[0].File, sources[0].sourceComponent = "values.yaml", "alpha/component/shared"
+	sources[1].File, sources[1].sourceComponent = "values.yaml", "beta/component/shared"
+	relative := model.labelInspectorSources(sources)
+	if relative[0].sourceDisplayPath != labeled[0].sourceDisplayPath || relative[1].sourceDisplayPath != labeled[1].sourceDisplayPath {
+		t.Fatalf("relative chart identities collapsed: %+v", relative)
+	}
+}
+
+func TestLabelInspectorSourcesUsesDeclaredPackageFilenames(t *testing.T) {
+	model := Model{report: introspect.InspectionReport{PackageValues: []introspect.PackageValues{
+		{PackageName: "alpha", Sources: []introspect.ValueSource{{Name: "inputs/values.yaml", MaterializedFile: "/tmp/cache/abcdef12/a/rendered.yaml"}}},
+		{PackageName: "beta", Sources: []introspect.ValueSource{{Name: "inputs/values.yaml", MaterializedFile: "/tmp/cache/fedcba98/b/rendered.yaml"}}},
+	}}}
+	sources := []DetailItem{
+		{File: "/tmp/cache/abcdef12/a/rendered.yaml", Label: "alpha / packaged defaults 1"},
+		{File: "/tmp/cache/fedcba98/b/rendered.yaml", Label: "beta / packaged defaults 1"},
+	}
+	labeled := model.labelInspectorSources(sources)
+	for i, want := range []string{"alpha/inputs/values.yaml", "beta/inputs/values.yaml"} {
+		if labeled[i].sourceDisplayPath != want || labeled[i].sourceRole != sources[i].Label || labeled[i].File != sources[i].File {
+			t.Fatalf("declared filename or exact target lost: %+v", labeled[i])
+		}
+	}
+}
+
+func TestLabelInspectorSourcesDoesNotExposeCacheOnlyDifferences(t *testing.T) {
+	for _, paths := range [][2]string{
+		{"/tmp/neutrino/package-views/0123456789abcdef/0/values.yaml", "/tmp/neutrino/package-views/fedcba9876543210/1/values.yaml"},
+		{"/home/reader/.cache/neutrino/sha256-abcdef/templates/config.yaml", "/home/reader/.cache/neutrino/sha256-fedcba/templates/config.yaml"},
+		{"/tmp/neutrino/package-blobs/0123456789abcdef", "/tmp/neutrino/package-blobs/fedcba9876543210"},
+		{`C:\Users\first\project\values.yaml`, `C:\Users\second\project\values.yaml`},
+	} {
+		sources := []DetailItem{{File: paths[0], Label: "Values source"}, {File: paths[1], Label: "Values source"}}
+		labeled := (Model{}).labelInspectorSources(sources)
+		if labeled[0].Label == labeled[1].Label || !strings.Contains(labeled[0].Label, "[source 1]") || !strings.Contains(labeled[1].Label, "[source 2]") {
+			t.Fatalf("indistinguishable logical files need stable source identities: %+v", labeled)
+		}
+		for _, source := range labeled {
+			for _, forbidden := range []string{"/tmp", "/home", "reader", "Users", "first", "second", "0123456789abcdef", "fedcba9876543210", "sha256", ".cache", "package-views"} {
+				if strings.Contains(source.Label, forbidden) {
+					t.Fatalf("source label exposed transport identity %q: %q", forbidden, source.Label)
+				}
+			}
+		}
+	}
+}
+
+func TestLabelInspectorSourcesKeepsCoordinateKnowledgeAndWindowsNames(t *testing.T) {
+	sources := []DetailItem{
+		{File: `C:\Users\reader\project\api\values.yaml`, Label: "Values source", Location: introspect.ValueUsageLocation{Line: 5}},
+		{File: `C:\Users\reader\project\worker\values.yaml`, Label: "Values source", Location: introspect.ValueUsageLocation{Line: 9}},
+		{File: "operator.yaml", Label: "Operator input", Location: introspect.ValueUsageLocation{File: "template.yaml", Line: 42}},
+		{Label: "Template", Location: introspect.ValueUsageLocation{Line: 7}},
+		{Label: "Values source"},
+	}
+	labeled := (Model{}).labelInspectorSources(sources)
+	want := []string{"api/values.yaml:5 · Values source", "worker/values.yaml:9 · Values source", "operator.yaml · Operator input", "File unavailable · line 7 · Template", "File unavailable · Values source"}
+	for i := range labeled {
+		if labeled[i].Label != want[i] {
+			t.Fatalf("source %d: got %q, want %q", i, labeled[i].Label, want[i])
+		}
+	}
+	if labeled[3].sourceDisplayPath != "" || labeled[4].sourceDisplayPath != "" {
+		t.Fatal("unavailable files acquired an invented display path")
+	}
+	if (Model{}).labelInspectorSources(nil) != nil {
+		t.Fatal("nil input should remain nil")
+	}
+}
+
+func TestLabelInspectorSourcesPreservesDeclaredHexDirectories(t *testing.T) {
+	for _, directory := range []string{"", "cache/", "/work/project/"} {
+		sources := []DetailItem{
+			{File: directory + "deadbeef/values.yaml", Label: "Operator input"},
+			{File: directory + "cafebabe/values.yaml", Label: "Operator input"},
+		}
+		labeled := (Model{}).labelInspectorSources(sources)
+		if labeled[0].sourceDisplayPath != "deadbeef/values.yaml" || labeled[1].sourceDisplayPath != "cafebabe/values.yaml" {
+			t.Fatalf("meaningful authored directories were treated as cache digests: %+v", labeled)
+		}
+	}
+}

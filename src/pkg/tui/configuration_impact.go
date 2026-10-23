@@ -146,7 +146,18 @@ func (row configurationImpact) state() string {
 	case "excluded":
 		return "Excluded by " + row.exclusion
 	case "unresolved", "runtime":
-		return "Pending deployment context"
+		switch configurationMappingStatus(row.mapping) {
+		case introspect.ValueMissing:
+			return "Missing configuration input"
+		case introspect.ValueParseError:
+			return "Input could not be parsed"
+		case introspect.ValueUnavailable:
+			return "Input unavailable for inspection"
+		case introspect.ValueDynamic:
+			return "Pending deployment context"
+		default:
+			return "Unresolved configuration input"
+		}
 	case "destination unavailable":
 		return "Destination chart not inspected"
 	case "variable default":
@@ -170,14 +181,25 @@ func (m Model) impactChartInput(row configurationImpact) string {
 	if !row.chartValue.DefaultPresent && row.chartValue.DefaultValue == nil {
 		return "Not supplied"
 	}
-	value := DisplayItem{ValueUsage: row.chartValue, Component: row.chartKey}
-	return m.comparisonInput(value, row.chartValue.DefaultValue)
+	return comparisonPreview(m.impactChartValue(row))
 }
 
 func (m Model) impactSettingInput(row configurationImpact) string {
 	if !row.present {
 		return "Not supplied"
 	}
+	return comparisonPreview(m.impactSettingValue(row))
+}
+
+func (m Model) impactChartValue(row configurationImpact) interface{} {
+	value := DisplayItem{ValueUsage: row.chartValue, Component: row.chartKey}
+	value.Path = row.path
+	return m.displayValue(value, row.chartValue.DefaultValue)
+}
+
+// Both configuration owners can declare sensitivity. Apply both boundaries
+// before storing a value in a preview; navigation must not reveal raw input.
+func (m Model) impactSettingValue(row configurationImpact) interface{} {
 	value := DisplayItem{ValueUsage: introspect.ValueUsage{Path: row.settingPath}, IsPackageValue: true}
 	if row.mapping != nil && row.mapping.pkg != nil {
 		value.PackageName = row.mapping.pkg.PackageName
@@ -188,7 +210,7 @@ func (m Model) impactSettingInput(row configurationImpact) string {
 	destination := DisplayItem{ValueUsage: row.chartValue, Component: row.chartKey}
 	destination.Path = row.path
 	safe := m.displayValue(destination, row.input)
-	return m.comparisonInput(value, safe)
+	return m.displayValue(value, safe)
 }
 
 func (m Model) impactLines(rows []configurationImpact, limit int, interactive bool) []inspectorLine {
@@ -208,14 +230,34 @@ func (m Model) impactLines(rows []configurationImpact, limit int, interactive bo
 			inspectorLine{label: "Chart input", text: m.impactChartInput(row)},
 			inspectorLine{label: "Setting input", text: m.impactSettingInput(row)},
 			inspectorLine{label: "Effect", text: row.state()})
+		if row.status == "unresolved" || row.status == "runtime" || row.status == "destination unavailable" {
+			for _, reason := range configurationMappingDiagnostics(row.mapping) {
+				lines = append(lines, inspectorLine{label: "Reason", text: reason})
+			}
+		}
+		if interactive {
+			preview := func(label, title string, value interface{}) {
+				if isLongInspectorValue(value) {
+					lines = append(lines, inspectorLine{text: label, action: &DetailItem{
+						Kind: DetailItemPreview, preview: &inspectorValuePreview{title: title, value: value},
+					}})
+				}
+			}
+			if row.present {
+				preview("View full setting input", "Setting input · "+row.settingPath, m.impactSettingValue(row))
+			}
+			if row.status != "destination unavailable" && (row.chartValue.DefaultPresent || row.chartValue.DefaultValue != nil) {
+				preview("View full chart input", "Chart input · "+row.title(), m.impactChartValue(row))
+			}
+		}
 	}
 	return lines
 }
 
 func (m Model) configurationImpactDocument(value DisplayItem, doc inspectorDocument) inspectorDocument {
 	rows := m.configurationImpacts(value)
-	doc.kind = "Underlying chart values · inspected inputs"
-	doc.lines = append(doc.lines, inspectorLine{text: "Each destination compares the chart input with this setting's input. Final deployment values are not evaluated."})
+	doc.kind = "Underlying values"
+	doc.lines = append(doc.lines, inspectorLine{text: "Inspected inputs; final deployment values are not evaluated.", prose: true})
 	doc.lines = append(doc.lines, m.impactLines(rows, 0, true)...)
 	if len(rows) == 0 {
 		doc.lines = append(doc.lines, inspectorLine{text: "No inspected chart destination is available for this setting."})
@@ -225,7 +267,7 @@ func (m Model) configurationImpactDocument(value DisplayItem, doc inspectorDocum
 
 func (m Model) configurationMappingDocument(value DisplayItem, doc inspectorDocument) inspectorDocument {
 	doc.kind = "Mapping explanation"
-	doc.lines = append(doc.lines, inspectorLine{text: "A mapping routes package settings into chart values. It does not establish a final deployment value."})
+	doc.lines = append(doc.lines, inspectorLine{text: "Routing into chart inputs; final deployment values are not evaluated.", prose: true})
 	seen := map[*valueMapping]bool{}
 	for _, mapping := range m.configurationMappings(value) {
 		if mapping == nil || seen[mapping] {
@@ -236,14 +278,25 @@ func (m Model) configurationMappingDocument(value DisplayItem, doc inspectorDocu
 			inspectorLine{label: "Package path", text: ".Values" + dottedTracePath(mapping.source)},
 			inspectorLine{label: "Chart", text: mapping.chartKey},
 			inspectorLine{label: "Chart path", text: ".Values" + dottedTracePath(mapping.target)})
+		if status := configurationMappingStatus(mapping); unresolvedStatus(status) {
+			doc.lines = append(doc.lines, inspectorLine{label: "Status", text: traceStatus(status)})
+			for _, reason := range configurationMappingDiagnostics(mapping) {
+				doc.lines = append(doc.lines, inspectorLine{label: "Reason", text: reason})
+			}
+		}
 		if len(mapping.usage.ExcludePaths) > 0 {
 			doc.lines = append(doc.lines, inspectorLine{label: "Excluded", text: strings.Join(mapping.usage.ExcludePaths, ", ")})
 		}
 		if len(mapping.usage.Locations) == 0 {
 			doc.lines = append(doc.lines, inspectorLine{label: "Declaration", text: "File and line unavailable"})
 		} else {
+			var references []DetailItem
 			for _, location := range mapping.usage.Locations {
-				doc.lines = append(doc.lines, inspectorLine{label: "Recorded use", text: sourceCoordinateLabel(location.File, location.Line)})
+				references = append(references, DetailItem{File: location.File, Location: location, sourceComponent: mapping.chartKey})
+			}
+			for _, reference := range m.labelInspectorSources(references) {
+				_, line := inspectorSourceCoordinates(reference)
+				doc.lines = append(doc.lines, inspectorLine{label: "Recorded use", text: sourceCoordinateLabel(reference.sourceDisplayPath, line)})
 			}
 		}
 		detail := DetailItem{Kind: DetailItemMapping, Mapping: mapping.usage, mappingRef: mapping}
@@ -283,9 +336,9 @@ func impactCountLabel(rows []configurationImpact) string {
 	return fmt.Sprintf("%d %s · %d with input", len(rows), noun, supplied)
 }
 
-// A comparison preview must not advertise v for a different selected setting.
-func (m Model) comparisonInput(value DisplayItem, input interface{}) string {
-	safe := m.displayValue(value, input)
+// The separately labeled preview action owns navigation to the full value.
+// This text describes only the already masked comparison input.
+func comparisonPreview(safe interface{}) string {
 	if !isLongInspectorValue(safe) {
 		return mappingCell(safe, true)
 	}
@@ -295,6 +348,6 @@ func (m Model) comparisonInput(value DisplayItem, input interface{}) string {
 	case []interface{}:
 		return fmt.Sprintf("List · %d items", len(typed))
 	default:
-		return fmt.Sprintf("%d characters · open chart value", len([]rune(formatYAMLValue(safe))))
+		return fmt.Sprintf("%d characters", len([]rune(formatYAMLValue(safe))))
 	}
 }

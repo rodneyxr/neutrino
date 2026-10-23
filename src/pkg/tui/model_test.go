@@ -697,9 +697,8 @@ func TestDetailsSourcesUseFriendlyLabelsAndPreserveFileIdentity(t *testing.T) {
 	model.focusPane = FocusInspector
 	model.buildDetailItems()
 	body, _ := model.inspectorContent(106, true)
-	compact := strings.Join(strings.Fields(body), "")
-	if !strings.Contains(body, "All source locations (3)") || !strings.Contains(compact, "values.yaml:4") || !strings.Contains(compact, "child/templates/workload.yaml:7") {
-		t.Fatalf("summary must preview recorded filenames and lines and link to every source:\n%s", body)
+	if strings.Count(body, "Sources (3)") != 1 || strings.Contains(body, source) || strings.Contains(body, "workload.yaml") {
+		t.Fatalf("summary must offer one compact Sources action without inline paths:\n%s", body)
 	}
 	openInspectorTestPanel(t, &model, detailSources)
 	body, _ = model.inspectorContent(106, true)
@@ -707,7 +706,7 @@ func TestDetailsSourcesUseFriendlyLabelsAndPreserveFileIdentity(t *testing.T) {
 		t.Fatalf("source list lost recorded occurrences: %+v", model.detailItems)
 	}
 	for index, location := range locations {
-		if model.detailItems[index].Location != location || !strings.Contains(strings.Join(strings.Fields(body), ""), fmt.Sprintf("%s:%d", location.File, location.Line)) {
+		if model.detailItems[index].Location != location || model.detailItems[index].File != location.File || !strings.Contains(strings.Join(strings.Fields(body), ""), fmt.Sprintf("%s:%d", filepath.Base(location.File), location.Line)) || strings.Contains(body, source) {
 			t.Fatalf("source %d lost its location or filename-and-line label: %+v\n%s", index, model.detailItems, body)
 		}
 		model.detailCursor = index
@@ -746,14 +745,14 @@ func TestDetailsKeepsSelectedSourceVisibleWhileScrolling(t *testing.T) {
 	if model.detailCursor != 15 {
 		t.Fatalf("selected action = %d, want 15", model.detailCursor)
 	}
-	if !strings.Contains(model.View(), "> "+filepath.Join(source, "templates", "subdir", "15.yaml")+":15") {
+	if !strings.Contains(model.View(), "> 15.yaml:15") || model.detailItems[model.detailCursor].File != filepath.Join(source, "templates", "subdir", "15.yaml") {
 		t.Fatalf("selected source should remain visible with its filename and line:\n%s", model.View())
 	}
 	for range 15 {
 		updated, _ = model.Update(key("k"))
 		model = updated.(Model)
 	}
-	if !strings.Contains(model.View(), "> "+filepath.Join(source, "templates", "deployment.yaml")+":148") {
+	if !strings.Contains(model.View(), "> deployment.yaml:148") || model.detailItems[model.detailCursor].File != filepath.Join(source, "templates", "deployment.yaml") {
 		t.Fatalf("first source should be visible again:\n%s", model.View())
 	}
 }
@@ -902,14 +901,17 @@ func TestPackageValuesWithoutChartsRemainSearchableAndShowProvenance(t *testing.
 	updated, _ = model.Update(key("enter"))
 	model = updated.(Model)
 	body, _ = model.inspectorContent(100, true)
-	if !strings.Contains(strings.Join(strings.Fields(body), ""), "src/my-package/zarf-values.yaml") || !strings.Contains(strings.Join(strings.Fields(body), ""), "001/zarf-values.yaml") ||
+	if strings.Count(body, "Sources (2)") != 1 || strings.Contains(body, root) ||
 		!strings.Contains(body, "Schema") || strings.Contains(body, "type: object") || strings.Contains(body, "../..") {
-		t.Fatalf("summary should show distinct source paths and a separate schema link: %s", body)
+		t.Fatalf("summary should offer compact source and separate schema links: %s", body)
 	}
 	openInspectorTestPanel(t, &model, detailSources)
 	if len(model.detailItems) != 2 || model.detailItems[0].Kind != DetailItemSource ||
 		model.detailItems[0].File != firstSource || model.detailItems[1].File != secondSource {
 		t.Fatalf("values files should be selectable in declared order: %+v", model.detailItems)
+	}
+	if model.detailItems[0].Label == model.detailItems[1].Label || strings.Contains(model.detailItems[0].Label, root) || strings.Contains(model.detailItems[1].Label, root) {
+		t.Fatalf("duplicate filenames need distinct compact labels without cache roots: %+v", model.detailItems)
 	}
 	updated, _ = model.Update(key("enter"))
 	model = updated.(Model)
@@ -1067,7 +1069,10 @@ func TestMappingPackageOwnershipAndMissingSource(t *testing.T) {
 	if model.mapping == nil || model.mapping.pkg.PackageName != "b" || model.mapping.inside != 1 || model.mapping.rows[0].present {
 		t.Fatalf("missing-source declaration must reveal chart candidates owned by b: %+v", model.mapping)
 	}
-	for _, want := range []string{"Not supplied", ".missing.enabled", "config.enabled"} {
+	if model.mapping.rows[0].packagePath != ".missing.enabled" {
+		t.Fatalf("missing input lost its package coordinate: %+v", model.mapping.rows[0])
+	}
+	for _, want := range []string{"No setting input", "config.enabled"} {
 		if !strings.Contains(model.View(), want) {
 			t.Fatalf("live Inspector lost missing-input evidence %q: %s", want, model.View())
 		}
@@ -1319,7 +1324,7 @@ func TestNextZarfVariablesGroupByOwningPackage(t *testing.T) {
 	updated, _ := m.Update(key("enter"))
 	detailModel := updated.(Model)
 	details := detailModel.View()
-	for _, want := range []string{"api.ADMIN_DOMAINS", "Admin domains", "Files & references"} {
+	for _, want := range []string{"api.ADMIN_DOMAINS", "Admin domains", "Sources (2)"} {
 		if !strings.Contains(details, want) {
 			t.Fatalf("variable Details lost %q:\n%s", want, details)
 		}
@@ -1486,8 +1491,8 @@ func TestChartDetailsShareMappingContextAndRestoreEntryPoints(t *testing.T) {
 	press("enter")
 	if len(model.detailItems) != 3 || model.detailItems[0].Kind != DetailItemPanel || model.detailItems[0].panel != detailAffected ||
 		model.detailItems[1].Kind != DetailItemPanel || model.detailItems[1].panel != detailMappingRules ||
-		model.detailItems[2].Kind != DetailItemSource || model.detailItems[2].Location != location {
-		t.Fatalf("want underlying values first, mapping explanation, and the exact source: %+v", model.detailItems)
+		model.detailItems[2].Kind != DetailItemPanel || model.detailItems[2].panel != detailSources {
+		t.Fatalf("want underlying values first, mapping explanation, and a compact Sources action: %+v", model.detailItems)
 	}
 	direct, _ := model.inspectorContent(116, true)
 	openInspectorTestPanel(t, &model, detailMappingRules)
