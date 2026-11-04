@@ -23,6 +23,7 @@ func TestPackageValuesAuthoringUsesNestedInputPath(t *testing.T) {
 	})
 	model.currentChart = component
 	model.updateFilteredValues()
+	model.selectSettingType(5)
 	for i, value := range model.filteredValues {
 		if value.Path == "base.excludedCRDs" {
 			model.cursor = i
@@ -31,13 +32,13 @@ func TestPackageValuesAuthoringUsesNestedInputPath(t *testing.T) {
 	}
 	model.activateFocused()
 	body, _ := model.inspectorContent(120, true)
-	if strings.Contains(body, "PACKAGE VALUES AUTHORING") {
+	if strings.Contains(body, "Authoring example") {
 		t.Fatal("authoring must be opt-in")
 	}
 	updated, _ := model.Update(key("b"))
 	model = updated.(Model)
 	body, _ = model.inspectorContent(120, true)
-	if !strings.Contains(body, "PACKAGE VALUES AUTHORING") {
+	if !strings.Contains(body, "Authoring example") {
 		t.Fatalf("authoring toggle did not show Package Values snippet: %s", body)
 	}
 	value, _ := model.detailValue()
@@ -66,14 +67,40 @@ func TestPackageValueAuthoringPrecedesSchema(t *testing.T) {
 	updated, _ := model.Update(key(" "))
 	model = updated.(Model)
 	body, _ := model.inspectorContent(120, true)
-	authoring, schema := strings.Index(body, "PACKAGE VALUES AUTHORING"), strings.Index(body, "PACKAGE VALUES SCHEMA")
-	if authoring < 0 || schema < authoring || !strings.Contains(body[authoring:schema], "enabled: false") {
-		t.Fatalf("package input snippet missing or below schema: %s", body)
+	if !strings.Contains(body, "Authoring example") || !strings.Contains(body, "enabled: false") || strings.Contains(body, "type: object") {
+		t.Fatalf("authoring should be separate from schema: %s", body)
 	}
 	updated, _ = model.Update(key("b"))
 	model = updated.(Model)
 	body, _ = model.inspectorContent(120, true)
-	if strings.Contains(body, "PACKAGE VALUES AUTHORING") {
+	if strings.Contains(body, "Authoring example") {
 		t.Fatal("second toggle should hide authoring")
+	}
+}
+
+func TestAuthoringPanelRetainsSelectedAlternateMapping(t *testing.T) {
+	model := NewModel(introspect.InspectionReport{
+		Components: map[string]*introspect.IntrospectResult{"core/server/web": {Values: []introspect.ValueUsage{{Path: "enabled", DefaultValue: true}}}},
+		PackageValues: []introspect.PackageValues{{PackageName: "core", Usages: []introspect.PackageValueUsage{
+			{Path: ".primary", TargetPath: ".", ComponentName: "server", ChartName: "web"},
+			{Path: ".alternate", TargetPath: ".", ComponentName: "server", ChartName: "web"},
+		}}},
+	})
+	value := DisplayItem{Component: "core/server/web", ValueUsage: introspect.ValueUsage{Path: "enabled", DefaultValue: true}}
+	model.focusPane, model.detailRef = FocusInspector, &value
+	model.buildDetailItems()
+	openInspectorTestPanel(t, &model, detailMappingRules)
+	if len(model.detailItems) != 2 || model.detailItems[1].Kind != DetailItemMapping || model.detailItems[1].Mapping.Path != ".alternate" {
+		t.Fatalf("mapping explanation lost the alternate declaration: %+v", model.detailItems)
+	}
+	model.detailCursor = 1
+	model.openDetailPanel(detailAuthoring, nil)
+	body, _ := model.inspectorContent(100, true)
+	if !strings.Contains(body, "alternate:") || strings.Contains(body, "primary:") {
+		t.Fatalf("authoring switched selected mapping: %s", body)
+	}
+	model.backDetailPanel()
+	if model.detailPanel != detailMappingRules || model.detailCursor != 1 || model.detailItems[1].Mapping.Path != ".alternate" {
+		t.Fatal("authoring lost its originating mapping explanation and selection")
 	}
 }

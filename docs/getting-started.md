@@ -62,7 +62,7 @@ neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/bundles/k3d-core-dem
 
 ### Interactive TUI Mode
 
-Add the `-i` flag to enter the interactive terminal UI. This lets you search, filter, and navigate all values across components with keyboard controls:
+Inspection opens the interactive workspace automatically when both input and output are attached to a terminal. Use `-i` to require interactive mode. Explicit `--output table` or `--interactive=false` prints a report; pipes and redirected streams remain noninteractive. The workspace lets you search, filter, and navigate values across packages and charts:
 
 ```bash
 neutrino inspect oci://ghcr.io/zarf-dev/packages/init:v0.74.0 -i

@@ -9,10 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/goccy/go-yaml"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 )
 
@@ -170,14 +168,14 @@ func (r *packageReader) Read(ctx context.Context) (*packageView, error) {
 		return nil, err
 	}
 
-	var pkg v1alpha1.ZarfPackage
-	if err := yaml.Unmarshal(zarfBytes, &pkg); err != nil {
+	pkg, err := parseZarfDefinition(zarfBytes)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse selected descriptor %q: %w", "zarf.yaml", err)
 	}
 
 	selected := []ocispec.Descriptor{zarfDescriptor}
 	files := map[string][]byte{"zarf.yaml": zarfBytes}
-	// Assembled Zarf v0.82.0 packages store merged package defaults and schema
+	// Assembled Zarf packages store merged package defaults and schema
 	// at fixed root titles, not at the source paths retained in zarf.yaml.
 	for _, title := range []string{layout.ValuesYAML, layout.ValuesSchema} {
 		required := (title == layout.ValuesYAML && len(pkg.Values.Files) > 0) ||
@@ -199,7 +197,7 @@ func (r *packageReader) Read(ctx context.Context) (*packageView, error) {
 	for _, component := range pkg.Components {
 		title := path.Join("components", component.Name+".tar")
 		descriptor, available := byTitle[title]
-		title, include, err := selectPackagedComponent(component, available)
+		title, include, err := selectPackagedComponent(component, available, pkg.optionalComponents[component.Name])
 		if err != nil {
 			return nil, err
 		}

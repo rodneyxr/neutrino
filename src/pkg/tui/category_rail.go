@@ -12,7 +12,26 @@ import (
 // Their positions match the single-key shortcuts shown in the rail.
 var nextCategories = [...]string{
 	"Bundle vars", "Next values files", "Zarf variables", "Zarf Package Values",
-	"Chart mappings", "Helm values", "Legacy overrides",
+	"Mappings & uses", "Helm values", "Legacy overrides",
+}
+
+// Start with the configuration surface owned by the inspected artifact. All
+// remains an explicit tab for deliberate cross-type searches.
+func (m Model) initialSettingCategory() int {
+	order := []int{5, 2, 3, 4, 6, 0, 1}
+	if m.nextRail {
+		order = []int{0, 1, 3, 2, 5, 4, 6}
+	} else if len(m.udsOverrideValues)+len(m.udsOverrideVariables) > 0 {
+		order = []int{6, 3, 2, 5, 4, 0, 1}
+	} else if len(m.report.PackageValues) > 0 {
+		order = []int{3, 2, 4, 5, 6, 0, 1}
+	}
+	for _, index := range order {
+		if m.categoryCounts[index] > 0 {
+			return index
+		}
+	}
+	return order[0]
 }
 
 func nextCategory(item DisplayItem) int {
@@ -106,25 +125,52 @@ func (m Model) consolidateNextZarfVariables(values []DisplayItem, filter string)
 }
 
 func (m *Model) selectNextCategory(index int) {
+	m.mapping = nil
+	m.mappingRowDetail = false
+	if !m.allCategories {
+		m.categoryCursors[m.category], m.categoryOffsets[m.category] = m.cursor, m.viewportOffset
+	}
+	m.showOverview = false
+	m.allCategories = false
 	m.category = index
 	m.filteredValues = m.categoryRows[index]
-	m.cursor, m.viewportOffset = 0, 0
-	m.pathScroll = 0
-	m.pathScrollPause = 2
-	m.buildDetailItems()
+	m.cursor = clamp(m.categoryCursors[index], 0, len(m.filteredValues)-1)
+	m.viewportOffset = clamp(m.categoryOffsets[index], 0, m.cursor)
+	m.resetSelectedRowScroll()
+	m.syncInspectorSelection()
+}
+
+func (m *Model) selectSettingType(index int) {
+	if index < len(nextCategories) {
+		m.selectNextCategory(index)
+	} else {
+		if !m.allCategories {
+			m.categoryCursors[m.category], m.categoryOffsets[m.category] = m.cursor, m.viewportOffset
+		}
+		m.mapping, m.mappingRowDetail = nil, false
+		m.showOverview, m.allCategories = false, true
+		m.filteredValues = m.allValues
+		m.cursor, m.viewportOffset = 0, 0
+		m.resetSelectedRowScroll()
+		m.syncInspectorSelection()
+	}
+	m.focusPane = FocusValues
+	m.ensureCursorVisible()
 }
 
 func (m Model) nextCategoryRail(width, height int) string {
 	var lines strings.Builder
 	lines.WriteString(paneHeadingStyle.Render("CATEGORIES"))
+	lines.WriteString("\n")
+	lines.WriteString(helpStyle.Render(truncateCell("0 Overview · f Scope", max(1, width-4))))
 	lines.WriteString("\n\n")
 	for i, name := range nextCategories {
 		marker := "  "
-		if i == m.category {
+		if i == m.category && !m.allCategories {
 			marker = "> "
 		}
 		label := truncateCell(fmt.Sprintf("%s%d %s (%d)", marker, i+1, name, m.categoryCounts[i]), max(1, width-4))
-		if i == m.category {
+		if i == m.category && !m.allCategories {
 			lines.WriteString(selectedRowStyle.Render(label))
 		} else {
 			lines.WriteString(helpStyle.Render(label))
@@ -133,12 +179,24 @@ func (m Model) nextCategoryRail(width, height int) string {
 			lines.WriteByte('\n')
 		}
 	}
+	lines.WriteString("\n")
+	label := fmt.Sprintf("  8 All inputs (%d)", len(m.allValues))
+	if m.allCategories {
+		label = ">" + label[1:]
+	}
+	lines.WriteString(helpStyle.Render(truncateCell(label, max(1, width-4))))
 	return paneFrame(width, height, m.focusPane == FocusComponents).Render(lines.String())
 }
 
 func (m Model) nextCategoryWorkspace(width, height int) string {
+	if width < mediumLayoutWidth && height < 20 {
+		if m.focusPane == FocusComponents {
+			return m.nextCategoryRail(width, height)
+		}
+		return m.valuesPane(width, height)
+	}
 	if width < mediumLayoutWidth {
-		railHeight := min(11, max(4, height/2))
+		railHeight := min(14, max(4, height/2))
 		return m.nextCategoryRail(width, railHeight) + "\n" + m.valuesPane(width, max(4, height-railHeight))
 	}
 	const railWidth = 32

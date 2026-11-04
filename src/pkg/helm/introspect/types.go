@@ -40,7 +40,7 @@ func (l ValueUsageLocation) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(&Alias{
 		Kind:     l.Kind,
-		Location: fmt.Sprintf("%s:%d:%d", l.File, l.Line, l.Column),
+		Location: l.Position(),
 	})
 }
 
@@ -51,11 +51,23 @@ func (l ValueUsageLocation) MarshalYAML() (interface{}, error) {
 	}
 	return &Alias{
 		Kind:     l.Kind,
-		Location: fmt.Sprintf("%s:%d:%d", l.File, l.Line, l.Column),
+		Location: l.Position(),
 	}, nil
 }
 
-// ValueUsage represents a discovered usage of a value in the templates.
+// Position formats only known source coordinates. A source file without a
+// parsed position must not imply a line or column zero in editor links.
+func (l ValueUsageLocation) Position() string {
+	if l.Line <= 0 {
+		return l.File
+	}
+	if l.Column <= 0 {
+		return fmt.Sprintf("%s:%d", l.File, l.Line)
+	}
+	return fmt.Sprintf("%s:%d:%d", l.File, l.Line, l.Column)
+}
+
+// ValueUsage represents a template reference, chart default, or schema property.
 type ValueUsage struct {
 	// Path is the dot-notation path to the value (e.g., "image.repository").
 	Path string `json:"path"`
@@ -67,6 +79,23 @@ type ValueUsage struct {
 	Locations []ValueUsageLocation `json:"locations"`
 	// DefaultValue is the value found in the chart's values.yaml at this path.
 	DefaultValue interface{} `json:"default,omitempty" yaml:"default,omitempty"`
+	// DefaultPresent distinguishes a configured null from an absent value.
+	DefaultPresent bool `json:"defaultPresent" yaml:"defaultPresent"`
+	// Schema is the exact property's static schema, not an applied default or
+	// validation result. Boolean schemas are preserved as well as objects.
+	Schema interface{} `json:"schema,omitempty" yaml:"schema,omitempty"`
+	// SchemaRequired records membership in the immediate parent's required list.
+	SchemaRequired bool `json:"schemaRequired,omitempty" yaml:"schemaRequired,omitempty"`
+}
+
+// ChartValuesSchema preserves a chart's values.schema.json without resolving
+// references, evaluating conditions, or applying default annotations.
+type ChartValuesSchema struct {
+	Chart       string      `json:"chart" yaml:"chart"`
+	ValuePrefix string      `json:"valuePrefix,omitempty" yaml:"valuePrefix,omitempty"`
+	File        string      `json:"file" yaml:"file"`
+	Schema      interface{} `json:"schema,omitempty" yaml:"schema,omitempty"`
+	Diagnostic  string      `json:"diagnostic,omitempty" yaml:"diagnostic,omitempty"`
 }
 
 // ZarfVariableUsage represents a discovered usage of a Zarf variable.
@@ -88,28 +117,80 @@ type PackageValueUsage struct {
 	ExcludePaths  []string             `json:"excludePaths,omitempty" yaml:"excludePaths,omitempty"`
 	Locations     []ValueUsageLocation `json:"locations,omitempty" yaml:"locations,omitempty"`
 	Runtime       bool                 `json:"runtime,omitempty" yaml:"runtime,omitempty"`
+	// Status describes inspection knowledge, not whether the chart mapping was applied.
+	Status     ValueStatus `json:"status,omitempty" yaml:"status,omitempty"`
+	Diagnostic string      `json:"diagnostic,omitempty" yaml:"diagnostic,omitempty"`
+}
+
+// ValueStatus records why a statically inspected input can or cannot be resolved.
+type ValueStatus string
+
+const (
+	ValueResolved    ValueStatus = "resolved"
+	ValueMissing     ValueStatus = "missing"
+	ValueDynamic     ValueStatus = "dynamic"
+	ValueParseError  ValueStatus = "parse-error"
+	ValueUnavailable ValueStatus = "unavailable"
+)
+
+// ValueDiagnostic contains an explanation without embedding source values or expressions.
+type ValueDiagnostic struct {
+	Status  ValueStatus `json:"status" yaml:"status"`
+	Path    string      `json:"path,omitempty" yaml:"path,omitempty"`
+	Message string      `json:"message" yaml:"message"`
+}
+
+// ValueReference is an observed input reference, never an inferred package dependency.
+type ValueReference struct {
+	Scope     string               `json:"scope" yaml:"scope"`
+	Path      string               `json:"path" yaml:"path"`
+	Status    ValueStatus          `json:"status" yaml:"status"`
+	Computed  bool                 `json:"computed,omitempty" yaml:"computed,omitempty"`
+	Locations []ValueUsageLocation `json:"locations,omitempty" yaml:"locations,omitempty"`
+}
+
+// ValueSource preserves one ordered input. Values is an independent parsed snapshot;
+// it is available to the UI but omitted from serialization to avoid copying secrets
+// into additional report fields. Name preserves the original declared file identity.
+type ValueSource struct {
+	ID               string                 `json:"id" yaml:"id"`
+	Kind             string                 `json:"kind" yaml:"kind"`
+	Name             string                 `json:"name" yaml:"name"`
+	Order            int                    `json:"order" yaml:"order"`
+	Status           ValueStatus            `json:"status" yaml:"status"`
+	Values           map[string]interface{} `json:"-" yaml:"-"`
+	MaterializedFile string                 `json:"-" yaml:"-"`
+	Diagnostics      []ValueDiagnostic      `json:"diagnostics,omitempty" yaml:"diagnostics,omitempty"`
+	References       []ValueReference       `json:"references,omitempty" yaml:"references,omitempty"`
 }
 
 // PackageValues separates packaged defaults, operator inputs, schema and runtime uses.
 type PackageValues struct {
 	PackageName string                 `json:"packageName,omitempty" yaml:"packageName,omitempty"`
+	APIVersion  string                 `json:"apiVersion,omitempty" yaml:"apiVersion,omitempty"`
 	Values      map[string]interface{} `json:"values,omitempty" yaml:"values,omitempty"`
 	Schema      map[string]interface{} `json:"schema,omitempty" yaml:"schema,omitempty"`
 	Files       []string               `json:"files,omitempty" yaml:"files,omitempty"`
 	FileSources []string               `json:"-" yaml:"-"`
 	Usages      []PackageValueUsage    `json:"usages,omitempty" yaml:"usages,omitempty"`
+	Sources     []ValueSource          `json:"sources,omitempty" yaml:"sources,omitempty"`
+	// Scope makes clear that Values is a merge of inspected files, not deploy-time output.
+	Scope string `json:"scope,omitempty" yaml:"scope,omitempty"`
 }
 
 type BundleMetadata struct {
-	Format    string                  `json:"format" yaml:"format"`
-	Name      string                  `json:"name" yaml:"name"`
-	Version   string                  `json:"version" yaml:"version"`
-	Variables map[string]interface{}  `json:"variables,omitempty" yaml:"variables,omitempty"`
-	Packages  []BundlePackageMetadata `json:"packages,omitempty" yaml:"packages,omitempty"`
+	Format          string                  `json:"format" yaml:"format"`
+	Name            string                  `json:"name" yaml:"name"`
+	Version         string                  `json:"version" yaml:"version"`
+	Variables       map[string]interface{}  `json:"variables,omitempty" yaml:"variables,omitempty"`
+	Packages        []BundlePackageMetadata `json:"packages,omitempty" yaml:"packages,omitempty"`
+	VariableSources []ValueSource           `json:"variableSources,omitempty" yaml:"variableSources,omitempty"`
+	Scope           string                  `json:"scope,omitempty" yaml:"scope,omitempty"`
 }
 
 type BundlePackageMetadata struct {
 	ID                 string   `json:"id" yaml:"id"`
+	APIVersion         string   `json:"apiVersion,omitempty" yaml:"apiVersion,omitempty"`
 	Source             string   `json:"source" yaml:"source"`
 	DependsOn          []string `json:"dependsOn,omitempty" yaml:"dependsOn,omitempty"`
 	ValuesFiles        []string `json:"valuesFiles,omitempty" yaml:"valuesFiles,omitempty"`
@@ -145,6 +226,8 @@ type UDSOverrideVariable struct {
 
 // IntrospectResult contains the full analysis result for a chart.
 type IntrospectResult struct {
+	// PackageAPIVersion identifies the owning Zarf package schema, when applicable.
+	PackageAPIVersion string `json:"packageAPIVersion,omitempty" yaml:"packageAPIVersion,omitempty"`
 	// ChartName is the name of the root chart.
 	ChartName string `json:"chartName"`
 	// ChartVersion is the version of the root chart.
@@ -155,6 +238,8 @@ type IntrospectResult struct {
 	Values []ValueUsage `json:"values"`
 	// ValuesFiles is the list of values files used (e.g. values.yaml).
 	ValuesFiles []string `json:"valuesFiles"`
+	// ValuesSchemas retains schemas from the root and included dependency charts.
+	ValuesSchemas []ChartValuesSchema `json:"valuesSchemas,omitempty" yaml:"valuesSchemas,omitempty"`
 	// RemoteSource is the URL to the chart source code (e.g. GitHub repo), if found.
 	RemoteSource string `json:"remoteSource,omitempty"`
 	// ZarfVars is the list of discovered Zarf variables.
@@ -174,7 +259,8 @@ type IntrospectOptions struct {
 	ExcludeHooks bool
 	// NoCache forces a re-download of the chart, bypassing the cache.
 	NoCache bool
-	// NoValues disables the inference of nested paths from values.yaml.
+	// NoValues disables additional rows inferred from values files and schemas.
+	// Template-discovered rows still receive values and schema annotations.
 	NoValues bool
 	// ValuesFiles are ordered operator-supplied package value files, after packaged defaults.
 	ValuesFiles []string
@@ -203,6 +289,8 @@ type UDSOverrideVariableWithContext struct {
 
 // InspectionReport is the unified output structure for purely Helm, Zarf, and UDS introspection.
 type InspectionReport struct {
+	// PackageAPIVersion is populated for a directly inspected Zarf package.
+	PackageAPIVersion    string                           `json:"packageAPIVersion,omitempty" yaml:"packageAPIVersion,omitempty"`
 	Variables            []v1alpha1.InteractiveVariable   `json:"variables,omitempty" yaml:"variables,omitempty"`
 	Components           map[string]*IntrospectResult     `json:"components" yaml:"components"`
 	ComponentOrder       []string                         `json:"-" yaml:"-"`

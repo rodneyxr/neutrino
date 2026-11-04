@@ -100,6 +100,8 @@ Exposed bundle variables **are** configurable by end-users via `uds-config.yaml`
 
 Zarf packages contain a `zarf.yaml` and a set of components carrying Helm charts, manifests, or images.
 
+Neutrino uses [Zarf v0.87.0](https://github.com/zarf-dev/zarf/releases/tag/v0.87.0). It reads both `zarf.dev/v1alpha1` (also used when `apiVersion` is omitted) and `zarf.dev/v1beta1`. For multi-document definitions, the highest supported API version wins; duplicate supported versions fail inspection. Package API metadata is retained in reports. Reading a definition does not execute package actions or resolve component imports.
+
 ### Remote OCI
 
 The Neutrino-owned Package Reader resolves a digest-pinned Package Root and fetches only verified selected descriptors: `zarf.yaml`, chart-bearing component archives, and assembled package values/schema when present. It never fetches `images/**`. Selected missing or corrupt descriptors fail inspection rather than falling back to a full pull.
@@ -112,13 +114,15 @@ Local `.tar.zst` archives are extracted to cache. If a local directory is provid
 
 Packaged inspection uses one selected-chart layout implementation in `src/pkg/helm/introspect/packaged_charts.go`, shared by Package Reader validation and Zarf consumption. Direct Zarf, Legacy materialized packages, and Next materialized packages use the same consumption path; bundle callers do not recount charts.
 
-1. Read `zarf.yaml` in declaration order. Select every chart-bearing component present as `components/<name>.tar`; omit an absent component only when explicitly `required: false`.
+1. Read the selected `zarf.yaml` document in declaration order. Select every chart-bearing component present as `components/<name>.tar`; omit an absent component only when explicitly `required: false` in v1alpha1 or `optional: true` in v1beta1.
 2. Resolve chart archives (`<name>-<version>.tgz` or `<name>.tgz`) or chart directories containing `Chart.yaml`. Component archives may put `charts/` and `values/` at their root or under the component name.
-3. Require every selected chart and every managed static or templated values file. Consume static YAML inputs in declaration order; retain runtime templates as unresolved Package Values usages.
+3. Require every selected chart and every managed static or templated values file. Consume static YAML inputs in declaration order; retain runtime templates as unresolved Package Values usages. v1beta1's `valuesFiles` entries can interleave plain files and files with `enableTemplating: true`; that order is preserved. Legacy `valuesFiles` precede `templatedValuesFiles` as in Zarf's v1alpha1 conversion.
 4. Invoke [Helm introspection](helm-introspection.md) for every selected chart. Missing content, extraction failures, or chart-analysis failures stop packaged inspection; packaged charts never fall back to source paths or chart URLs.
 5. Map `###ZARF_VAR_*###` markers back to package variables, and retain Package Values mappings separately. Built packages use assembled root `values.yaml` and `values.schema.json`.
 
-Source directories retain their separate behavior: declared source values/schema paths, chart `localPath`, and chart URLs remain available. A component archive within a directory uses packaged chart layout rules rather than source fallback.
+Source directories retain their separate behavior: declared source values/schema paths, chart `localPath` (v1alpha1) or `local.path` (v1beta1), and chart URLs remain available. v1beta1 packaged chart files use `<name>.tgz` and `<name>-<index>`; legacy files retain `<name>-<version>` stems. A component archive within a directory uses packaged chart layout rules rather than source fallback.
+
+The Package Reader requires declared package values content to be present. Zarf v0.87.0 can omit assembled `values.yaml` when the merged map is empty; such a package currently fails with a missing-values diagnostic instead of being treated as a complete empty Package View. A discovered schema is reported as evidence; schema presence does not mean values have been validated against it.
 
 !!! info "Component ordering"
     Components and packages are displayed in the order they are defined in `zarf.yaml` and `uds-bundle.yaml`, preserving the deployment sequence.

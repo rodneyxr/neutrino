@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: example
+data:
+  replicas: {{ .Values.replicaCount | quote }}
+  image: {{ .Values.image | quote }}
+  enabled: {{ .Values.enabled | quote }}
+  port: {{ .Values.service.port | quote }}
+  endpoint: {{ .Values.runtimeEndpoint | quote }}
+  domain: {{ .Values.clusterDomain | quote }}
+  region: {{ .Values.legacyRegion | quote }}
+  missing: {{ .Values.missing | quote }}

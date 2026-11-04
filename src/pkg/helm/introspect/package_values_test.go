@@ -9,7 +9,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/require"
-	"github.com/zarf-dev/zarf/src/api/v1alpha1"
+	"github.com/zarf-dev/zarf/src/api"
 )
 
 func TestPackageValuesSourceMergeAndOperatorPrecedence(t *testing.T) {
@@ -22,7 +22,7 @@ func TestPackageValuesSourceMergeAndOperatorPrecedence(t *testing.T) {
 	} {
 		require.NoError(t, os.WriteFile(filepath.Join(root, filename), []byte(contents), 0600))
 	}
-	pkg := v1alpha1.ZarfPackage{}
+	pkg := api.Package{}
 	pkg.Metadata.Name = "example"
 	pkg.Values.Files = []string{"first.yaml", "second.yaml"}
 	pkg.Values.Schema = "schema.json"
@@ -38,7 +38,7 @@ func TestPackageValuesSourceMergeAndOperatorPrecedence(t *testing.T) {
 
 func TestPackageValuesAssembledDescriptorsRequired(t *testing.T) {
 	root := t.TempDir()
-	pkg := v1alpha1.ZarfPackage{}
+	pkg := api.Package{}
 	pkg.Values.Files = []string{"source/default.yaml", "source/production.yaml"}
 	pkg.Values.Schema = "source/schema.json"
 	_, err := inspectPackageValues(context.Background(), root, root, false, pkg, nil)

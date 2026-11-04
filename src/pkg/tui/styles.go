@@ -53,3 +53,13 @@ var (
 			Background(lipgloss.Color("#0E151E")).
 			Padding(1, 2)
 )
+
+var (
+	settingsTabStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("#B5C2D3"))
+	settingsTabEmptyStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#78869A"))
+	settingsTabCountStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#8997AA"))
+	settingsTabBorderStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#344359"))
+	settingsTabActiveStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#F4F8FF")).Background(lipgloss.Color("#17303A")).Bold(true)
+	settingsTabActiveCountStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0")).Background(lipgloss.Color("#17303A")).Bold(true)
+	settingsTabActiveBorderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0"))
+)

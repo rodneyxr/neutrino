@@ -1,0 +1,9 @@
+replicaCount: 1
+image: stable
+enabled: true
+service:
+  port: 80
+runtimeEndpoint: ""
+clusterDomain: ""
+legacyRegion: local
+missing: unknown

@@ -119,7 +119,7 @@ neutrino inspect [PACKAGE_SOURCE] [flags]
 | `--output`, `-o`       | `string` | `table` | Output format: `table`, `json`, `yaml`.               |
 | `--include-subcharts`  | `bool`   | `true`  | Recursively analyze dependencies found in `charts/`.  |
 | `--architecture`, `-a` | `string` |         | Architecture for OCI images and Zarf packages.        |
-| `--interactive`, `-i`  | `bool`   | `false` | Enter interactive TUI mode.                           |
+| `--interactive`, `-i`  | `bool`   | auto | TUI when input and output are terminals; `--interactive=false` prints a report. |
 | `--sort-mode`          | `string` | `path`  | Sort mode for values: `path` or `discovery`.          |
 | `--wildcards`          | `bool`   | `false` | Include wildcard/dynamic values in output.            |
 | `--absolute`           | `bool`   | `false` | Output absolute filepaths for locations.              |

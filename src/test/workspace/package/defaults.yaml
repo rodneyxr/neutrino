@@ -1,0 +1,9 @@
+app:
+  replicaCount: 1
+  image: stable
+  enabled: true
+  service:
+    port: 8080
+scale: 2
+unused: retained
+optional: null

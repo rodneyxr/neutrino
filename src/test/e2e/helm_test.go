@@ -82,6 +82,23 @@ func TestInspectIstiodChart(t *testing.T) {
 
 	// All expected value paths from the istiod chart.
 	expectedPaths := []string{
+		// Whole-file inventory also exposes unreferenced defaults and parent
+		// objects, using the chart's public paths rather than duplicating its
+		// private _internal_defaults_do_not_set storage tree.
+		"base",
+		"cni",
+		"cni.enabled",
+		"cni.provider",
+		"cpu",
+		"experimental",
+		"global",
+		"istiodRemote",
+		"memory",
+		"sidecarInjectorWebhook",
+		"sidecarInjectorWebhookAnnotations",
+		"taint",
+		"telemetry",
+
 		// Top-level values
 		"_original",
 		"affinity",

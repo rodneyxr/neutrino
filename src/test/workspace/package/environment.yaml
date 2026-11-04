@@ -1,0 +1,4 @@
+app:
+  replicaCount: 3
+  enabled: false
+scale: 4

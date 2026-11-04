@@ -1,0 +1,2 @@
+runtimeEndpoint: '{{ .Values.runtime.endpoint }}'
+clusterDomain: '{{ .State.domain }}'

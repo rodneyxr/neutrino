@@ -10,8 +10,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
-	"github.com/defenseunicorns-dashdays/neutrino/src/pkg/helm/introspect"
 )
 
 const (
@@ -51,6 +49,11 @@ const (
 	commandCopyPath
 	commandHelp
 	commandQuit
+	commandOverview
+	commandAllInputs
+	commandChanged
+	commandUnresolved
+	commandPackageSchema
 )
 
 type commandDefinition struct {
@@ -61,15 +64,20 @@ type commandDefinition struct {
 }
 
 var commands = [...]commandDefinition{
-	{commandSearch, "Filter values", "/", "Search paths across the selected component"},
-	{commandComponents, "Select component", "f", "Filter or switch the component scope"},
+	{commandOverview, "Inspection overview", "0", "Review configuration flow and attention counts"},
+	{commandAllInputs, "All configuration inputs", "8", "Browse every owner in the selected scope"},
+	{commandChanged, "Changed inputs", "c", "Find inputs changed by a later source"},
+	{commandUnresolved, "Unresolved inputs", "u", "Find runtime values and missing input evidence"},
+	{commandSearch, "Filter values", "/", "Search the selected setting type and scope"},
+	{commandComponents, "Select package or chart", "f", "Navigate the package, component and chart hierarchy"},
 	{commandNextComponent, "Next component", "n / ]", "Jump to the next component"},
 	{commandPrevComponent, "Previous component", "N / [", "Jump to the previous component"},
 	{commandZarfSummary, "Toggle package variables", "Z", "Show the package variable summary"},
 	{commandUDSSummary, "Toggle bundle overrides", "U", "Show the cross-package override summary"},
 	{commandBundleMode, "Toggle authoring snippets", "b", "Show Package Values and UDS authoring snippets in Details"},
-	{commandSchema, "Toggle package values schema", "s", "Show or hide the schema at the bottom of Details"},
-	{commandOpenSource, "Open source location", "o", "Open the selected value in $EDITOR"},
+	{commandSchema, "View value schema", "s", "Open schema annotations in a separate view"},
+	{commandPackageSchema, "View package schema", "S", "Inspect the selected package schema without adding schema rows"},
+	{commandOpenSource, "View sources", "o", "Browse observed sources before opening an editor"},
 	{commandCopyPath, "Copy value path", "y", "Copy the selected path through terminal OSC 52"},
 	{commandHelp, "Show keyboard help", "?", "Open the context-sensitive shortcut reference"},
 	{commandQuit, "Quit Neutrino", "q", "Close the interactive workspace"},
@@ -99,66 +107,60 @@ func (m Model) layout() layoutMode {
 }
 
 func (m *Model) moveFocus(delta int) {
-	if m.focusPane == FocusMapping {
+	if m.focusPane == FocusComponents && m.layout() != layoutWide {
+		m.focusPane = m.centralFocus()
 		return
 	}
+	panes := []FocusPane{m.centralFocus(), FocusInspector}
+	if m.layout() == layoutWide {
+		panes = append([]FocusPane{FocusComponents}, panes...)
+	}
+	at := 0
+	for i, pane := range panes {
+		if pane == m.focusPane {
+			at = i
+			break
+		}
+	}
+	at = (at + delta + len(panes)) % len(panes)
+	if panes[at] == FocusComponents && m.focusPane != FocusComponents {
+		m.scopeReturnFocus = m.focusPane
+	}
+	m.focusPane = panes[at]
+	if m.focusPane == FocusInspector && m.mapping != nil {
+		m.mappingRowDetail = true
+	}
+	m.statusMessage = ""
+	m.buildDetailItems()
 	if m.focusPane == FocusInspector {
-		if m.mappingRowDetail {
-			return
-		}
-		m.focusPane = FocusValues
-		m.pathScroll = 0
-		m.pathScrollPause = 2
-		m.compScroll = 0
-		m.compScrollPause = 0
-		return
-	}
-	if m.focusPane == FocusValues {
-		m.focusPane = FocusComponents
-		if m.nextRail {
-			return
-		}
-		m.pathScroll = 0
-		m.pathScrollPause = 0
-		m.compScroll = 0
-		m.compScrollPause = 2
-	} else {
-		m.focusPane = FocusValues
-		m.pathScroll = 0
-		m.pathScrollPause = 2
-		m.compScroll = 0
-		m.compScrollPause = 0
+		m.ensureDetailCursorVisible()
 	}
 }
 
 func (m *Model) moveWithinFocusedPane(delta int) {
 	switch m.focusPane {
 	case FocusComponents:
-		if m.nextRail {
-			m.selectNextCategory(clamp(m.category+delta, 0, len(nextCategories)-1))
-			return
-		}
-		prevComp := m.componentCursor
-		m.componentCursor = clamp(m.componentCursor+delta, 0, len(m.chartNames)-1)
-		if m.componentCursor != prevComp {
-			m.compScroll = 0
-			m.compScrollPause = 2
-		}
+		m.moveScopeCursor(delta)
 	case FocusValues:
 		prevVal := m.cursor
 		m.cursor = clamp(m.cursor+delta, 0, len(m.filteredValues)-1)
 		if m.cursor != prevVal {
-			m.pathScroll = 0
-			m.pathScrollPause = 2
+			m.resetSelectedRowScroll()
 		}
 		m.ensureCursorVisible()
-		m.buildDetailItems()
+		m.syncInspectorSelection()
 	case FocusMapping:
 		m.moveMappingCursor(delta)
 	case FocusInspector:
+		previous := m.detailCursor
 		m.detailCursor = clamp(m.detailCursor+delta, 0, len(m.detailItems)-1)
 		m.detailScrollOffset = clamp(m.detailScrollOffset+delta, 0, m.detailScrollLimit())
-		m.ensureDetailCursorVisible()
+		// At the first/last action the remaining evidence can extend beyond
+		// that action's heading. Let the viewport reach it without snapping
+		// back to an unchanged cursor, especially on short terminals.
+		if m.detailCursor != previous {
+			m.ensureDetailCursorVisible()
+		}
 	}
 }
 
@@ -166,23 +168,7 @@ func (m *Model) moveFocusedToBoundary(last bool) {
 	target := 0
 	switch m.focusPane {
 	case FocusComponents:
-		if m.nextRail {
-			if last {
-				m.selectNextCategory(len(nextCategories) - 1)
-			} else {
-				m.selectNextCategory(0)
-			}
-			return
-		}
-		prevComp := m.componentCursor
-		if last {
-			target = len(m.chartNames) - 1
-		}
-		m.componentCursor = clamp(target, 0, len(m.chartNames)-1)
-		if m.componentCursor != prevComp {
-			m.compScroll = 0
-			m.compScrollPause = 2
-		}
+		m.moveScopeBoundary(last)
 	case FocusValues:
 		prevVal := m.cursor
 		if last {
@@ -190,11 +176,10 @@ func (m *Model) moveFocusedToBoundary(last bool) {
 		}
 		m.cursor = clamp(target, 0, len(m.filteredValues)-1)
 		if m.cursor != prevVal {
-			m.pathScroll = 0
-			m.pathScrollPause = 2
+			m.resetSelectedRowScroll()
 		}
 		m.ensureCursorVisible()
-		m.buildDetailItems()
+		m.syncInspectorSelection()
 	case FocusMapping:
 		m.moveMappingBoundary(last)
 	case FocusInspector:
@@ -211,52 +196,41 @@ func (m *Model) moveFocusedToBoundary(last bool) {
 func (m *Model) jumpComponent(delta int) {
 	switch m.focusPane {
 	case FocusComponents:
-		if m.nextRail {
-			m.selectNextCategory(clamp(m.category+delta, 0, len(nextCategories)-1))
-			return
-		}
-		previous := m.componentCursor
-		m.componentCursor = clamp(m.componentCursor+delta, 0, len(m.chartNames)-1)
-		if m.componentCursor != previous {
-			m.compScroll = 0
-			m.compScrollPause = 2
-		}
+		m.moveScopeCursor(delta)
 	case FocusValues:
 		if len(m.filteredValues) == 0 {
 			return
 		}
 		if delta > 0 {
-			curr := m.filteredValues[m.cursor].Component
+			curr := m.settingGroupKey(m.filteredValues[m.cursor])
 			for i := m.cursor + 1; i < len(m.filteredValues); i++ {
-				if m.filteredValues[i].Component != curr {
+				if m.settingGroupKey(m.filteredValues[i]) != curr {
 					m.cursor = i
-					m.pathScroll = 0
-					m.pathScrollPause = 2
+					m.resetSelectedRowScroll()
 					m.ensureCursorVisible()
-					m.buildDetailItems()
+					m.syncInspectorSelection()
 					return
 				}
 			}
 		} else {
-			curr := m.filteredValues[m.cursor].Component
+			curr := m.settingGroupKey(m.filteredValues[m.cursor])
 			startIdx := m.cursor
-			for startIdx > 0 && m.filteredValues[startIdx-1].Component == curr {
+			for startIdx > 0 && m.settingGroupKey(m.filteredValues[startIdx-1]) == curr {
 				startIdx--
 			}
 			if startIdx == m.cursor && startIdx > 0 {
 				prevIdx := startIdx - 1
-				prevComp := m.filteredValues[prevIdx].Component
-				for prevIdx > 0 && m.filteredValues[prevIdx-1].Component == prevComp {
+				prevComp := m.settingGroupKey(m.filteredValues[prevIdx])
+				for prevIdx > 0 && m.settingGroupKey(m.filteredValues[prevIdx-1]) == prevComp {
 					prevIdx--
 				}
 				m.cursor = prevIdx
 			} else {
 				m.cursor = startIdx
 			}
-			m.pathScroll = 0
-			m.pathScrollPause = 2
+			m.resetSelectedRowScroll()
 			m.ensureCursorVisible()
-			m.buildDetailItems()
+			m.syncInspectorSelection()
 		}
 	}
 }
@@ -264,84 +238,88 @@ func (m *Model) jumpComponent(delta int) {
 func (m *Model) activateFocused() tea.Cmd {
 	switch m.focusPane {
 	case FocusComponents:
-		if m.nextRail {
-			m.focusPane = FocusValues
-			return nil
-		}
-		if len(m.chartNames) == 0 {
-			return nil
-		}
-		m.currentChart = m.chartNames[m.componentCursor]
-		m.updateFilteredValues()
-		m.cursor = 0
-		m.viewportOffset = 0
-		m.focusPane = FocusValues
-		m.pathScroll = 0
-		m.pathScrollPause = 2
-		m.buildDetailItems()
-		m.setStatus("Showing " + m.componentLabel(m.currentChart))
+		m.applyScopeCursor()
 	case FocusValues:
-		if len(m.filteredValues) == 0 || m.filteredValues[m.cursor].IsEmptyState {
+		if _, ok := m.selectedValue(); !ok {
 			return nil
 		}
-		m.detailRef = nil
-		value := m.filteredValues[m.cursor]
-		if value.IsPackageMapping && value.ValueTarget != "" {
-			m.openMapping(value.mappingRef, FocusValues)
-			return nil
+		m.syncInspectorSelection()
+		if m.detailRef != nil {
+			m.resetInspectorRoute()
 		}
-		if value.IsPackageValue && value.Component == "Zarf Package Values" && len(value.Routes) == 1 {
-			route := value.Routes[0]
-			if !route.Usage.Runtime && route.Usage.TargetPath != "" && route.Usage.ChartName != "" {
-				m.openMapping(route.mapping, FocusValues)
-				return nil
-			}
-		}
-		m.detailCursor = 0
-		m.detailScrollOffset = 0
-		m.detailSchemaShown = false
+		m.focusPane = FocusInspector
 		m.statusMessage = ""
 		m.buildDetailItems()
-		m.focusPane = FocusInspector
+		m.ensureDetailCursorVisible()
 	case FocusMapping:
 		if m.mapping != nil && m.mapping.cursor < len(m.mapping.rows) {
+			m.syncInspectorSelection()
+			if m.detailRef != nil {
+				m.resetInspectorRoute()
+			}
 			m.mappingRowDetail = true
-			m.detailRef = nil
-			m.detailCursor = 0
-			m.detailScrollOffset = 0
-			m.detailSchemaShown = false
 			m.statusMessage = ""
 			m.buildDetailItems()
 			m.focusPane = FocusInspector
+			m.ensureDetailCursorVisible()
 		}
 	case FocusInspector:
 		if m.detailCursor < 0 || m.detailCursor >= len(m.detailItems) {
 			return nil
 		}
 		detail := m.detailItems[m.detailCursor]
+		if detail.Kind == DetailItemPanel {
+			m.openDetailPanel(detail.panel, nil)
+			return nil
+		}
+		if detail.Kind == DetailItemSource {
+			m.openDetailPanel(detailSourceFile, &detail)
+			return nil
+		}
+		if detail.Kind == DetailItemPreview {
+			m.openDetailPanel(detailInputPreview, &detail)
+			return nil
+		}
 		if detail.Kind == DetailItemMapping {
+			value, _ := m.detailValue()
 			m.openMapping(detail.mappingRef, FocusInspector)
+			if value.IsPackageValue {
+				for _, route := range value.Routes {
+					if route.mapping == detail.mappingRef {
+						m.focusMappingPath(route.Target)
+						break
+					}
+				}
+			}
 			return nil
 		}
 		if detail.Kind == DetailItemLocation {
 			return openEditor(detail.Location.File, detail.Location.Line, detail.Location.Column)
 		}
-		if detail.Kind == DetailItemFile {
-			return openEditor(detail.File, 1, 1)
+		if detail.Kind == DetailItemFile || detail.Kind == DetailItemTrace && detail.File != "" {
+			return openEditor(detail.File, max(1, detail.Location.Line), max(1, detail.Location.Column))
+		}
+		if m.followTrace(detail) {
+			return nil
 		}
 		if detail.relatedValue != nil {
-			m.detailRef = detail.relatedValue
-			m.detailCursor, m.detailScrollOffset = 0, 0
-			m.buildDetailItems()
+			detail.Kind = DetailItemTrace
+			m.followTrace(detail)
 		}
 	}
 	return nil
 }
 
 func (m *Model) beginFilter() {
+	m.mapping = nil
+	m.mappingRowDetail = false
+	m.focusPane = FocusValues
+	m.previousFilter = m.filterInput.Value()
+	m.showOverview = false
+	m.updateFilteredValues()
 	m.inputMode = InputModeFilter
 	m.filterInput.Focus()
-	m.setStatus("Type to filter values")
+	m.setStatus("Search " + m.selectedSettingTypeLabel())
 }
 
 func (m *Model) beginComponentFilter() {
@@ -399,10 +377,20 @@ func (m *Model) executeCommand(command commandDefinition) tea.Cmd {
 	m.commandInput.SetValue("")
 
 	switch command.id {
+	case commandOverview:
+		m.showOverview = true
+		m.overviewOffset = 0
+		m.focusPane = m.centralFocus()
+	case commandAllInputs:
+		m.selectSettingType(7)
+	case commandChanged:
+		m.focusStatus("changed")
+	case commandUnresolved:
+		m.focusStatus("unresolved")
 	case commandSearch:
 		m.beginFilter()
 	case commandComponents:
-		m.beginComponentFilter()
+		m.beginScopePicker()
 	case commandNextComponent:
 		m.jumpComponent(1)
 	case commandPrevComponent:
@@ -412,22 +400,23 @@ func (m *Model) executeCommand(command commandDefinition) tea.Cmd {
 	case commandUDSSummary:
 		m.toggleUDSSummary()
 	case commandBundleMode:
-		m.detailBundleMode = !m.detailBundleMode
-		m.detailScrollOffset = 0
-		m.setStatus(toggleStatus("Authoring snippets", m.detailBundleMode))
+		if m.focusPane == FocusInspector {
+			m.openDetailPanel(detailAuthoring, nil)
+		}
 	case commandSchema:
 		value, ok := m.detailValue()
-		if m.focusPane == FocusInspector && ok && value.ValueSchema != nil {
-			m.detailSchemaShown = !m.detailSchemaShown
-			m.detailScrollOffset = m.detailScrollLimit()
-			m.setStatus(toggleStatus("Package values schema", m.detailSchemaShown))
+		if m.focusPane == FocusInspector && ok && !runtimeReference(value) && m.selectedValueSchema(value) != nil {
+			m.openDetailPanel(detailSchema, nil)
 		}
+	case commandPackageSchema:
+		m.openPackageSchema()
 	case commandOpenSource:
 		return m.openSelectedSource()
 	case commandCopyPath:
 		return m.copySelectedPath()
 	case commandHelp:
 		m.showHelp = true
+		m.helpOffset = 0
 	case commandQuit:
 		return tea.Quit
 	}
@@ -439,7 +428,7 @@ func (m *Model) toggleZarfSummary() {
 	m.updateFilteredValues()
 	m.cursor = 0
 	m.viewportOffset = 0
-	m.buildDetailItems()
+	m.syncInspectorSelection()
 	m.setStatus(toggleStatus("Package variable summary", m.showZarfSummary))
 }
 
@@ -448,7 +437,7 @@ func (m *Model) toggleUDSSummary() {
 	m.updateFilteredValues()
 	m.cursor = 0
 	m.viewportOffset = 0
-	m.buildDetailItems()
+	m.syncInspectorSelection()
 	m.setStatus(toggleStatus("Bundle override summary", m.showUDSSummary))
 }
 
@@ -467,32 +456,26 @@ func (m Model) selectedValue() (DisplayItem, bool) {
 }
 
 func (m *Model) openSelectedSource() tea.Cmd {
-	value, ok := m.detailValue()
+	value, ok := m.focusedActionValue()
 	if !ok {
 		m.setStatus("No source location for the selected value")
 		return nil
 	}
-	if len(value.Locations) > 0 {
-		location := value.Locations[0]
-		m.setStatus("Opening " + filepath.Base(location.File))
-		return openEditor(location.File, location.Line, location.Column)
-	}
-	for _, detail := range m.detailItems {
-		if detail.Kind == DetailItemLocation {
-			m.setStatus("Opening " + filepath.Base(detail.Location.File))
-			return openEditor(detail.Location.File, detail.Location.Line, detail.Location.Column)
+	if len(m.inspectorSources(value)) > 0 {
+		if m.focusPane != FocusInspector {
+			m.focusPane = FocusInspector
+			m.resetInspectorRoute()
+			m.buildDetailItems()
 		}
-		if detail.Kind == DetailItemFile {
-			m.setStatus("Opening " + filepath.Base(detail.File))
-			return openEditor(detail.File, 1, 1)
-		}
+		m.openDetailPanel(detailSources, nil)
+		return nil
 	}
 	m.setStatus("No source location for the selected value")
 	return nil
 }
 
 func (m *Model) copySelectedPath() tea.Cmd {
-	value, ok := m.detailValue()
+	value, ok := m.focusedActionValue()
 	if !ok {
 		m.setStatus("No value path to copy")
 		return nil
@@ -528,6 +511,9 @@ func (m Model) workspaceView() string {
 		height = 30
 	}
 
+	if m.inputMode == InputModeScopeSelect {
+		return m.scopePicker(width, height)
+	}
 	if m.showHelp {
 		return m.helpView(width, height)
 	}
@@ -543,38 +529,28 @@ func (m Model) workspaceView() string {
 	}
 
 	var body string
-	if m.focusPane == FocusMapping {
-		body = m.mappingPane(width, bodyHeight)
-	} else if m.focusPane == FocusInspector {
-		body = m.inspectorPane(width, bodyHeight)
-	} else if m.nextRail {
-		body = m.nextCategoryWorkspace(width, bodyHeight)
-	} else if m.layout() == layoutCompact {
-		if m.focusPane == FocusComponents {
-			body = m.componentPane(width, bodyHeight)
-		} else {
-			body = m.valuesPane(width, bodyHeight)
-		}
+	if m.showOverview {
+		body = m.overviewPane(width, bodyHeight)
 	} else {
-		compWidth := m.componentWidth(width)
-		body = lipgloss.JoinHorizontal(lipgloss.Top,
-			m.componentPane(compWidth, bodyHeight),
-			m.valuesPane(width-compWidth, bodyHeight),
-		)
+		body = m.persistentWorkspace(width, bodyHeight)
 	}
 
+	body = fitWorkspace(body, width, bodyHeight)
 	return header + "\n" + body + "\n" + footer
 }
 
 func (m Model) workspaceHeader(width int) string {
-	chart := m.currentChart
-	if chart == "" {
-		chart = m.componentLabel(chart)
+	chart := terminalText(m.scopeLabel())
+	left := titleStyle.Render("◇ NEUTRINO") + "  " + helpStyle.Render("f Scope · ") + headerStyle.Render(chart)
+	panes := "2 panes"
+	if width < mediumLayoutWidth {
+		panes = "single pane"
+	} else if m.workspaceGeometry(width).scope > 0 {
+		panes = "3 panes"
 	}
-	left := titleStyle.Render("◇ NEUTRINO") + "  " + headerStyle.Render(chart)
-	right := fmt.Sprintf("%d values  •  %s", len(m.filteredValues), layoutLabel(m.layout()))
-	if m.nextRail {
-		right = fmt.Sprintf("%d values  •  category rail", len(m.filteredValues))
+	right := fmt.Sprintf("%d settings  •  %s", len(m.filteredValues), panes)
+	if !m.showOverview {
+		right = fmt.Sprintf("%d settings · %s", len(m.filteredValues), m.selectedSettingTypeLabel())
 	}
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 1 {
@@ -587,52 +563,76 @@ func layoutLabel(mode layoutMode) string {
 	if mode == layoutCompact {
 		return "single pane"
 	}
+	if mode == layoutWide {
+		return "3 panes"
+	}
 	return "2 panes"
 }
 func (m Model) workspaceFooter(width int) string {
+	if width < 60 && m.inputMode == InputModeNormal {
+		action := "enter view"
+		switch {
+		case m.showOverview:
+			action = "8 browse"
+		case m.focusPane == FocusComponents:
+			action = "enter apply"
+		case m.focusPane == FocusInspector:
+			action = "enter open"
+			if len(m.detailItems) == 0 {
+				action = "j/k scroll"
+			}
+		}
+		controls := "esc back  ? help  q quit"
+		if m.statusMessage != "" {
+			action = truncateCell(m.statusMessage, max(1, width-lipgloss.Width(controls)-4))
+		}
+		line := action + "  " + controls
+		if lipgloss.Width(line) > width-2 {
+			line = action + "  esc back  ? help"
+		}
+		return footerBarStyle.Width(width).Render(truncateCell(line, width-2))
+	}
 	var primary string
 	switch m.inputMode {
 	case InputModeFilter:
-		primary = m.filterInput.View() + helpStyle.Render("  enter apply  esc clear")
+		primary = m.filterInput.View() + helpStyle.Render("  enter apply  esc cancel")
 	case InputModeChartSelect:
 		primary = m.chartInput.View() + helpStyle.Render("  ↑↓ choose  enter apply  esc cancel")
 	default:
 		switch {
+		case m.showOverview:
+			primary = helpStyle.Render("j/k scroll  8 browse  f scope  ? help  q quit")
+		case m.focusPane == FocusComponents:
+			primary = helpStyle.Render("↑↓ scope  ← parent  → expand  enter apply  S schema  tab settings  ? help")
 		case m.focusPane == FocusMapping:
-			primary = helpStyle.Render("j/k move  enter details  a other chart paths  y copy package path  esc back")
+			primary = helpStyle.Render("j/k select  enter inspector  tab panes  f scope  esc back  ? help")
 		case m.focusPane == FocusInspector:
-			action := "enter open"
-			if m.detailCursor >= 0 && m.detailCursor < len(m.detailItems) {
-				switch m.detailItems[m.detailCursor].Kind {
-				case DetailItemMapping:
-					action = "enter explore  p copy input"
-				case DetailItemLocation:
-					action = "enter edit"
-				case DetailItemFile:
-					action = "enter view file"
-				case DetailItemCrossRef:
-					action = "enter inspect"
-				}
-			}
-			primary = helpStyle.Render("j/k move  " + action + "  y copy path  esc back  ? help")
+			primary = helpStyle.Render(m.inspectorFooter(width))
 		default:
-			if m.nextRail {
-				primary = helpStyle.Render("1-7 category  tab panes  j/k move  f component  enter details  / search  : cmd  ? help  q quit")
-			} else {
-				primary = helpStyle.Render("tab/arrows panes  j/k move  J/K 5-lines  n/N comp  enter details  / search  : cmd  ? help  q quit")
-			}
+			primary = helpStyle.Render("←/→ type  8 all  j/k select  enter inspect  / search  f scope  tab panes  ? help")
 		}
 	}
 	if m.inputMode == InputModeNormal && m.statusMessage != "" {
-		hint := helpStyle.Render(": commands  ? help")
-		if m.focusPane == FocusInspector {
-			hint = helpStyle.Render("? help  esc back")
-		}
+		hint := helpStyle.Render("esc back  ? help  q quit")
 		gap := width - lipgloss.Width(m.statusMessage) - lipgloss.Width(hint) - 2
 		if gap < 1 {
-			return footerBarStyle.Width(width).Render(truncateCell(m.statusMessage, width-2))
+			return footerBarStyle.Width(width).Render(truncateCell(m.statusMessage, width-lipgloss.Width(hint)-3) + " " + hint)
 		}
 		return footerBarStyle.Width(width).Render(m.statusMessage + strings.Repeat(" ", gap) + hint)
+	}
+	if width < 100 && m.inputMode == InputModeNormal && m.statusMessage == "" {
+		switch {
+		case m.showOverview:
+			primary = helpStyle.Render("j/k scroll  8 browse  esc back  ? help  q quit")
+		case m.focusPane == FocusComponents:
+			primary = helpStyle.Render("←/→ fold  enter apply  tab panes  esc back  ? help  q quit")
+		case m.focusPane == FocusMapping:
+			primary = helpStyle.Render("enter inspector  tab panes  f scope  esc back  ? help  q quit")
+		case m.focusPane == FocusInspector:
+			primary = helpStyle.Render("enter open  tab panes  esc back  ? help  q quit")
+		default:
+			primary = helpStyle.Render("←/→ type  8 all  enter inspect  / search  f scope  ? help")
+		}
 	}
 	line := primary
 	if m.statusMessage != "" {
@@ -743,17 +743,14 @@ func (m Model) componentWidth(totalWidth int) int {
 }
 
 func (m Model) columnWidths(innerWidth int) (pathWidth, valWidth, typeWidth, srcWidth int, showMetadata bool) {
-	if innerWidth < 65 {
-		pathWidth = clamp(innerWidth*45/100, 28, 38)
-		valWidth = max(12, innerWidth-pathWidth-3)
-		return pathWidth, valWidth, 0, 0, false
+	if innerWidth < 52 {
+		pathWidth = max(8, innerWidth*58/100)
+		return pathWidth, max(1, innerWidth-pathWidth-3), 0, 0, false
 	}
-
 	typeWidth = 10
-	pathWidth = clamp(innerWidth*38/100, 30, 44)
-	valWidth = clamp(innerWidth*28/100, 18, 30)
-	srcWidth = max(12, innerWidth-pathWidth-valWidth-typeWidth-5)
-	return pathWidth, valWidth, typeWidth, srcWidth, true
+	valWidth = clamp(innerWidth/3, 10, 20)
+	pathWidth = max(8, innerWidth-valWidth-typeWidth-4)
+	return pathWidth, valWidth, typeWidth, 0, true
 }
 
 func (m Model) currentPathWidth() int {
@@ -761,95 +758,26 @@ func (m Model) currentPathWidth() int {
 	if width < 1 {
 		width = 100
 	}
-	valuesWidth := width
-	if m.layout() != layoutCompact {
-		valuesWidth = width - m.componentWidth(width)
-	}
+	valuesWidth := m.workspaceGeometry(width).settings
 	innerWidth := max(1, valuesWidth-4)
 	pathWidth, _, _, _, _ := m.columnWidths(innerWidth)
 	return pathWidth
 }
 
 func (m *Model) stepAutoScroll() {
-	if m.inputMode != InputModeNormal {
+	if m.inputMode != InputModeNormal || m.showHelp || m.showOverview {
 		return
 	}
 	if m.focusPane == FocusComponents {
-		m.stepComponentScroll()
-	} else if m.focusPane == FocusValues {
-		m.stepValuePathScroll()
+		m.advanceScopeLabelScroll()
+	} else if m.focusPane == FocusValues || m.focusPane == FocusMapping {
+		m.advanceSelectedRowScroll()
 	}
 }
 
-func (m *Model) stepComponentScroll() {
-	if m.componentCursor < 0 || m.componentCursor >= len(m.chartNames) {
-		m.compScroll = 0
-		m.compScrollPause = 0
-		return
-	}
-	width := m.componentWidth(m.windowWidth)
-	name := m.chartNames[m.componentCursor]
-	displayName := m.componentDisplayName(name, width)
-	prefixWidth := 2
-	if name == m.currentChart {
-		prefixWidth = 4
-	}
-	maxVisible := max(1, width-4-prefixWidth)
-	runes := []rune(displayName)
-	if len(runes) <= maxVisible {
-		m.compScroll = 0
-		m.compScrollPause = 0
-		return
-	}
+func (m *Model) stepComponentScroll() { m.advanceScopeLabelScroll() }
 
-	maxScroll := max(1, len(runes)-maxVisible+1)
-	if m.compScrollPause > 0 {
-		m.compScrollPause--
-		return
-	}
-
-	if m.compScroll < maxScroll {
-		m.compScroll++
-		if m.compScroll == maxScroll {
-			m.compScrollPause = 6
-		}
-	} else {
-		m.compScroll = 0
-		m.compScrollPause = 3
-	}
-}
-
-func (m *Model) stepValuePathScroll() {
-	value, ok := m.selectedValue()
-	if !ok {
-		m.pathScroll = 0
-		m.pathScrollPause = 0
-		return
-	}
-	runes := []rune(m.valueListPath(value))
-	pathWidth := m.currentPathWidth()
-	if len(runes) <= pathWidth {
-		m.pathScroll = 0
-		m.pathScrollPause = 0
-		return
-	}
-
-	maxScroll := max(1, len(runes)-pathWidth+1)
-	if m.pathScrollPause > 0 {
-		m.pathScrollPause--
-		return
-	}
-
-	if m.pathScroll < maxScroll {
-		m.pathScroll++
-		if m.pathScroll == maxScroll {
-			m.pathScrollPause = 6
-		}
-	} else {
-		m.pathScroll = 0
-		m.pathScrollPause = 3
-	}
-}
+func (m *Model) stepValuePathScroll() { m.advanceSelectedRowScroll() }
 func (m *Model) stepPathScroll() {
 	m.stepValuePathScroll()
 }
@@ -862,145 +790,93 @@ func onOff(enabled bool) string {
 }
 
 func (m Model) valuesPane(width, height int) string {
-	focused := m.focusPane == FocusValues
-	innerWidth := max(1, width-4)
-	contentHeight := max(1, height-4)
+	inner := max(1, width-4)
 	var content strings.Builder
-	content.WriteString(paneHeadingStyle.Render("VALUES"))
-	if filter := m.filterInput.Value(); filter != "" {
-		content.WriteString(filterStyle.Render("  /" + truncateCell(filter, max(1, innerWidth-12))))
+	// Sanitize and size untrusted text before applying our own styles. Stripping
+	// ANSI after rendering would also erase the selected-row highlight.
+	add := func(line string) { content.WriteString(line + "\n") }
+	add(paneHeadingStyle.Render("Settings"))
+	add(m.settingsTabs(inner))
+	add(filterStyle.Render(m.settingsQueryLine(inner)))
+	pathWidth, valWidth, typeWidth, _, metadata := m.columnWidths(inner)
+	heading := fmt.Sprintf("  %-*s %-*s", pathWidth, "Setting", valWidth, "Value")
+	if metadata {
+		heading += " Kind"
 	}
-	content.WriteByte('\n')
-
-	pathWidth, valWidth, typeWidth, srcWidth, showMetadata := m.columnWidths(innerWidth)
-	if showMetadata {
-		content.WriteString(tableHeaderStyle.Render(truncateCell(fmt.Sprintf("  %-*s %-*s %-*s %s", pathWidth, "VALUE PATH", valWidth, "VALUE", typeWidth, "TYPE", "SOURCE"), innerWidth)))
-	} else {
-		content.WriteString(tableHeaderStyle.Render(fmt.Sprintf("  %-*s %s", pathWidth, "VALUE PATH", "VALUE")))
-	}
-	content.WriteByte('\n')
-
-	maxLines := contentHeight
-	linesUsed := 0
+	add(tableHeaderStyle.Render(truncateCell(heading, inner)))
+	available := max(2, height-8)
+	used := 0
+	lastOwner := ""
 	start := clamp(m.viewportOffset, 0, max(0, len(m.filteredValues)-1))
-	lastComponent := ""
-	lastSection := ""
-	for index := start; index < len(m.filteredValues); index++ {
+	for index := start; index < len(m.filteredValues) && used < available; index++ {
 		value := m.filteredValues[index]
-		group := valueGroupKey(value)
-		if index == start || group != lastComponent {
-			if linesUsed+2 > maxLines {
+		owner := m.settingGroupKey(value)
+		if index == start || owner != lastOwner {
+			if used+2 > available {
 				break
 			}
-			content.WriteString(componentBandStyle.Render(componentBand(m.valueComponentLabel(value, innerWidth), innerWidth)))
-			content.WriteByte('\n')
-			linesUsed++
-			lastComponent = group
-			lastSection = ""
+			add(groupHeadingStyle.Render(componentBand(m.settingGroupLabel(value), inner)))
+			used++
+			lastOwner = owner
 		}
-		section := valueSection(value)
-		if section != lastSection {
-			if lastSection != "" {
-				if linesUsed+3 > maxLines {
-					break
-				}
-				content.WriteByte('\n')
-				linesUsed++
-			} else if linesUsed+2 > maxLines {
-				break
-			}
-			content.WriteString(groupHeadingStyle.Render(truncateCell("  "+section, innerWidth)))
-			content.WriteByte('\n')
-			linesUsed++
-			lastSection = section
+		cells := m.settingRowCells(value, inner)
+		path := scrollRowCell(cells.path, 0, pathWidth)
+		cellValue := scrollRowCell(cells.value, 0, valWidth)
+		if index == m.cursor && m.focusPane == FocusValues {
+			path = scrollRowCell(cells.path, m.pathScroll, pathWidth)
+			cellValue = scrollRowCell(cells.value, m.valueScroll, valWidth)
 		}
-		if linesUsed+1 > maxLines {
-			break
+		line := padRowCell(path, pathWidth) + " " + padRowCell(cellValue, valWidth)
+		if metadata {
+			line += " " + padRowCell(truncateCell(displayKind(value), typeWidth), typeWidth)
 		}
-
 		marker := "  "
 		if index == m.cursor {
 			marker = "> "
 		}
-		displayPath := m.valueListPath(value)
-		path := truncateCell(displayPath, pathWidth)
-		if index == m.cursor && m.pathScroll > 0 {
-			path = scrollCell(displayPath, m.pathScroll, pathWidth)
-		}
-		defaultValue := displayValue(value)
-		if !showMetadata && value.IsPackageValue && value.MappingStatus != "" {
-			defaultValue = value.MappingStatus + ": " + defaultValue
-		}
-		defaultValue = truncateCell(defaultValue, valWidth)
-		kind := displayKind(value)
-		var line string
-		if showMetadata {
-			source := ""
-			count := len(value.Locations)
-			first := introspect.ValueUsageLocation{}
-			if count > 0 {
-				first = value.Locations[0]
-			}
-			if len(value.ZarfReferences) > 0 {
-				count, first = value.ZarfLocationCount, value.ZarfFirstLocation
-			}
-			if count > 1 {
-				source = fmt.Sprintf("%d locations", count)
-			} else if count == 1 {
-				source = fmt.Sprintf("%s:%d", filepath.Base(first.File), first.Line)
-			}
-			source = truncateCell(source, srcWidth)
-			line = fmt.Sprintf("%s%-*s %-*s %-*s %s", marker, pathWidth, path, valWidth, defaultValue, typeWidth, kind, source)
-		} else {
-			line = fmt.Sprintf("%s%-*s %s", marker, pathWidth, path, defaultValue)
-		}
-		line = truncateCell(line, innerWidth)
+		line = truncateCell(marker+line, inner)
 		if index == m.cursor {
-			content.WriteString(selectedRowStyle.Render(line))
+			add(selectedRowStyle.Render(line))
+		} else if value.settingChildren > 0 {
+			add(groupHeadingStyle.Render(line))
 		} else {
-			content.WriteString(kindStyleFor(value).Render(line))
+			add(kindStyleFor(value).Render(line))
 		}
-		content.WriteByte('\n')
-		linesUsed++
+		used++
 	}
 	if len(m.filteredValues) == 0 {
-		message := "No values match the current filters."
-		if m.nextRail && m.filterInput.Value() == "" {
-			message = "No items in this category for this component."
+		typeName := "settings"
+		if !m.allCategories {
+			typeName = settingTabLabels[m.category]
 		}
-		content.WriteString(helpStyle.Render(truncateCell(message, innerWidth)))
+		message := "No " + typeName + " in this scope"
+		if strings.TrimSpace(m.filterInput.Value()) != "" {
+			message = "No matching " + typeName
+		}
+		add(helpStyle.Render(truncateCell(message, inner)))
+		if !m.allCategories && available > 1 {
+			add(helpStyle.Render(truncateCell("8 All types · / change search", inner)))
+		}
 	}
-	return paneFrame(width, height, focused).Render(strings.TrimSuffix(content.String(), "\n"))
+	return paneFrame(width, height, m.focusPane == FocusValues).Render(strings.TrimSuffix(content.String(), "\n"))
 }
 
 // The package band carries the owner; keep the full path on DisplayItem for
 // searching, Details, and copying.
 func (m Model) valueListPath(value DisplayItem) string {
+	if runtimeReference(value) && inspectorAbsolutePath(value.Path) {
+		return m.referenceDisplayPath(value)
+	}
+	if value.settingLabel != "" {
+		return strings.Repeat("  ", value.settingDepth) + value.settingLabel
+	}
+	if value.IsPackageValue && value.Component == "UDS Next bundle" && len(value.ValueFiles) > 0 {
+		return value.PackageName + " · " + strings.Join(value.ValueFiles, ", ")
+	}
 	if m.nextRail && (value.IsPkgVar || value.IsZarfVar) && value.PackageName != "" {
 		return strings.TrimPrefix(value.Path, value.PackageName+".")
 	}
 	return value.Path
-}
-
-func (m Model) valueComponentLabel(value DisplayItem, width int) string {
-	if m.nextRail && (value.IsPkgVar || value.IsZarfVar) && value.PackageName != "" {
-		return "Zarf package · " + value.PackageName
-	}
-	if value.IsPkgVar {
-		return "Zarf package"
-	}
-	if value.IsPackageValue || value.IsPackageMapping {
-		if value.Component == "UDS Next bundle" {
-			return "UDS Next bundle · " + value.PackageName
-		}
-		if value.PackageName != "" {
-			return "Zarf Package Values · " + value.PackageName
-		}
-	}
-	if value.IsSummaryItem {
-		return "UDS bundle summary"
-	}
-	return m.componentDisplayName(value.Component, width)
 }
 
 func componentBand(label string, width int) string {
@@ -1015,74 +891,37 @@ func componentBand(label string, width int) string {
 	return title
 }
 
-func valueGroupKey(value DisplayItem) string {
-	if (value.IsPkgVar || value.IsZarfVar) && value.PackageName != "" {
-		return "Zarf package/" + value.PackageName
-	}
-	if value.IsPackageValue || value.IsPackageMapping {
-		return value.Component + "/" + value.PackageName
-	}
-	return value.Component
-}
-
-func valueSection(value DisplayItem) string {
-	switch {
-	case value.IsBundleVariable:
-		return "UDS Next variables · configured input"
-	case value.IsPackageMapping:
-		if value.Runtime {
-			return "Zarf Package Values · runtime references"
-		}
-		return "Chart mappings · explore configurable values"
-	case value.IsPackageValue:
-		if value.Component == "UDS Next bundle" {
-			return "UDS Next values files · operator input"
-		}
-		return "Zarf Package Values · configured paths"
-	case value.IsPkgVar || value.IsZarfVar:
-		return "Zarf variables"
-	case value.IsUDSOverrideVar:
-		return "UDS variables · configurable"
-	case value.IsUDSOverrideValue:
-		return "UDS overrides · fixed by bundle"
-	default:
-		return "Helm chart values"
-	}
-}
-
 func (m Model) valueLineCount(start, end int) int {
-	if start < 0 || end < start || start >= len(m.filteredValues) {
-		return 0
-	}
-	end = min(end, len(m.filteredValues)-1)
 	lines := 0
-	lastComponent := ""
-	lastSection := ""
-	for index := start; index <= end; index++ {
-		value := m.filteredValues[index]
-		group := valueGroupKey(value)
-		if index == start || group != lastComponent {
+	owner := ""
+	for i := start; i <= end && i < len(m.filteredValues); i++ {
+		next := m.settingGroupKey(m.filteredValues[i])
+		if i == start || next != owner {
 			lines++
-			lastComponent = group
-			lastSection = ""
-		}
-		section := valueSection(value)
-		if section != lastSection {
-			if lastSection != "" {
-				lines++
-			}
-			lines++
-			lastSection = section
+			owner = next
 		}
 		lines++
 	}
 	return lines
 }
 
+func settingsEntryCount(count int) string {
+	if count == 1 {
+		return "1 entry"
+	}
+	return fmt.Sprintf("%d entries", count)
+}
+
 func displayValue(value DisplayItem) string {
+	if value.settingChildren > 0 {
+		return settingsEntryCount(value.settingChildren)
+	}
 	if value.IsPackageMapping {
-		if value.Runtime {
-			return "runtime"
+		if runtimeReference(value) {
+			if referenceRequiresDeployment(value) {
+				return "deployment context"
+			}
+			return "not evaluated"
 		}
 		return "mapping"
 	}
@@ -1090,34 +929,73 @@ func displayValue(value DisplayItem) string {
 		if len(value.ValueFiles) == 0 {
 			return "package"
 		}
-		return fmt.Sprintf("%d values files", len(value.ValueFiles))
+		if len(value.ValueFiles) == 1 {
+			return "1 file"
+		}
+		return fmt.Sprintf("%d files", len(value.ValueFiles))
 	}
 	if value.IsPackageValue && !value.ValuePresent {
+		if value.Schema != nil {
+			return "not supplied"
+		}
 		return "files / schema"
+	}
+	if value.IsBundleVariable && !value.ValuePresent {
+		return "not supplied"
+	}
+	if value.Wildcard {
+		return "dynamic path"
 	}
 	if value.IsUDSOverrideValue {
 		return formatDefaultValue(value.OverrideValue)
+	}
+	if value.DefaultPresent {
+		return mappingCell(value.DefaultValue, true)
+	}
+	if value.Schema != nil && value.DefaultValue == nil {
+		return "not supplied"
 	}
 	return formatDefaultValue(value.DefaultValue)
 }
 
 func displayKind(value DisplayItem) string {
+	if value.settingChildren > 0 {
+		return "group"
+	}
 	switch {
 	case value.IsBundleVariable:
 		return "variable"
 	case value.IsPackageMapping:
+		if runtimeReference(value) {
+			if referenceRequiresDeployment(value) {
+				return "runtime use"
+			}
+			return "template use"
+		}
 		return "declared"
 	case value.IsPackageValue:
+		if value.Component == "UDS Next bundle" {
+			return "files"
+		}
+		if !value.ValuePresent && value.Schema != nil {
+			return "schema"
+		}
 		if value.MappingStatus != "" {
 			return value.MappingStatus
 		}
 		return "package"
 	case value.IsPkgVar || value.IsZarfVar:
 		return "variable"
-	case value.IsUDSOverrideValue || value.IsUDSOverrideVar:
-		return "override"
+	case value.IsUDSOverrideValue:
+		return "fixed"
+	case value.IsUDSOverrideVar:
+		return "variable"
 	case value.IsEmptyState:
 		return "empty"
+	case value.Wildcard:
+		return "dynamic"
+	case value.Schema != nil && !value.DefaultPresent && value.DefaultValue == nil:
+		return "schema"
 	case len(value.Locations) > 0:
 		return "field"
 	default:
@@ -1146,54 +1024,33 @@ func kindStyleFor(value DisplayItem) lipgloss.Style {
 		return udsOverrideVarStyle
 	case value.IsEmptyState:
 		return helpStyle
+	case value.Wildcard:
+		return zarfVarStyle
 	}
 	return codeStyle
 }
 
 func (m Model) inspectorPane(width, height int) string {
 	focused := m.focusPane == FocusInspector
-	innerWidth := max(1, width-4)
+	inner := max(1, width-4)
+	heading := paneHeadingStyle.Render("Inspector")
+	frame := paneFrame(width, height, focused)
 	if _, ok := m.detailValue(); !ok {
-		return paneFrame(width, height, focused).Render(paneHeadingStyle.Render("DETAILS") + "\n" + helpStyle.Render("Select a value to inspect it."))
+		return frame.Render(heading + "\n" + helpStyle.Render("Select a setting."))
 	}
-	content, _ := m.inspectorContent(innerWidth, focused)
-	visible := max(1, height-3)
+	content, _ := m.inspectorContent(inner, focused)
+	visible := max(1, height-4)
 	total := strings.Count(content, "\n") + 1
+	if total <= height-3 {
+		return frame.Render(heading + "\n" + content)
+	}
 	offset := clamp(m.detailScrollOffset, 0, max(0, total-visible))
-	position := fmt.Sprintf("%d–%d / %d lines", offset+1, min(total, offset+visible), total)
-	context := "Details"
-	if offset > 0 {
-		if value, ok := m.detailValue(); ok {
-			context = value.Path
-		}
-	}
-	gap := max(1, innerWidth-lipgloss.Width(position)-2)
-	progress := fmt.Sprintf("%-*s  %s", gap, truncateCell(context, gap), position)
-	frame := paneFrame(width, height, focused).Border(lipgloss.RoundedBorder())
 	body := clipLinesAt(content, visible, offset)
-	body += strings.Repeat("\n", max(0, visible-lipgloss.Height(body)))
-	return frame.Render(body + "\n" + helpStyle.Render(truncateCell(progress, innerWidth)))
+	position := fmt.Sprintf("%d–%d / %d", offset+1, min(total, offset+visible), total)
+	return frame.Render(heading + "\n" + body + "\n" + helpStyle.Render(truncateCell(position, inner)))
 }
 
-func (m Model) detailScrollLimit() int {
-	width := m.windowWidth
-	height := m.windowHeight
-	if width < 1 {
-		width = 100
-	}
-	if height < 1 {
-		height = 30
-	}
-	bodyHeight := height - lipgloss.Height(m.workspaceHeader(width)) - lipgloss.Height(m.workspaceFooter(width))
-	bodyHeight = max(4, bodyHeight)
-	content, _ := m.inspectorContent(max(1, width-4), true)
-	return max(0, len(strings.Split(content, "\n"))-max(1, bodyHeight-3))
-}
-
-func (m *Model) ensureDetailCursorVisible() {
-	if len(m.detailItems) == 0 {
-		return
-	}
+func (m Model) inspectorVisibleLines() int {
 	width, height := m.windowWidth, m.windowHeight
 	if width < 1 {
 		width = 100
@@ -1201,349 +1058,42 @@ func (m *Model) ensureDetailCursorVisible() {
 	if height < 1 {
 		height = 30
 	}
-	_, row := m.inspectorContent(max(1, width-4), true)
-	visible := max(1, height-lipgloss.Height(m.workspaceHeader(width))-lipgloss.Height(m.workspaceFooter(width))-3)
-	if row < m.detailScrollOffset {
-		m.detailScrollOffset = row
-	} else if row >= m.detailScrollOffset+visible {
-		m.detailScrollOffset = row - visible + 1
-	}
-	m.detailScrollOffset = clamp(m.detailScrollOffset, 0, m.detailScrollLimit())
+	bodyHeight := height - lipgloss.Height(m.workspaceHeader(width)) - lipgloss.Height(m.workspaceFooter(width))
+	return max(1, bodyHeight-4)
 }
 
-// inspectorContent returns the scrollable body and the selected action's line.
-func (m Model) inspectorContent(innerWidth int, focused bool) (string, int) {
-	value, ok := m.detailValue()
-	if !ok {
-		return "", -1
-	}
+func (m Model) detailScrollLimit() int {
+	content, _ := m.inspectorContent(max(1, m.inspectorWidth()-4), true)
+	return max(0, strings.Count(content, "\n")+1-m.inspectorVisibleLines())
+}
 
-	var content strings.Builder
-	lineNumber, selectedLine := 0, -1
-	add := func(text string) {
-		content.WriteString(text)
-		content.WriteByte('\n')
-		lineNumber += strings.Count(text, "\n") + 1
+func (m *Model) ensureDetailCursorVisible() {
+	if len(m.detailItems) == 0 {
+		return
 	}
-	section := func(label string) {
-		add("")
-		title := detailSectionStyle.Render(truncateCell(label, innerWidth))
-		if remaining := innerWidth - lipgloss.Width(label) - 2; remaining > 0 {
-			title += helpStyle.Render("  " + strings.Repeat("─", min(8, remaining)))
-		}
-		add(title)
-	}
-
-	add(helpStyle.Render("VALUE DETAILS"))
-	key := value.Component
-	if value.IsSummaryItem {
-		key = value.SummaryComponent
-	}
-	_, component, chart := parseComponentKey(key)
-	if key == "" || value.IsPkgVar {
-		component, chart = "", ""
-	}
-	if result := m.components[key]; result != nil && result.ChartName != "" {
-		chart = result.ChartName
-	}
-	if value.Chart != "" {
-		chart = value.Chart
-	}
-	if value.Component == "Zarf Package Values" {
-		component, chart = "", ""
-		if value.IsPackageMapping {
-			component, chart = value.MappingComponent, value.MappingChart
-		}
-	}
-	identity := func(label, text string) {
-		if text == "" {
-			text = "—"
-		}
-		labelWidth := min(14, max(1, innerWidth/3))
-		lines := strings.Split(ansi.Wrap(text, max(1, innerWidth-labelWidth-1), ""), "\n")
-		add(fieldLabelStyle.Render(fmt.Sprintf("%-*s", labelWidth, truncateCell(label, labelWidth))) + " " + codeStyle.Render(lines[0]))
-		for _, line := range lines[1:] {
-			add(strings.Repeat(" ", labelWidth+1) + codeStyle.Render(line))
-		}
-	}
-	add(detailTitleStyle.Render(wrapCell(value.Path, innerWidth)))
-	var context []string
-	if pkg, _, _ := parseComponentKey(key); pkg != "" {
-		context = append(context, pkg)
-	}
-	if component != "" {
-		context = append(context, component)
-	}
-	if chart != "" {
-		context = append(context, chart)
-	}
-	if len(context) > 0 {
-		add(helpStyle.Render(ansi.Wrap(strings.Join(context, " / "), innerWidth, "")))
-	}
-	valueType := "Helm chart value"
-	switch {
-	case value.IsBundleVariable:
-		valueType = "UDS Next bundle variable · configured input"
-	case value.IsPackageMapping:
-		valueType = "Zarf Package Value mapping"
-	case value.IsPackageValue:
-		valueType = "Zarf Package Value"
-		if value.Component == "UDS Next bundle" {
-			valueType = "UDS Next values files · operator input"
-		}
-	case value.IsPkgVar:
-		valueType = "Zarf package variable"
-	case value.IsZarfVar:
-		valueType = "Zarf variable"
-	case value.IsUDSOverrideValue:
-		valueType = "UDS override value · fixed"
-	case value.IsUDSOverrideVar:
-		valueType = "UDS variable · configurable"
-	}
-	add(kindStyleFor(value).Render(ansi.Wrap(valueType, innerWidth, "")))
-	if m.mappingRowDetail && m.detailRef == nil && m.mapping.rows[m.mapping.cursor].undiscovered {
-		identity("Discovery", "Supplied package path; not discovered in chart")
-	}
-	if value.IsUDSOverrideVar && value.UDSVarPath != "" {
-		identity("Controls", value.UDSVarPath)
-	}
-
-	if value.PackageName != "" {
-		if value.IsPackageValue && value.MappingStatus != "" {
-			identity("Helm mapping", value.MappingStatus)
-		}
-		identity("Package", value.PackageName)
-	}
-	if value.IsPackageValue || value.IsPackageMapping || value.IsBundleVariable {
-		if m.bundle != nil {
-			identity("Bundle", strings.TrimSpace(m.bundle.Name+" "+m.bundle.Version)+" ("+m.bundle.Format+")")
-			for _, pkg := range m.bundle.Packages {
-				if pkg.ID != value.PackageName {
-					continue
-				}
-				identity("Source", pkg.Source)
-				identity("Namespace", pkg.Namespace)
-				identity("Depends on", strings.Join(pkg.DependsOn, ", "))
-				identity("Components", strings.Join(pkg.OptionalComponents, ", "))
-				break
-			}
-		}
-		if value.IsPackageMapping {
-			identity("Mapping chart", value.MappingComponent+"/"+value.MappingChart)
-			identity("Source path", value.ValueSource)
-			identity("Target path", value.ValueTarget)
-			identity("Resolution", "declared route · not an effective chart value")
-		}
-		if value.IsPackageValue && value.ValuePresent && len(value.Routes) > 0 {
-			section("CHART MAPPINGS · ENTER TO INSPECT")
-			linkIndex := 0
-			for _, route := range value.Routes {
-				owner := route.Usage.ComponentName
-				if route.Usage.ChartName != "" {
-					owner += "/" + route.Usage.ChartName
-				}
-				if route.Usage.TargetPath == "" || route.Usage.ChartName == "" {
-					add(wrapCell(owner+" · runtime/template reference", innerWidth))
-					continue
-				}
-				text := owner + " · " + route.Status + " · " + route.Usage.Path + " → " + route.Usage.TargetPath
-				if focused && linkIndex == m.detailCursor {
-					selectedLine = lineNumber
-					add(selectedRowStyle.Render("> " + truncateCell(text, max(1, innerWidth-2))))
-				} else {
-					add("  " + wrapCell(text, max(1, innerWidth-2)))
-				}
-				linkIndex++
-			}
-		}
-	}
-	if value.IsUDSOverrideValue {
-		section("CHART DEFAULT")
-		add(detailDefaultStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.OriginalDefault), max(1, innerWidth-2))))
-		section("EFFECTIVE VALUE")
-		add(detailCodeStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.OverrideValue), max(1, innerWidth-2))))
-	} else if value.IsPackageMapping || value.IsPackageValue && !value.ValuePresent {
-		// A mapping or an operator-provided values file is not a resolved value.
-	} else {
-		if value.IsPackageValue || value.IsBundleVariable {
-			section("CONFIGURED VALUE · NOT DEPLOYMENT EFFECTIVE")
-		} else {
-			section("DEFAULT VALUE")
-		}
-		style := detailCodeStyle
-		if !value.IsPackageValue && !value.IsBundleVariable {
-			style = detailDefaultStyle
-		}
-		add(style.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(value.DefaultValue), max(1, innerWidth-2))))
-	}
-	description := value.PkgVarDesc
-	if value.UDSVarDescription != "" {
-		description = value.UDSVarDescription
-	}
-	if description != "" {
-		section("DESCRIPTION")
-		add(ansi.Wrap(description, innerWidth, ""))
-	}
-
-	mappingHeading := false
-	for index, detail := range m.detailItems {
-		if detail.packageMapping == nil {
-			continue
-		}
-		if !mappingHeading {
-			section("CONFIGURE THROUGH PACKAGE VALUES")
-			mappingHeading = true
-		}
-		mapping := detail.packageMapping
-		row := mapping.row
-		status := row.status
-		switch row.status {
-		case "available":
-			status = "accepts input"
-		case "other":
-			status = "outside target"
-		}
-		label := mapping.pkg.PackageName + "  ·  " + status
-		if focused && index == m.detailCursor {
-			selectedLine = lineNumber
-			add(selectedRowStyle.Width(innerWidth).Render("> " + wrapCell(label, max(1, innerWidth-2))))
-		} else {
-			add(mappingRowStyle(row.status).Render("  " + wrapCell(label, max(1, innerWidth-2))))
-		}
-		target := detail.Mapping.TargetPath
-		if target == "." {
-			target = "chart root (.)"
-		}
-		identity("Mapping", detail.Mapping.Path+" → "+target)
-		if row.packagePath != "" {
-			identity("Set input at", row.packagePath)
-		}
-		if row.exclusion != "" {
-			identity("Excluded by", row.exclusion)
-		}
-		if row.status == "other" {
-			add(helpStyle.Render(ansi.Wrap("This chart value is outside the mapping's destination.", innerWidth, "")))
-		} else if !row.present {
-			identity("Package input", "Not supplied")
-		} else if row.input == nil {
-			identity("Package input", "null")
-		} else {
-			add(fieldLabelStyle.Render("Package input"))
-			add(detailCodeStyle.Width(max(1, innerWidth-2)).Render(wrapCell(formatYAMLValue(row.input), max(1, innerWidth-2))))
-		}
-		add("")
-	}
-
-	locations, refs := 0, 0
-	for _, item := range m.detailItems {
-		switch item.Kind {
-		case DetailItemLocation:
-			locations++
-		case DetailItemCrossRef:
-			refs++
-		}
-	}
-	if locations > 0 || !value.IsPackageValue {
-		section(fmt.Sprintf("TEMPLATE LOCATIONS  ·  %d", locations))
-		if locations == 0 {
-			add(helpStyle.Render("No template locations found."))
-		}
-	}
-	for index, detail := range m.detailItems {
-		if detail.Kind != DetailItemLocation {
-			continue
-		}
-		file := m.chartRelativeLocation(value, detail.Location.File)
-		if detail.sourceComponent != "" {
-			file = strings.TrimPrefix(detail.sourceComponent, value.PackageName+"/") + " · " +
-				m.chartRelativeLocationFor(detail.sourceComponent, detail.Location.File)
-		}
-		label := fmt.Sprintf("%s:%d:%d", file, detail.Location.Line, detail.Location.Column)
-		if focused && index == m.detailCursor {
-			selectedLine = lineNumber
-			add(selectedRowStyle.Width(innerWidth).Render("> " + tailCell(label, max(1, innerWidth-2))))
-		} else {
-			add("  " + tailCell(label, max(1, innerWidth-2)))
-		}
-	}
-	if refs > 0 {
-		section(fmt.Sprintf("RELATED VALUES  ·  %d", refs))
-		for index, detail := range m.detailItems {
-			if detail.Kind != DetailItemCrossRef {
+	width := max(1, m.inspectorWidth()-4)
+	_, row := m.inspectorContent(width, true)
+	visible := m.inspectorVisibleLines()
+	selectedHeight := 1
+	if value, ok := m.detailValue(); ok {
+		index := 0
+		for _, line := range m.inspectorDocument(value).lines {
+			if line.action == nil {
 				continue
 			}
-			label := truncateCell(detail.Label, max(1, innerWidth-2))
-			if focused && index == m.detailCursor {
-				selectedLine = lineNumber
-				add(selectedRowStyle.Width(innerWidth).Render("> " + label))
-			} else {
-				add("  " + label)
+			if index == m.detailCursor {
+				selectedHeight = min(visible, strings.Count(wrapCell(line.text, max(1, width-2)), "\n")+1)
+				break
 			}
+			index++
 		}
 	}
-	fileDetailIndex := 0
-	for fileDetailIndex < len(m.detailItems) && m.detailItems[fileDetailIndex].Kind != DetailItemFile {
-		fileDetailIndex++
+	if row < m.detailScrollOffset {
+		m.detailScrollOffset = row
+	} else if row+selectedHeight > m.detailScrollOffset+visible {
+		m.detailScrollOffset = row + selectedHeight - visible
 	}
-	fileEntry := func(index int, file detailFile) {
-		lines := strings.Split(ansi.Wrap(file.label, max(1, innerWidth-6), ""), "\n")
-		prefix := helpStyle.Render(fmt.Sprintf("  %02d  ", index+1))
-		if file.source != "" && fileDetailIndex < len(m.detailItems) {
-			if focused && fileDetailIndex == m.detailCursor {
-				selectedLine = lineNumber
-				add(selectedRowStyle.Width(innerWidth).Render("> " + truncateCell(file.label, max(1, innerWidth-2))))
-			} else {
-				add(prefix + codeStyle.Render(lines[0]))
-			}
-			fileDetailIndex++
-		} else {
-			add(prefix + codeStyle.Render(lines[0]))
-		}
-		for _, line := range lines[1:] {
-			add("      " + codeStyle.Render(line))
-		}
-	}
-	for _, group := range detailFileGroups(value, m.detailItems) {
-		heading := "INPUT FILES"
-		if group.packageName != "" {
-			heading += " · " + group.packageName
-		}
-		section(heading)
-		if len(group.files) > 1 {
-			if group.packageName != "" {
-				add(helpStyle.Render("Declared order · later files take precedence"))
-			} else {
-				add(helpStyle.Render("Declared order"))
-			}
-		}
-		for index, file := range group.files {
-			fileEntry(index, file)
-		}
-	}
-	if mappingHeading {
-		add("")
-		add(helpStyle.Render(ansi.Wrap("Inspection only: mapping availability is not schema validation. Inputs are not deployment-effective values.", innerWidth, "")))
-	}
-	if m.detailBundleMode {
-		if snippet := m.packageValuesSnippet(value); snippet != "" {
-			section("PACKAGE VALUES AUTHORING")
-			add(helpStyle.Render(ansi.Wrap("Save in a package values YAML file and supply with --values. This is input, not deployment-effective configuration.", innerWidth, "")))
-			add(snippetStyle.Render(wrapCell(snippet, innerWidth)))
-		}
-		if snippet := m.generateBundleSnippetForItem(value); snippet != "" {
-			section("UDS AUTHORING")
-			add(snippetStyle.Render(wrapCell(snippet, innerWidth)))
-		}
-	}
-	if value.ValueSchema != nil {
-		if m.detailSchemaShown {
-			section("PACKAGE VALUES SCHEMA · S TO HIDE")
-			add(codeStyle.Render(wrapCell(formatYAMLValue(value.ValueSchema), innerWidth)))
-		} else {
-			section("PACKAGE VALUES SCHEMA · HIDDEN · S TO SHOW")
-		}
-	}
-	return strings.TrimSuffix(content.String(), "\n"), selectedLine
+	m.detailScrollOffset = clamp(m.detailScrollOffset, 0, m.detailScrollLimit())
 }
 
 // chartRelativeLocation changes only the display path; DetailItem keeps the
@@ -1579,6 +1129,7 @@ func (m Model) chartRelativeLocationFor(key, file string) string {
 
 // tailCell preserves the filename and line when a source path exceeds the pane.
 func tailCell(value string, width int) string {
+	value = terminalText(value)
 	if lipgloss.Width(value) <= width {
 		return value
 	}
@@ -1593,75 +1144,87 @@ func tailCell(value string, width int) string {
 }
 
 func (m Model) commandPaletteView(width, height int) string {
-	paletteWidth := min(100, max(30, width-8))
+	paletteWidth := min(100, max(20, width-4))
+	contentWidth := max(1, paletteWidth-6)
 	query := m.commandInput.Value()
 	matchCount := commandMatchCount(query)
 	var content strings.Builder
 	content.WriteString(titleStyle.Render("COMMAND PALETTE") + "\n")
-	content.WriteString(m.commandInput.View() + "\n\n")
-	content.WriteString(tableHeaderStyle.Render(truncateCell(fmt.Sprintf("%-8s %-28s %s", "KEY", "ACTION", "DESCRIPTION"), paletteWidth-4)) + "\n")
+	content.WriteString(truncateCell(m.commandInput.View(), contentWidth) + "\n\n")
+	content.WriteString(tableHeaderStyle.Render(truncateCell(fmt.Sprintf("%-8s %-28s %s", "KEY", "ACTION", "DESCRIPTION"), contentWidth)) + "\n")
 	matchIndex := 0
+	visible := max(1, height-9)
+	start := max(0, m.commandCursor-visible+1)
 	for _, command := range commands {
 		if !commandMatches(command, query) {
 			continue
 		}
+		if matchIndex < start || matchIndex >= start+visible {
+			matchIndex++
+			continue
+		}
 		line := fmt.Sprintf("%-8s %-28s %s", command.key, command.name, command.description)
-		line = truncateCell(line, paletteWidth-4)
+		line = truncateCell(line, contentWidth-2)
 		if matchIndex == m.commandCursor {
-			content.WriteString(selectedRowStyle.Render("> " + truncateCell(line, paletteWidth-6)))
+			content.WriteString(selectedRowStyle.Render("> " + truncateCell(line, contentWidth-2)))
 		} else {
-			content.WriteString("  " + truncateCell(line, paletteWidth-6))
+			content.WriteString("  " + truncateCell(line, contentWidth-2))
 		}
 		content.WriteByte('\n')
 		matchIndex++
 	}
 	if matchCount == 0 {
-		content.WriteString(helpStyle.Render("No matching commands."))
+		content.WriteString(helpStyle.Render(truncateCell("No matching commands.", contentWidth)) + "\n")
 	}
-	content.WriteString("\n" + helpStyle.Render("↑↓ move  enter run  esc close"))
+	content.WriteString(helpStyle.Render(truncateCell("↑↓ move  enter  esc", contentWidth)))
 	panel := modalStyle.Width(paletteWidth - 2).Render(content.String())
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, panel)
 }
 
 func (m Model) helpView(width, height int) string {
 	content := titleStyle.Render("KEYBOARD HELP") + "\n\n"
-	navigation := "jump next / previous component"
-	space := "select component / Details authoring"
-	enter := "details / mapping / mapped value"
-	if m.nextRail {
-		content += "1–7               select category\nTab / Shift+Tab   switch Categories / Values\n"
-		navigation = "next / previous group or category"
-		space = "focus values / Details authoring"
-		enter = "focus values / details / mapping"
-	} else {
-		content += "Tab / Shift+Tab   switch Components / Values\n"
-	}
-	content += "h / l, ← / →      focus left / right pane\n" +
+	content += "0 / 8             overview / all inputs\n" + "c / u             changed / unresolved filter\n"
+	navigation := "next / previous owner group"
+	space := "apply scope / Inspector authoring"
+	enter := "apply scope / inspect / follow action"
+	content += "1–7               setting type; 8 all\n1 Bundle vars · 2 Bundle files · 3 Zarf vars\n4 Zarf values · 5 Mappings & uses\n6 Helm values · 7 Legacy overrides\n"
+	content += "Tab / Shift+Tab   Scope / Settings / Inspector\n" +
+		"h / l             focus previous / next pane\n" +
+		"← / →             Settings type / Scope fold\n" +
 		"j / k, ↑ / ↓      move 1 line in focused pane\n" +
 		"J / K             jump 5 lines in focused pane\n" +
 		"n / N, ] / [     " + navigation + "\n" +
 		"g / G             first / last item\n" +
 		"Enter             " + enter + "\n" +
-		"/                 filter values\n" +
-		"f                 select component\n" +
+		"/                 search selected type and scope\n" +
+		"f                 package / component / chart\n" +
 		":                 command palette\n" +
 		"Space             " + space + "\n" +
 		"a                 toggle other paths in mapping\n" +
-		"o                 open source in $EDITOR\n" +
+		"o                 view source locations\n" +
 		"y                 copy value path\n" +
 		"p                 copy selected mapping input path\n" +
-		"s                 show / hide package values schema\n" +
+		"v / t / s         full value / history / schema\n" +
+		"S                 whole package schema\n" +
 		"Z / U             summary toggles\n" +
 		"b                 Package Values / UDS authoring\n" +
 		"Esc               back / clear\n" +
 		"q                 quit\n\n" +
 		helpStyle.Render("Press ? or Esc to close")
 	panelWidth := min(58, max(34, width-4))
-	panel := modalStyle.Width(panelWidth - 2).Render(content)
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = truncateCell(line, max(1, panelWidth-6))
+	}
+	visible := max(1, height-7)
+	body := clipLinesAt(strings.Join(lines, "\n"), visible, m.helpOffset)
+	body += "\n" + helpStyle.Render(truncateCell("↑↓ scroll  ? / Esc close", panelWidth-6))
+	panel := modalStyle.Width(panelWidth - 2).Render(body)
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, panel)
 }
 
 func truncateCell(value string, width int) string {
+	value = terminalText(value)
 	if width <= 0 {
 		return ""
 	}
@@ -1700,6 +1263,7 @@ func scrollCell(value string, offset, width int) string {
 }
 
 func wrapCell(value string, width int) string {
+	value = terminalMultiline(value)
 	if width < 1 {
 		return ""
 	}
@@ -1762,12 +1326,12 @@ func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.inputMode = InputModeNormal
 		m.filterInput.Blur()
-		m.filterInput.SetValue("")
+		m.filterInput.SetValue(m.previousFilter)
 		m.updateFilteredValues()
 		m.cursor = 0
 		m.viewportOffset = 0
-		m.buildDetailItems()
-		m.setStatus("Value filter cleared")
+		m.syncInspectorSelection()
+		m.setStatus("Filter edit cancelled")
 	default:
 		var cmd tea.Cmd
 		m.filterInput, cmd = m.filterInput.Update(msg)
@@ -1903,29 +1467,34 @@ func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.nextRail && (m.focusPane == FocusComponents || m.focusPane == FocusValues) {
-		key := msg.String()
-		if len(key) == 1 && key[0] >= '1' && key[0] <= '7' {
-			m.selectNextCategory(int(key[0] - '1'))
-			m.focusPane = FocusValues
-			return m, nil
-		}
+	key := msg.String()
+	if len(key) == 1 && key[0] >= '1' && key[0] <= '8' {
+		m.selectSettingType(int(key[0] - '1'))
+		return m, nil
 	}
-	if m.focusPane == FocusMapping || m.mappingRowDetail {
+	if m.showOverview {
 		switch msg.String() {
-		case "q", "ctrl+c", "j", "k", "J", "K", "up", "down", "g", "G", "pgup", "pgdown", "enter", "esc", "?", "y":
-		case "p", "o", "b", " ", "space":
-			if m.focusPane != FocusInspector {
-				return m, nil
-			}
-		case "a":
-			if m.focusPane != FocusMapping {
-				return m, nil
-			}
-		default:
+		case "j", "down":
+			m.overviewOffset++
+			return m, nil
+		case "k", "up":
+			m.overviewOffset = max(0, m.overviewOffset-1)
+			return m, nil
+		case "pgdown":
+			m.overviewOffset += max(1, m.windowHeight-5)
+			return m, nil
+		case "pgup":
+			m.overviewOffset = max(0, m.overviewOffset-max(1, m.windowHeight-5))
+			return m, nil
+		case "g":
+			m.overviewOffset = 0
+			return m, nil
+		case "G":
+			m.overviewOffset = 1000
 			return m, nil
 		}
 	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -1933,24 +1502,26 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveFocus(1)
 	case "shift+tab":
 		m.moveFocus(-1)
-	case "h", "left":
-		if m.focusPane == FocusMapping || m.mappingRowDetail {
-			break
-		}
-		if m.focusPane == FocusInspector {
-			m.focusPane = FocusValues
+	case "h":
+		m.moveFocus(-1)
+	case "l":
+		m.moveFocus(1)
+	case "left":
+		if m.focusPane == FocusComponents {
+			m.scopeTreeLeft()
+		} else if m.focusPane == FocusValues {
+			m.selectSettingType(m.adjacentSettingType(-1))
 		} else {
-			m.focusPane = FocusComponents
+			m.moveFocus(-1)
 		}
-		m.pathScroll = 0
-		m.pathScrollPause = 2
-	case "l", "right":
-		if m.focusPane == FocusMapping || m.mappingRowDetail {
-			break
+	case "right":
+		if m.focusPane == FocusComponents {
+			m.scopeTreeRight()
+		} else if m.focusPane == FocusValues {
+			m.selectSettingType(m.adjacentSettingType(1))
+		} else {
+			m.moveFocus(1)
 		}
-		m.focusPane = FocusValues
-		m.pathScroll = 0
-		m.pathScrollPause = 2
 	case "j", "down":
 		m.moveWithinFocusedPane(1)
 	case "k", "up":
@@ -1972,28 +1543,52 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgdown":
 		m.moveWithinFocusedPane(max(5, m.windowHeight-7))
 	case "enter":
+		if m.showOverview {
+			m.showOverview = false
+			m.focusPane = m.centralFocus()
+			return m, nil
+		}
 		cmd := m.activateFocused()
 		return m, cmd
+	case "0":
+		m.showOverview = !m.showOverview
+		m.overviewOffset = 0
+		m.focusPane = m.centralFocus()
+	case "c":
+		m.focusStatus("changed")
+	case "u":
+		m.focusStatus("unresolved")
 	case "a":
 		if m.focusPane == FocusMapping && m.mapping != nil {
 			m.mapping.showOthers = !m.mapping.showOthers
 			m.mapping.selectRows()
 			m.ensureMappingCursorVisible()
+			m.syncInspectorSelection()
 		}
 	case "/":
 		m.beginFilter()
 	case "f":
-		m.beginComponentFilter()
+		m.beginScopePicker()
 	case ":":
 		m.beginCommandPalette()
 	case "?":
 		m.showHelp = true
+		m.helpOffset = 0
 	case "esc":
-		if m.focusPane == FocusInspector && m.detailRef != nil {
+		if m.showOverview {
+			m.showOverview = false
+			return m, nil
+		}
+		if m.focusPane == FocusInspector && m.backDetailPanel() {
+			return m, nil
+		}
+		if m.focusPane == FocusInspector && m.detailRef != nil && m.returnTrace() {
+			return m, nil
+		} else if m.focusPane == FocusInspector && m.detailRef != nil {
 			m.detailRef = nil
 			m.detailCursor, m.detailScrollOffset = 0, 0
 			m.buildDetailItems()
-		} else if m.mappingRowDetail {
+		} else if m.focusPane == FocusInspector && m.mappingRowDetail {
 			m.mappingRowDetail = false
 			m.detailScrollOffset = 0
 			m.focusPane = FocusMapping
@@ -2005,16 +1600,24 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detailRef = screen.returnDetailRef
 			m.detailCursor = screen.returnDetailCursor
 			m.detailScrollOffset = screen.returnDetailOffset
+			m.detailPanel, m.detailPanelHistory, m.detailSource = screen.returnPanel, screen.returnPanels, screen.returnSource
+			m.traceHistory = screen.returnTraceHistory
+			m.inspectorSelection = m.liveSelectionKey()
 			m.buildDetailItems()
 		} else if m.focusPane == FocusInspector {
-			m.focusPane = FocusValues
+			m.focusPane = m.centralFocus()
 			m.detailScrollOffset = 0
+		} else if m.focusPane == FocusComponents {
+			m.focusPane = m.scopeReturnFocus
+			if m.focusPane != FocusInspector {
+				m.focusPane = m.centralFocus()
+			}
 		} else if m.filterInput.Value() != "" {
 			m.filterInput.SetValue("")
 			m.updateFilteredValues()
 			m.cursor = 0
 			m.viewportOffset = 0
-			m.buildDetailItems()
+			m.syncInspectorSelection()
 			m.setStatus("Value filter cleared")
 		}
 	case " ", "space":
@@ -2023,27 +1626,33 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cmd := m.activateFocused()
 			return m, cmd
 		case FocusInspector:
-			m.detailBundleMode = !m.detailBundleMode
-			m.detailScrollOffset = 0
-			m.setStatus(toggleStatus("Authoring snippets", m.detailBundleMode))
+			m.openDetailPanel(detailAuthoring, nil)
 		}
 	case "Z":
 		m.toggleZarfSummary()
 	case "U":
 		m.toggleUDSSummary()
 	case "b":
-		m.detailBundleMode = !m.detailBundleMode
-		m.detailScrollOffset = 0
-		m.setStatus(toggleStatus("Authoring snippets", m.detailBundleMode))
+		if m.focusPane == FocusInspector {
+			m.openDetailPanel(detailAuthoring, nil)
+		}
+	case "t":
+		if value, ok := m.detailValue(); ok && m.focusPane == FocusInspector && m.hasValueHistory(value) {
+			m.openDetailPanel(detailProvenance, nil)
+		}
+	case "v":
+		if value, ok := m.detailValue(); ok && m.focusPane == FocusInspector && m.canViewFullValue(value) {
+			m.openDetailPanel(detailFullValue, nil)
+		}
 	case "s":
 		if m.focusPane == FocusInspector {
 			value, ok := m.detailValue()
-			if ok && value.ValueSchema != nil {
-				m.detailSchemaShown = !m.detailSchemaShown
-				m.detailScrollOffset = m.detailScrollLimit()
-				m.setStatus(toggleStatus("Package values schema", m.detailSchemaShown))
+			if ok && !runtimeReference(value) && m.selectedValueSchema(value) != nil {
+				m.openDetailPanel(detailSchema, nil)
 			}
 		}
+	case "S":
+		m.openPackageSchema()
 	case "o":
 		cmd := m.openSelectedSource()
 		return m, cmd

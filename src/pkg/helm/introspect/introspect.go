@@ -176,118 +176,9 @@ func IntrospectHelmValues(ctx context.Context, src ChartSource, opts IntrospectO
 	analyzeStart := time.Now()
 	analyzeChart(c, result, opts, "", "")
 
-	// Try to parse values.yaml for locations
-	var valuesIdx map[string]ValueUsageLocation
-	for _, f := range c.Raw {
-		if f.Name == "values.yaml" {
-			result.ValuesFiles = append(result.ValuesFiles, "values.yaml")
-			var err error
-			valuesIdx, err = ParseValuesLocations(f.Data)
-			if err != nil {
-				l.Warn(fmt.Sprintf("Failed to parse values.yaml for locations: %s", err))
-			}
-
-			// Detect Zarf variables in values.yaml
-			zarfVars := FindZarfVariables(f.Data, "values.yaml")
-			for name, locs := range zarfVars {
-				mergeZarfVars(result, name, locs)
-			}
-			break
-		}
-	}
-
-	// Infer nested values from values.yaml if requested
-	if !opts.NoValues {
-		l.Debug("Inferring nested paths from values.yaml...")
-
-		// Track existing paths to avoid duplicates
-		existingPaths := make(map[string]bool)
-		for _, v := range result.Values {
-			existingPaths[v.Path] = true
-		}
-
-		// Collect all paths to expand: both the discovered paths and their parent prefixes.
-		// For example, if we discovered "global.proxy.tracer", we also want to expand
-		// "global.proxy" and "global" so that sibling values like "global.proxy.resources"
-		// are also discovered from values.yaml.
-		pathsToExpand := make(map[string]string) // path -> chart name
-		for _, v := range result.Values {
-			pathsToExpand[v.Path] = v.Chart
-			// Also add all parent prefixes
-			parts := strings.Split(v.Path, ".")
-			for i := 1; i < len(parts); i++ {
-				parent := strings.Join(parts[:i], ".")
-				if _, exists := pathsToExpand[parent]; !exists {
-					pathsToExpand[parent] = v.Chart
-				}
-			}
-		}
-
-		for path, chart := range pathsToExpand {
-			// Find value in values.yaml
-			val := GetValue(c.Values, path)
-			if val == nil {
-				continue
-			}
-
-			// Flatten and find new paths
-			subPaths := FlattenToPaths(path, val)
-			for _, sub := range subPaths {
-				if !existingPaths[sub] {
-					// Add inferred value
-					newVal := ValueUsage{
-						Path:      sub,
-						Chart:     chart,
-						Wildcard:  false,
-						Locations: []ValueUsageLocation{},
-					}
-
-					// Add location if available
-					if loc, ok := valuesIdx[sub]; ok {
-						newVal.Locations = append(newVal.Locations, loc)
-					}
-
-					result.Values = append(result.Values, newVal)
-					existingPaths[sub] = true
-				}
-			}
-		}
-	}
-
-	// Build lookup maps for direct dependencies. Parent chart values may override
-	// dependency defaults under the dependency name or alias, while the dependency
-	// chart still carries its own values.yaml defaults.
-	chartValues := map[string]map[string]interface{}{
-		c.Metadata.Name: c.Values,
-	}
-	chartValuePrefixes := map[string]string{
-		c.Metadata.Name: "",
-	}
-	collectChartValues(c, "", chartValues, chartValuePrefixes)
-
-	// Populate default values
-	for i, v := range result.Values {
-		var val interface{}
-
-		if v.Chart == c.Metadata.Name {
-			// Root chart values live directly at the discovered path.
-			val = GetValue(c.Values, v.Path)
-		} else {
-			// Dependency values are reported using their parent-chart override path.
-			// Fall back to the dependency chart's own values.yaml using the local
-			// subchart path when the parent does not provide an override.
-			val = GetValue(c.Values, v.Path)
-			if val == nil {
-				localPath := v.Path
-				if prefix := chartValuePrefixes[v.Chart]; prefix != "" {
-					localPath = strings.TrimPrefix(v.Path, prefix+".")
-				}
-				val = GetValue(chartValues[v.Chart], localPath)
-			}
-		}
-
-		result.Values[i].DefaultValue = val
-	}
+	// Preserve the whole static configuration surface, including unused defaults
+	// and schema-only properties. No schema defaults are applied.
+	inventoryChart(ctx, c, result, opts, "", "", c.Values)
 
 	l.Debug(fmt.Sprintf("Analysis took %s", time.Since(analyzeStart)))
 
@@ -374,10 +265,10 @@ func analyzeChart(c *v2.Chart, result *IntrospectResult, opts IntrospectOptions,
 	}
 
 	if opts.IncludeSubcharts {
-		for _, dep := range c.Dependencies() {
-			depPrefix := filepath.Join(pathPrefix, "charts", dep.Metadata.Name)
-			depValuePrefix := joinValuePath(valuePrefix, dependencyValueKey(c, dep.Metadata.Name))
-			analyzeChart(dep, result, opts, depPrefix, depValuePrefix)
+		for _, dep := range chartDependencies(c) {
+			depPrefix := filepath.Join(pathPrefix, "charts", dep.chart.Metadata.Name)
+			depValuePrefix := joinValuePath(valuePrefix, dep.valueKey)
+			analyzeChart(dep.chart, result, opts, depPrefix, depValuePrefix)
 		}
 	}
 }
@@ -420,27 +311,6 @@ func analyzeTemplate(chartName string, t *common.File, result *IntrospectResult,
 	for name, locs := range zarfVars {
 		mergeZarfVars(result, name, locs)
 	}
-}
-
-func collectChartValues(c *v2.Chart, valuePrefix string, values map[string]map[string]interface{}, valuePrefixes map[string]string) {
-	values[c.Metadata.Name] = c.Values
-	valuePrefixes[c.Metadata.Name] = valuePrefix
-	for _, dep := range c.Dependencies() {
-		depValuePrefix := joinValuePath(valuePrefix, dependencyValueKey(c, dep.Metadata.Name))
-		collectChartValues(dep, depValuePrefix, values, valuePrefixes)
-	}
-}
-
-func dependencyValueKey(parent *v2.Chart, depName string) string {
-	for _, dep := range parent.Metadata.Dependencies {
-		if dep.Name == depName {
-			if dep.Alias != "" {
-				return dep.Alias
-			}
-			return dep.Name
-		}
-	}
-	return depName
 }
 
 func joinValuePath(prefix, path string) string {

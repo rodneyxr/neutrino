@@ -24,6 +24,7 @@ const (
 	InputModeFilter
 	InputModeChartSelect
 	InputModeCommand
+	InputModeScopeSelect
 )
 
 // DetailItemKind distinguishes navigable items in the detail view.
@@ -34,19 +35,35 @@ const (
 	DetailItemCrossRef
 	DetailItemMapping
 	DetailItemFile
+	DetailItemTrace
+	DetailItemPanel
+	DetailItemSource
+	DetailItemPreview
 )
 
 // DetailItem represents a single navigable row in the detail view.
 type DetailItem struct {
-	Kind            DetailItemKind
-	Location        introspect.ValueUsageLocation // valid when Kind == DetailItemLocation
-	sourceComponent string                        // owning chart when a package variable links to chart usage
-	relatedValue    *DisplayItem                  // target independent of workspace filtering
-	Label           string                        // rendered label for cross-ref items
-	Mapping         introspect.PackageValueUsage  // valid when Kind == DetailItemMapping
-	packageMapping  *valueMappingDetail
-	mappingRef      *valueMapping
-	File            string // resolved path when Kind == DetailItemFile
+	traceID           string
+	Kind              DetailItemKind
+	Location          introspect.ValueUsageLocation // valid when Kind == DetailItemLocation
+	sourceComponent   string                        // owning chart when a package variable links to chart usage
+	sourceRole        string                        // display role kept separately from shortened coordinates
+	sourceDisplayPath string                        // display only; File/Location retain exact source identity
+	relatedValue      *DisplayItem                  // target independent of workspace filtering
+	Label             string                        // rendered label for cross-ref items
+	Mapping           introspect.PackageValueUsage  // valid when Kind == DetailItemMapping
+	packageMapping    *valueMappingDetail
+	mappingRef        *valueMapping
+	File              string // resolved path when Kind == DetailItemFile
+	panel             detailPanel
+	preview           *inspectorValuePreview
+}
+
+// inspectorValuePreview contains the already-masked input for one explicit
+// comparison action, independent of the selected setting or chart baseline.
+type inspectorValuePreview struct {
+	title string
+	value interface{}
 }
 
 type DisplayItem struct {
@@ -85,6 +102,11 @@ type DisplayItem struct {
 	MappingStatus      string
 	mappingRef         *valueMapping
 	authoring          *valueAuthoring
+	settingLabel       string
+	settingParent      string
+	settingDepth       int
+	settingChildren    int
+	settingContext     bool
 }
 
 type zarfVariableReference struct {
@@ -94,6 +116,14 @@ type zarfVariableReference struct {
 
 type Model struct {
 	// Data
+	report               introspect.InspectionReport
+	scopes               []workspaceScope
+	scopeCursor          int
+	showOverview         bool
+	overviewOffset       int
+	allCategories        bool
+	allValues            []DisplayItem
+	previousFilter       string
 	components           map[string]*introspect.IntrospectResult
 	chartNames           []string
 	currentChart         string
@@ -106,10 +136,16 @@ type Model struct {
 	category             int
 	categoryCounts       [7]int
 	categoryRows         [7][]DisplayItem
+	categoryCursors      [7]int
+	categoryOffsets      [7]int
 
 	// State
 	inputMode          InputMode
 	focusPane          FocusPane
+	inspectorSelection string
+	scopeExpanded      map[string]bool
+	scopeTreeKey       string
+	scopeReturnFocus   FocusPane
 	cursor             int
 	componentCursor    int
 	detailCursor       int
@@ -121,8 +157,14 @@ type Model struct {
 	mapping            *mappingScreen
 	mappingRowDetail   bool
 	detailRef          *DisplayItem
+	traceHistory       []traceReturn
+	detailPanel        detailPanel
+	detailPanelHistory []detailPanelReturn
+	detailSource       *DetailItem
 	pathScroll         int
 	pathScrollPause    int
+	valueScroll        int
+	valueScrollPause   int
 	compScroll         int
 	compScrollPause    int
 	windowHeight       int
@@ -130,6 +172,7 @@ type Model struct {
 	showZarfSummary    bool
 	showUDSSummary     bool
 	showHelp           bool
+	helpOffset         int
 	statusMessage      string
 	statusExpiresAt    time.Time
 
@@ -146,23 +189,17 @@ type Model struct {
 func NewModel(report introspect.InspectionReport) Model {
 
 	components := report.Components
-	componentOrder := report.ComponentOrder
 	pkgVariables := report.Variables
 
-	// Initialize charts list in chronological definition order
-	charts := make([]string, 0, len(componentOrder)+1)
-	charts = append(charts, "All Charts")
-	for _, k := range componentOrder {
-		if _, ok := components[k]; ok {
-			charts = append(charts, k)
-		}
-	}
+	// Keep package/chart identity order deterministic even when a report omits
+	// optional ComponentOrder entries.
+	charts := append([]string{"All Charts"}, orderedScopeCharts(report)...)
 
 	currentChart := "All Charts"
 
 	// Initialize inputs
 	fi := textinput.New()
-	fi.Placeholder = "Filter values..."
+	fi.Placeholder = "path  pkg:api  status:unresolved"
 	fi.Prompt = "/ "
 	fi.ShowSuggestions = true
 
@@ -176,6 +213,8 @@ func NewModel(report introspect.InspectionReport) Model {
 	commands.Prompt = ": "
 
 	m := Model{
+		report:               report,
+		scopes:               buildWorkspaceScopes(report),
 		components:           components,
 		chartNames:           charts,
 		currentChart:         currentChart,
@@ -190,32 +229,25 @@ func NewModel(report introspect.InspectionReport) Model {
 		valuePolicy:          newPackageValuesPolicy(report),
 		bundle:               report.Bundle,
 		nextRail:             report.Bundle != nil && report.Bundle.Format == "next",
-		showZarfSummary:      report.Bundle != nil && report.Bundle.Format == "next",
+		showZarfSummary:      len(pkgVariables) > 0 || report.Bundle != nil && report.Bundle.Format == "next",
 	}
 
 	m.updateFilteredValues()
-	if m.nextRail && m.categoryCounts[m.category] == 0 {
-		for i, count := range m.categoryCounts {
-			if count > 0 {
-				m.category = i
-				m.filteredValues = m.categoryRows[i]
-				break
-			}
-		}
-	}
-	m.buildDetailItems()
+	m.selectNextCategory(m.initialSettingCategory())
+	m.syncScopeCursor()
+	m.syncInspectorSelection()
 	return m
 }
 
 func (m *Model) updateFilteredValues() {
-	m.pathScroll = 0
-	m.pathScrollPause = 2
+	m.resetSelectedRowScroll()
 	var newValues []DisplayItem
-	filter := m.filterInput.Value()
+	// Filter the completed catalog so every row type shares the same query semantics.
+	filter := ""
 
 	// Package Values are package-level inputs, not chart defaults. Keep them
 	// visible even when a package contains no charts.
-	if m.currentChart == "All Charts" {
+	if m.currentChart == "All Charts" || m.currentChart == "bundle:inputs" || strings.HasPrefix(m.currentChart, "package:") {
 		for _, entry := range m.valuePolicy.catalog().packages {
 			item := packageValueItem(entry, "Zarf Package Values")
 			if matchesValueFilter(item, filter) {
@@ -223,19 +255,17 @@ func (m *Model) updateFilteredValues() {
 			}
 		}
 		if m.bundle != nil {
-			keys := make([]string, 0, len(m.bundle.Variables))
-			for key := range m.bundle.Variables {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-			for _, key := range keys {
-				item := DisplayItem{ValueUsage: introspect.ValueUsage{Path: key, DefaultValue: m.bundle.Variables[key]},
-					Component: "UDS Next bundle", IsBundleVariable: true, ValuePresent: true}
+			for _, item := range m.bundleVariableItems() {
 				if matchesValueFilter(item, filter) {
 					newValues = append(newValues, item)
 				}
 			}
 			for _, pkg := range m.bundle.Packages {
+				// Packages without values files remain in Scope; they are not
+				// configuration inputs in the Settings catalog.
+				if len(pkg.ValuesFiles) == 0 {
+					continue
+				}
 				item := DisplayItem{ValueUsage: introspect.ValueUsage{Path: pkg.ID},
 					Component: "UDS Next bundle", PackageName: pkg.ID,
 					IsPackageValue: true, ValueFiles: pkg.ValuesFiles, ValueSource: pkg.Source}
@@ -272,43 +302,68 @@ func (m *Model) updateFilteredValues() {
 		}
 	}
 
-	// Add UDS summary items if the UDS summary toggle is on
-	if m.showUDSSummary {
-		for _, ov := range m.udsOverrideValues {
-			destComponent := fmt.Sprintf("%s/%s/%s", ov.PackageName, ov.ComponentName, ov.ChartName)
-			if filter == "" || strings.Contains(strings.ToLower(ov.Path), strings.ToLower(filter)) {
-				newValues = append(newValues, DisplayItem{
-					ValueUsage: introspect.ValueUsage{
-						Path:         ov.Path,
-						DefaultValue: ov.OriginalDefault,
-					},
-					Component:          "UDS Bundle Overrides",
-					IsUDSOverrideValue: true,
-					IsSummaryItem:      true,
-					OverrideValue:      ov.Value,
-					OriginalDefault:    ov.OriginalDefault,
-					SummaryComponent:   destComponent,
-				})
+	// Keep overrides whose destination row is unavailable. The summary toggle
+	// controls only extra copies of overrides already shown with their chart.
+	for _, ov := range m.udsOverrideValues {
+		destComponent := fmt.Sprintf("%s/%s/%s", ov.PackageName, ov.ComponentName, ov.ChartName)
+		chartHasOverride := false
+		if chart := m.components[destComponent]; chart != nil {
+			for _, chartOverride := range chart.UDSOverrideValues {
+				if chartOverride.Path == ov.Path {
+					chartHasOverride = true
+					break
+				}
 			}
 		}
-		for _, ov := range m.udsOverrideVariables {
-			destComponent := fmt.Sprintf("%s/%s/%s", ov.PackageName, ov.ComponentName, ov.ChartName)
-			searchStr := strings.ToLower(ov.Name + " " + ov.Path)
-			if filter == "" || strings.Contains(searchStr, strings.ToLower(filter)) {
-				newValues = append(newValues, DisplayItem{
-					ValueUsage: introspect.ValueUsage{
-						Path:         ov.Name,
-						DefaultValue: ov.Default,
-					},
-					Component:         "UDS Bundle Overrides",
-					IsUDSOverrideVar:  true,
-					IsSummaryItem:     true,
-					UDSVarPath:        ov.Path,
-					UDSVarDescription: ov.Description,
-					OriginalDefault:   ov.OriginalDefault,
-					SummaryComponent:  destComponent,
-				})
+		if chartHasOverride && !m.showUDSSummary {
+			continue
+		}
+		if filter == "" || strings.Contains(strings.ToLower(ov.Path), strings.ToLower(filter)) {
+			newValues = append(newValues, DisplayItem{
+				ValueUsage: introspect.ValueUsage{
+					Path:         ov.Path,
+					DefaultValue: ov.OriginalDefault,
+				},
+				Component:          "UDS Bundle Overrides",
+				PackageName:        ov.PackageName,
+				IsUDSOverrideValue: true,
+				IsSummaryItem:      true,
+				OverrideValue:      ov.Value,
+				OriginalDefault:    ov.OriginalDefault,
+				SummaryComponent:   destComponent,
+			})
+		}
+	}
+	for _, ov := range m.udsOverrideVariables {
+		destComponent := fmt.Sprintf("%s/%s/%s", ov.PackageName, ov.ComponentName, ov.ChartName)
+		chartHasOverride := false
+		if chart := m.components[destComponent]; chart != nil {
+			for _, chartOverride := range chart.UDSOverrideVariables {
+				if chartOverride.Name == ov.Name && chartOverride.Path == ov.Path {
+					chartHasOverride = true
+					break
+				}
 			}
+		}
+		if chartHasOverride && !m.showUDSSummary {
+			continue
+		}
+		searchStr := strings.ToLower(ov.Name + " " + ov.Path)
+		if filter == "" || strings.Contains(searchStr, strings.ToLower(filter)) {
+			newValues = append(newValues, DisplayItem{
+				ValueUsage: introspect.ValueUsage{
+					Path:         ov.Name,
+					DefaultValue: ov.Default,
+				},
+				Component:         "UDS Bundle Overrides",
+				PackageName:       ov.PackageName,
+				IsUDSOverrideVar:  true,
+				IsSummaryItem:     true,
+				UDSVarPath:        ov.Path,
+				UDSVarDescription: ov.Description,
+				OriginalDefault:   ov.OriginalDefault,
+				SummaryComponent:  destComponent,
+			})
 		}
 	}
 
@@ -319,7 +374,7 @@ func (m *Model) updateFilteredValues() {
 		}
 
 		// If viewing a specific chart, skip others
-		if m.currentChart != "All Charts" && !strings.Contains(strings.ToLower(name), strings.ToLower(m.currentChart)) {
+		if !m.chartInScope(name) {
 			continue
 		}
 
@@ -367,7 +422,7 @@ func (m *Model) updateFilteredValues() {
 			}
 		}
 
-		if m.currentChart != "All Charts" {
+		if m.currentChart != "All Charts" && !strings.HasPrefix(m.currentChart, "package:") {
 			for _, entry := range m.valuePolicy.catalog().charts[name] {
 				item := packageValueItem(entry, name)
 				if matchesValueFilter(item, filter) {
@@ -511,28 +566,26 @@ func (m *Model) updateFilteredValues() {
 	if m.nextRail {
 		newValues = m.consolidateNextZarfVariables(newValues, filter)
 	}
-	if m.nextRail {
-		for i := range m.categoryCounts {
-			m.categoryCounts[i] = 0
-		}
-		for _, item := range newValues {
-			m.categoryCounts[nextCategory(item)]++
-		}
-		sort.SliceStable(newValues, func(i, j int) bool {
-			left, right := nextCategory(newValues[i]), nextCategory(newValues[j])
-			if left != right {
-				return left < right
-			}
-			return left == 2 && newValues[i].PackageName < newValues[j].PackageName
-		})
-		start := 0
-		for i, count := range m.categoryCounts {
-			m.categoryRows[i] = newValues[start : start+count]
-			start += count
-		}
-		m.filteredValues = m.categoryRows[m.category]
-	} else {
-		m.filteredValues = newValues
+	newValues = m.projectSettingsCatalog(newValues)
+	for i := range newValues {
+		newValues[i] = m.filteredReferences(newValues[i])
+	}
+	newValues = m.orderSettingsLayers(m.filterSettingsCatalog(newValues))
+	m.allValues = newValues
+	for i := range m.categoryCounts {
+		m.categoryCounts[i] = 0
+	}
+	for _, item := range newValues {
+		m.categoryCounts[nextCategory(item)]++
+	}
+	start := 0
+	for i, count := range m.categoryCounts {
+		m.categoryRows[i] = newValues[start : start+count]
+		start += count
+	}
+	m.filteredValues = m.categoryRows[m.category]
+	if m.allCategories {
+		m.filteredValues = m.allValues
 	}
 	newValues = m.filteredValues
 
@@ -582,6 +635,8 @@ func (m *Model) updateFilteredValues() {
 	if m.cursor >= len(m.filteredValues) {
 		m.cursor = 0
 	}
+	m.cursor = clamp(m.cursor, 0, len(m.filteredValues)-1)
+	m.syncInspectorSelection()
 }
 
 func packageValueItem(entry packageValueEntry, component string) DisplayItem {
@@ -605,7 +660,7 @@ func packageValueItem(entry packageValueEntry, component string) DisplayItem {
 		schema = entry.pkg.Schema
 	}
 	return DisplayItem{
-		ValueUsage: introspect.ValueUsage{Path: entry.path, DefaultValue: entry.value},
+		ValueUsage: introspect.ValueUsage{Path: entry.path, DefaultValue: entry.value, DefaultPresent: entry.present, Schema: entry.schema, SchemaRequired: entry.schemaRequired},
 		Component:  component, PackageName: entry.pkg.PackageName,
 		IsPackageValue: true, ValuePresent: entry.present,
 		ValueFiles: entry.pkg.Files, ValueFileSources: entry.pkg.FileSources,
@@ -625,6 +680,12 @@ func matchesValueFilter(item DisplayItem, filter string) bool {
 		haystack += " " + route.Usage.ComponentName + " " + route.Usage.ChartName +
 			" " + route.Usage.TargetPath + " " + route.Target + " " + strings.Join(route.Usage.ExcludePaths, " ")
 	}
+	for _, ref := range item.ZarfReferences {
+		haystack += " " + ref.component
+		for _, location := range ref.locations {
+			haystack += " " + location.File
+		}
+	}
 	return strings.Contains(strings.ToLower(haystack), strings.ToLower(filter))
 }
 
@@ -642,21 +703,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "?", "esc":
 				m.showHelp = false
+			case "j", "down":
+				m.helpOffset++
+			case "k", "up":
+				m.helpOffset = max(0, m.helpOffset-1)
+			case "pgdown":
+				m.helpOffset += max(1, m.windowHeight-8)
+			case "pgup":
+				m.helpOffset = max(0, m.helpOffset-max(1, m.windowHeight-8))
+			case "g":
+				m.helpOffset = 0
+			case "G":
+				m.helpOffset = 100
 			case "q":
 				return m, tea.Quit
 			}
 			return m, nil
 		}
+		previousFocus := m.focusPane
+		var next tea.Model
+		var cmd tea.Cmd
 		switch m.inputMode {
 		case InputModeFilter:
-			return m.handleFilterKey(msg)
+			next, cmd = m.handleFilterKey(msg)
 		case InputModeChartSelect:
-			return m.handleComponentKey(msg)
+			next, cmd = m.handleComponentKey(msg)
 		case InputModeCommand:
-			return m.handleCommandKey(msg)
+			next, cmd = m.handleCommandKey(msg)
+		case InputModeScopeSelect:
+			next, cmd = m.handleScopeKey(msg)
 		default:
-			return m.handleNormalKey(msg)
+			next, cmd = m.handleNormalKey(msg)
 		}
+		updated := next.(Model)
+		if updated.focusPane != previousFocus {
+			updated.resetSelectedRowScroll()
+			updated.refreshWorkspaceGeometry()
+		}
+		return updated, cmd
 	case pathScrollTickMsg:
 		if m.statusMessage != "" && !time.Time(msg).Before(m.statusExpiresAt) {
 			m.statusMessage = ""
@@ -666,11 +750,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.windowHeight = msg.Height
 		m.windowWidth = msg.Width
-		m.pathScroll = 0
-		m.pathScrollPause = 2
+		m.resetSelectedRowScroll()
 		m.compScroll = 0
 		m.compScrollPause = 2
-		m.ensureCursorVisible()
+		m.refreshWorkspaceGeometry()
 	}
 	return m, nil
 }
@@ -683,7 +766,7 @@ func (m *Model) ensureCursorVisible() {
 		return
 	}
 	m.cursor = clamp(m.cursor, 0, len(m.filteredValues)-1)
-	visibleLines := max(2, m.windowHeight-6)
+	visibleLines := max(2, m.windowHeight-10)
 	if m.cursor < m.viewportOffset {
 		m.viewportOffset = m.cursor
 	}
@@ -694,7 +777,7 @@ func (m *Model) ensureCursorVisible() {
 }
 
 func (m Model) View() string {
-	return m.workspaceView()
+	return fitWorkspace(m.workspaceView(), m.windowWidth, m.windowHeight)
 }
 
 // findOverridesForPath resolves related values from the chart, not the filtered workspace.
@@ -708,7 +791,7 @@ func (m Model) findOverridesForPath(component, path string) []DetailItem {
 		if ov.Path == path {
 			items = append(items, DetailItem{
 				Kind:  DetailItemCrossRef,
-				Label: fmt.Sprintf("→ UDS Override Value: %s = %s", ov.Path, formatDefaultValue(ov.Value)),
+				Label: fmt.Sprintf("→ UDS Override Value: %s = %s", ov.Path, formatDefaultValue(m.displayValue(DisplayItem{ValueUsage: introspect.ValueUsage{Path: ov.Path}, Component: component}, ov.Value))),
 				relatedValue: &DisplayItem{
 					ValueUsage: introspect.ValueUsage{Path: ov.Path, DefaultValue: ov.OriginalDefault},
 					Component:  component, IsUDSOverrideValue: true,
@@ -760,13 +843,13 @@ func (m Model) findLocationsForOverridePath(component, path string) []DetailItem
 }
 
 // buildDetailItems constructs the unified navigable list for the detail view of the current item.
-func (m *Model) buildDetailItems() {
+func (m *Model) buildTechnicalDetailItems() {
 	v, ok := m.detailValue()
 	if !ok {
 		m.detailItems = nil
 		return
 	}
-	var items []DetailItem
+	items := m.traceDetailItems(v)
 	if !v.IsZarfVar && !v.IsPkgVar && !v.IsPackageValue && !v.IsPackageMapping && !v.IsBundleVariable && !v.IsUDSOverrideValue && !v.IsUDSOverrideVar {
 		details := m.valuePolicy.details(v.Component, v.ValueUsage)
 		for i := range details {
@@ -777,13 +860,19 @@ func (m *Model) buildDetailItems() {
 			})
 		}
 	}
-	if v.IsPackageValue && v.ValuePresent && v.Component == "Zarf Package Values" {
+	if v.IsPackageValue && v.Component == "Zarf Package Values" {
 		for _, route := range v.Routes {
 			if route.Usage.TargetPath != "" && route.Usage.ChartName != "" {
 				items = append(items, DetailItem{
 					Kind: DetailItemMapping, Mapping: route.Usage, mappingRef: route.mapping,
 				})
 			}
+		}
+	}
+	for _, usage := range m.observedValueUsages(v) {
+		for _, location := range usage.Locations {
+			items = append(items, DetailItem{Kind: DetailItemLocation, Location: location,
+				Label: "Template use", sourceComponent: observedUsageOwner(v, usage)})
 		}
 	}
 
@@ -863,6 +952,7 @@ func generateBundleSnippet(componentKey, helmPath string, defaultValue interface
 }
 
 func (m Model) generateBundleSnippetForItem(v DisplayItem) string {
+	v.DefaultValue = m.displayValue(v, v.DefaultValue)
 	if (m.bundle != nil && m.bundle.Format != "legacy") || v.IsPackageValue || v.IsPackageMapping || v.IsBundleVariable {
 		return ""
 	}

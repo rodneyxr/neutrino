@@ -15,6 +15,8 @@ type packageValuesPolicy struct {
 	entries packageValuesCatalog
 	byChart map[string][]*valueMapping
 	tables  map[*valueMapping]*mappingTable
+	traces  map[traceCacheKey]introspect.ValueTrace
+	tracers map[traceCacheKey]*introspect.ValueTracer
 }
 
 type packageValuesCatalog struct {
@@ -23,14 +25,16 @@ type packageValuesCatalog struct {
 }
 
 type packageValueEntry struct {
-	pkg       *introspect.PackageValues
-	path      string
-	value     interface{}
-	present   bool
-	mapping   *valueMapping
-	routes    []packageRoute
-	status    string
-	authoring *valueAuthoring
+	pkg            *introspect.PackageValues
+	path           string
+	value          interface{}
+	present        bool
+	schema         interface{}
+	schemaRequired bool
+	mapping        *valueMapping
+	routes         []packageRoute
+	status         string
+	authoring      *valueAuthoring
 }
 
 type packageRoute struct {
@@ -60,16 +64,17 @@ type valueMappingDetail struct {
 }
 
 type valueMapping struct {
-	pkg           *introspect.PackageValues
-	usage         introspect.PackageValueUsage
-	chart         *introspect.IntrospectResult
-	chartKey      string
-	source        string
-	target        string
-	exclusions    []string
-	leaves        []packageValueLeaf
-	sourcePresent bool
-	hasLeaf       bool
+	pkg             *introspect.PackageValues
+	usage           introspect.PackageValueUsage
+	chart           *introspect.IntrospectResult
+	chartKey        string
+	source          string
+	target          string
+	exclusions      []string
+	leaves          []packageValueLeaf
+	referencesInput bool
+	sourcePresent   bool
+	hasLeaf         bool
 }
 
 type mappingTable struct {
@@ -94,8 +99,12 @@ type valueAuthoring struct {
 }
 
 type packageValueLeaf struct {
-	path  string
-	value interface{}
+	path           string
+	value          interface{}
+	present        bool
+	declared       bool
+	schema         interface{}
+	schemaRequired bool
 }
 
 var emptyPackageValuesCatalog packageValuesCatalog
@@ -105,14 +114,13 @@ func newPackageValuesPolicy(report introspect.InspectionReport) *packageValuesPo
 		entries: packageValuesCatalog{charts: make(map[string][]packageValueEntry, len(report.Components))},
 		byChart: make(map[string][]*valueMapping),
 		tables:  make(map[*valueMapping]*mappingTable),
+		traces:  make(map[traceCacheKey]introspect.ValueTrace),
+		tracers: make(map[traceCacheKey]*introspect.ValueTracer),
 	}
 	ownersByChart := make(map[string][]*valueMapping)
 	for i := range report.PackageValues {
 		pkg := &report.PackageValues[i]
-		var leaves []packageValueLeaf
-		packageLeaves("", pkg.Values, func(path string, value interface{}) {
-			leaves = append(leaves, packageValueLeaf{path: path, value: value})
-		})
+		leaves := packageValueInventory(pkg)
 		// Addresses in this fixed-size slice identify declaration occurrences,
 		// including otherwise identical declarations in the same package.
 		mappings := make([]valueMapping, len(pkg.Usages))
@@ -132,20 +140,22 @@ func newPackageValuesPolicy(report introspect.InspectionReport) *packageValuesPo
 			}
 		}
 		for _, leaf := range leaves {
-			entry := packageValueEntry{pkg: pkg, path: leaf.path, value: leaf.value, present: true}
+			entry := packageValueEntry{pkg: pkg, path: leaf.path, value: leaf.value, present: leaf.present,
+				schema: leaf.schema, schemaRequired: leaf.schemaRequired}
 			routePath := packagePath(leaf.path)
 			for j := range mappings {
 				mapping := &mappings[j]
-				if pathWithin(leaf.path, mapping.source) {
-					mapping.hasLeaf = true
-				}
 				if route, applies := mapping.route(routePath); applies {
+					mapping.hasLeaf = true
 					entry.routes = append(entry.routes, route)
 				}
 			}
 			entry.status = aggregatePackageRoutes(entry.routes)
-			if entry.status != "excluded" && entry.status != "runtime" && entry.status != "mixed" {
+			if entry.present && entry.status != "excluded" && entry.status != "runtime" && entry.status != "mixed" {
 				entry.authoring = &valueAuthoring{path: leaf.path, value: leaf.value, basis: authoringSupplied}
+			}
+			if packageSourcesUnresolved(pkg.Sources) {
+				entry.authoring = nil
 			}
 			policy.entries.packages = append(policy.entries.packages, entry)
 		}
@@ -159,7 +169,7 @@ func newPackageValuesPolicy(report introspect.InspectionReport) *packageValuesPo
 				pkg: pkg, path: usage.Path, mapping: mapping,
 			})
 		}
-		if len(pkg.Values) == 0 && (len(pkg.Files) > 0 || len(pkg.Schema) > 0) {
+		if len(leaves) == 0 && (len(pkg.Files) > 0 || len(pkg.Schema) > 0) {
 			policy.entries.packages = append(policy.entries.packages, packageValueEntry{
 				pkg: pkg, path: "(package values)",
 			})
@@ -220,14 +230,15 @@ func (policy *packageValuesPolicy) catalog() *packageValuesCatalog {
 
 func compileValueMapping(pkg *introspect.PackageValues, usage introspect.PackageValueUsage, key string, chart *introspect.IntrospectResult, leaves []packageValueLeaf) valueMapping {
 	mapping := valueMapping{pkg: pkg, usage: usage, chart: chart, chartKey: key,
-		source: packagePath(usage.Path), target: packagePath(usage.TargetPath), leaves: leaves}
+		source: packagePath(usage.Path), target: packagePath(usage.TargetPath), leaves: leaves,
+		referencesInput: referencesPackageInput(usage)}
 	if len(usage.ExcludePaths) > 0 {
 		mapping.exclusions = make([]string, len(usage.ExcludePaths))
 		for i, excluded := range usage.ExcludePaths {
 			mapping.exclusions[i] = packagePath(excluded)
 		}
 	}
-	if pkg != nil {
+	if pkg != nil && mapping.referencesInput {
 		_, mapping.sourcePresent = packageValueInput(pkg.Values, mapping.source)
 	}
 	return mapping
@@ -235,7 +246,8 @@ func compileValueMapping(pkg *introspect.PackageValues, usage introspect.Package
 
 func sameValueDeclaration(a, b introspect.PackageValueUsage) bool {
 	if a.Path != b.Path || a.ComponentName != b.ComponentName || a.ChartName != b.ChartName ||
-		a.TargetPath != b.TargetPath || len(a.ExcludePaths) != len(b.ExcludePaths) {
+		a.TargetPath != b.TargetPath || len(a.ExcludePaths) != len(b.ExcludePaths) ||
+		referencesPackageInput(a) != referencesPackageInput(b) {
 		return false
 	}
 	for i, excluded := range a.ExcludePaths {
@@ -246,8 +258,30 @@ func sameValueDeclaration(a, b introspect.PackageValueUsage) bool {
 	return true
 }
 
+// Only declared mappings and observed .Values lookups identify package input.
+// Other template contexts can have identical path text; generic templates use
+// "." as an observation label, not as a reference to every package value.
+func referencesPackageInput(usage introspect.PackageValueUsage) bool {
+	if usage.TargetPath != "" {
+		return true
+	}
+	if len(usage.Locations) == 0 {
+		return false
+	}
+	for _, location := range usage.Locations {
+		switch location.Kind {
+		case "packageValue", "field", "range", "with", "index", "value", "variable":
+			// The package template reader uses the .Values walker, including
+			// literal index lookups (value) and resolved aliases (variable).
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func (mapping *valueMapping) route(path string) (packageRoute, bool) {
-	if !pathWithin(path, mapping.source) {
+	if !mapping.referencesInput || !pathWithin(path, mapping.source) {
 		return packageRoute{}, false
 	}
 	route := packageRoute{Usage: mapping.usage, Status: "mapped", mapping: mapping}
@@ -259,6 +293,9 @@ func (mapping *valueMapping) route(path string) (packageRoute, bool) {
 		route.Target = transformPackagePath(path, mapping.source, mapping.target)
 		if route.Target == "" {
 			route.Target = "."
+		}
+		if unresolvedStatus(mapping.usage.Status) || mapping.pkg != nil && packageSourcesUnresolved(mapping.pkg.Sources) {
+			route.Status = "unresolved"
 		}
 	}
 	return route, true
@@ -324,7 +361,7 @@ func (policy *packageValuesPolicy) open(mapping *valueMapping) (*mappingTable, e
 		}
 	}
 	for _, leaf := range mapping.leaves {
-		if !pathWithin(leaf.path, mapping.source) || leaf.path == mapping.source && len(mapping.chart.Values) > 0 {
+		if !pathWithin(leaf.path, mapping.source) || leaf.path == mapping.source && !leaf.declared && len(mapping.chart.Values) > 0 {
 			continue
 		}
 		path := transformPackagePath(leaf.path, mapping.source, mapping.target)
@@ -364,6 +401,12 @@ func (mapping *valueMapping) row(value introspect.ValueUsage, path string) mappi
 	}
 	if mapping.usage.Runtime {
 		row.status = "runtime"
+	}
+	// A retained known snapshot is useful evidence, but an unresolved layer can
+	// alter it. Do not offer an authoring snippet based on a fabricated winner.
+	if row.status == "available" && (unresolvedStatus(mapping.usage.Status) ||
+		packageSourcesUnresolved(mapping.pkg.Sources)) {
+		row.status = "unresolved"
 	}
 	if row.status == "available" {
 		row.authoring = &valueAuthoring{path: row.packagePath, basis: authoringUnknown}
