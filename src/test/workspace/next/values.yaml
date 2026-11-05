@@ -1,0 +1,4 @@
+scale: {{ .vars.scale }}
+app:
+  service:
+    port: {{ .vars.site.port }}

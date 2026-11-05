@@ -1,0 +1,3 @@
+service:
+  port: 9090
+legacyRegion: '###ZARF_VAR_LEGACY_REGION###'

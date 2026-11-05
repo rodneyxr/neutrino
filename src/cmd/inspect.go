@@ -35,14 +35,27 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 		absolute         bool
 		noValues         bool
 		interactive      bool
+		valuesFiles      []string
+		bundleConfig     string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "inspect [PACKAGE_SOURCE]",
-		Short: "Inspect a Zarf package or helm chart to find overridable values",
-		Long:  `Analyzes Zarf package or helm chart templates to find which values from .Values are actually used.`,
+		Short: "Inspect a Helm chart, Zarf package, or UDS bundle",
+		Long:  `Inspects chart values, Zarf package configuration, and Legacy or Next UDS bundles without deploying them.`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if outputFormat != "table" && outputFormat != "json" && outputFormat != "yaml" {
+				return fmt.Errorf("unsupported output format %q: use table, json, or yaml", outputFormat)
+			}
+			useInteractive, err := inspectInteractiveMode(interactive, cmd.Flags().Changed("interactive"),
+				cmd.Flags().Changed("output"), isTerminal(cmd.InOrStdin()), isTerminal(out), os.Getenv("TERM"))
+			if err != nil {
+				return err
+			}
+			// Interactive exploration includes unresolved paths unless the user
+			// explicitly hides them. Keep report defaults compatible with scripts.
+			includeWildcards := wildcards || useInteractive && !cmd.Flags().Changed("wildcards")
 			// Initialize logger
 			lvl, err := logger.ParseLevel(logLevel)
 			if err != nil {
@@ -61,6 +74,8 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				IncludeSubcharts: includeSubcharts,
 				NoCache:          noCache,
 				NoValues:         noValues,
+				ValuesFiles:      valuesFiles,
+				BundleConfig:     bundleConfig,
 			}
 
 			report := introspect.InspectionReport{
@@ -70,7 +85,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 			// Helper to filter and add result
 			addResult := func(componentName string, res *introspect.IntrospectResult) {
 				// Filter wildcards if not requested
-				if !wildcards {
+				if !includeWildcards {
 					var filteredValues []introspect.ValueUsage
 					for _, v := range res.Values {
 						if !v.Wildcard {
@@ -113,6 +128,8 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				report.ComponentOrder = bundleInspection.ComponentOrder
 				report.UDSOverrideValues = bundleInspection.UDSOverrideValues
 				report.UDSOverrideVariables = bundleInspection.UDSOverrideVariables
+				report.PackageValues = bundleInspection.PackageValues
+				report.Bundle = bundleInspection.Bundle
 
 				keys := bundleInspection.ComponentOrder
 
@@ -120,13 +137,18 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 					addResult(key, bundleInspection.ChartResults[key])
 				}
 			} else if isZarf {
+				if bundleConfig != "" {
+					return fmt.Errorf("--config requires a Next bundle")
+				}
 				pkgInspection, err := introspect.InspectZarfPackage(ctx, source, version, architecture, opts)
 				if err != nil {
 					return err
 				}
 
 				report.Variables = pkgInspection.Variables
+				report.PackageAPIVersion = pkgInspection.APIVersion
 				report.ComponentOrder = pkgInspection.ComponentOrder
+				report.PackageValues = pkgInspection.PackageValues
 
 				// Provide stable chronologic output ordering
 				keys := pkgInspection.ComponentOrder
@@ -135,15 +157,10 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 					addResult(key, pkgInspection.ChartResults[key])
 				}
 
-				// We need to output variables too?
-				// The previous code printed variables separately.
-				// For JSON/YAML, we want them in the object.
-				// For Table, we should specific format.
-
-				// Let's handle output printing at the end.
-				// But first let's finish gathering logic.
-
 			} else {
+				if len(valuesFiles) > 0 || bundleConfig != "" {
+					return fmt.Errorf("--values requires a Zarf package or UDS bundle; --config requires a Next bundle")
+				}
 				// Handle Helm chart
 				src := introspect.ChartSource{
 					Version: version,
@@ -182,7 +199,7 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 			}
 
 			// Resolve absolute paths if requested OR if interactive (needed for editor)
-			if absolute || interactive {
+			if absolute || useInteractive {
 				for _, res := range report.Components {
 					// Ensure source is absolute
 					absSource, err := filepath.Abs(res.Source)
@@ -214,8 +231,8 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 				}
 			}
 
-			if interactive {
-				p := tea.NewProgram(tui.NewModel(report), tea.WithAltScreen())
+			if useInteractive {
+				p := tea.NewProgram(tui.NewModel(report), tea.WithAltScreen(), tea.WithInput(cmd.InOrStdin()), tea.WithOutput(out))
 				_, err := p.Run()
 				return err
 			}
@@ -229,6 +246,9 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 			case "yaml":
 				return yaml.NewEncoder(out).Encode(report)
 			case "table":
+				if err := printPackageConfiguration(out, report); err != nil {
+					return err
+				}
 				if len(report.Variables) > 0 {
 					fmt.Fprintln(out, "\n=== Zarf Package Variables ===")
 					header := []string{"Name", "Default", "Description"}
@@ -307,10 +327,12 @@ func newInspectCmd(out io.Writer) *cobra.Command {
 	cmd.Flags().StringVarP(&architecture, "architecture", "a", "", "Architecture for OCI images and Zarf packages")
 	cmd.Flags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Force re-download of a package, ignoring cache")
-	cmd.Flags().BoolVar(&wildcards, "wildcards", false, "Include wildcard/dynamic values in output")
+	cmd.Flags().BoolVar(&wildcards, "wildcards", false, "Include dynamic paths (on by default in the TUI; false hides them)")
 	cmd.Flags().BoolVar(&absolute, "absolute", false, "Output absolute filepaths for locations")
-	cmd.Flags().BoolVar(&noValues, "no-values", false, "Disable inference of nested paths from values.yaml")
-	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "Enter interactive TUI mode")
+	cmd.Flags().BoolVar(&noValues, "no-values", false, "Show chart template references without adding default/schema paths")
+	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "Use the TUI (automatic on a terminal; --interactive=false prints a report)")
+	cmd.Flags().StringArrayVarP(&valuesFiles, "values", "v", nil, "Package values override file (repeatable; later files win)")
+	cmd.Flags().StringVar(&bundleConfig, "config", "", "Optional config.uds.hcl to enrich Next bundle input traces")
 
 	return cmd
 }

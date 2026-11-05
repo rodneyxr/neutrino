@@ -1,137 +1,114 @@
-# Interactive TUI
+# Terminal workspace
 
-Neutrino includes a full-screen interactive terminal UI built with [Bubble Tea](https://github.com/charmbracelet/bubbletea). It lets you explore, search, and navigate every discovered value across all components without leaving your terminal.
+Neutrino's interactive workspace is a static configuration catalog. Browse configured package values, chart defaults, mappings, and observed template references without supplying live deployment configuration.
 
-## Launching the TUI
-
-Add the `-i` flag to any `inspect` command:
+Inspection opens the workspace automatically when both input and output are terminals. Use `-i` to require it:
 
 ```bash
-neutrino inspect oci://ghcr.io/zarf-dev/packages/init:v0.74.0 -i
+neutrino inspect ./my-package -i
 ```
 
-!!! tip
-    The TUI automatically resolves all file paths to absolute paths so that the editor-jump feature works correctly.
+Explicit `--output table|json|yaml` and `--interactive=false` print reports. Pipes, redirected streams, and `TERM=dumb` do not enter the TUI automatically. `-i` reports an error when no usable terminal is attached or `--output` is also supplied.
 
-## Workspace
+## Workspace layout
 
-The interactive inspector uses a keyboard-first two-pane workspace and a full-width details view:
+At 120 columns and wider, **Settings** and **Inspector** share the screen. **Scope** opens when focused with `f` or pane navigation, then collapses when focus leaves it. Its tree selects a package, component, or chart and retains its cursor and expanded branches when reopened. Settings contains the query and results; moving its selection updates the Inspector immediately. `Tab` and `Shift+Tab` move between panes, and the focused pane has a highlighted border.
 
-| Surface | Purpose |
-|:---|:---|
-| **Components** | Select all components or narrow the workspace to one component. Expands when focused to show full package and component names. |
-| **Values** | Search and navigate discovered paths, values, types, and source locations. This pane has focus when the TUI opens. |
-| **Details** | Open the selected value full-width to inspect defaults, effective overrides, template locations, cross-references, and optional UDS authoring snippets. |
+From 80 to 119 columns, Settings and Inspector share the screen while browsing and `f` opens the scope picker. Below 100 columns, focusing the Inspector gives it the full width; `Tab` or `Esc` returns to Settings. Below 80 columns, one pane is always visible at a time. Resizing retains the scope, query, selected setting, and inspector history. Destination actions wrap rather than hiding the chart setting path.
 
-The focused pane uses a double border. Selection markers and pane titles preserve meaning in terminals that cannot display color.
+## Find a setting
 
-### Responsive layout
+Press `f` to focus the Scope tree at wide widths or open its picker at narrower widths. In the tree, use the right arrow to expand a branch and the left arrow to collapse it or move to its parent. Press `Enter` to apply the selected scope and return to Settings. `Esc` closes Scope and returns to the pane that opened it.
 
-Neutrino changes layout based on available terminal width:
+Settings has seven type tabs for every artifact: **Bundle vars**, **Bundle files**, **Zarf vars**, **Zarf values**, **Mappings**, **Helm**, and **Overrides**. Use `1`–`7`, or left/right while Settings is focused, to change type. Each bordered tab shows the number of rows matching the current scope and query; empty types show `0` in a muted style. The selected tab opens into the content below. The **All** tab (`8`) stays visible when narrower layouts show only neighboring types. Inspection starts on the artifact's own configuration surface. `0` opens an inspection overview.
 
-| Width | Layout |
-|:---|:---|
-| **120 columns or wider** | Components and a wide Values table are visible together. |
-| **80–119 columns** | Components and Values remain visible with a narrower Values table. |
-| **Below 80 columns** | One workspace pane is visible at a time. Use `Tab`, `Shift+Tab`, `h`, or `l` to switch between Components and Values. |
+Press `/` to search the selected type and scope; terms combine with AND. Examples include `pkg:api replica`, `chart:gateway`, `source:production.yaml`, and `status:changed`. Changing tabs preserves the query. Choose **All** explicitly to search across types. The changed and unresolved shortcuts also retain the selected type.
 
-### Values
+**Mappings** includes declared Package Values mappings and observed template references. Their kinds distinguish mappings from runtime uses; an observed reference is not itself a configurable declaration. Identical chart names in different packages retain separate owners. Source filenames are available through **Sources**.
 
-The Values pane displays each discovered value in a dense table. Wider terminals show:
+Zarf values use an indented object hierarchy. A nonempty object is a **group**, and its children show relative names rather than repeating the parent's path. Empty objects, arrays, explicit nulls and scalar values remain inputs with their own mapping status. Full paths remain available for search, inspection and copying. Search retains matching inputs' ancestors as context. No mapping is inferred from a name: an optional component absent from the inspected package can leave real inputs without an inspected mapping.
 
-| Column | Description |
-|:---|:---|
-| **Value Path** | Dot-notation value path, such as `image.repository`. Selected long paths scroll horizontally automatically with pauses at the beginning and end. |
-| **Value** | Package-provided default or effective override value. |
-| **Type** | `field`, `variable`, `override`, or `inferred`. |
-| **Source** | Source file and line, or a consolidated location count. |
+**Known input** means an unresolved source prevents claiming a final value. **Input history** identifies surviving contributions as packaged, bundle, operator, mixed, or unknown. Equal overlays still own their input even when they do not change it. Bundle file rows show their declared filenames and inspection status; packages with no such files remain in Scope without adding an empty Settings row.
 
-Rows are grouped under a full-width component band, with muted sentence-case labels and a blank line separating **Zarf variables**, **UDS override values** (fixed by the bundle), **UDS variables** (configurable via `uds-config.yaml`), and **Helm chart values**. Package-wide Zarf variables and bundle-wide override summaries have their own bands. When scrolling into the middle of a component, its band and the current section label remain visible. Repeated template locations remain consolidated in the Values pane; Details lists every location.
+Use origin and kind filters such as `kind:packaged`, `kind:files`, or `kind:configurable`. Long paths and values scroll independently on the focused selected row after a brief pause; navigation, resizing, or changing focus resets scrolling. Search, help, and the command palette pause it.
 
-### Details
+The catalog includes:
 
-Selecting a value and pressing `Enter` opens a full-width Details view. Its labeled identity shows the component, chart, value path, and value type; unavailable levels (for example, component for a standalone chart) show `—`. Below are YAML default/effective values, the full variable description wrapped to the pane width (when available), chart-relative template locations with counts, and related values. UDS variables show the Helm path they control; UDS override values show both the chart default and the effective bundle value. Bundle authoring mode (`b` or `Space`) adds a UDS authoring snippet. Source paths remain absolute internally for editor jumps, but Details displays them relative to the chart.
+- Configured Package Values, with structural object groups for navigation.
+- Helm defaults from chart values files, observed template paths, and explicit chart schema properties.
+- Bundle `.vars` paths referenced by values files, including paths absent from defaults or configuration.
+- Legacy Zarf variable declarations, including unused declarations in standalone packages.
 
-Use `j` / `↓` and `k` / `↑` to scroll Details and select source locations or related values. The selection stays visible as you navigate long lists; scrolling continues into a UDS authoring snippet below the locations. `g` returns to the beginning; `G` moves to the end. Press `Enter` on a location to open it in `$EDITOR`, or on a related value to inspect it. `y` copies the value path, and `Esc` returns to the workspace.
+A schema default is an **annotation**, separate from a supplied value or chart default. **Not supplied** differs from explicit `null`, `false`, `0`, or an empty string. A required property is required in its parent object; it is not necessarily required when that parent is absent. Dynamic Helm paths are marked as dynamic rather than resolved defaults.
 
-### Command palette
+Schema-only Zarf properties stay out of Settings. Press `S` on a package in Scope or one of its settings to view its entire schema, including properties without supplied inputs. The command palette also provides **View package schema**. Lowercase `s` opens the selected setting’s schema. Static schema inventory follows explicit `properties`; raw references, composition, and other constraints remain available in the schema view; the inventory does not expand every possible schema path or validate the inputs. Runtime enrichment is optional and is not needed to browse this catalog.
 
-Press `:` from either workspace pane to open the searchable command palette. The shortcut key is the first column, followed by the action and description. Every primary action is available there, including filtering, component selection, summaries, bundle authoring, editor integration, copying paths, help, and quit.
+## Read a setting
 
-Action feedback in the footer returns to the default keyboard hints after about two seconds. A newer message restarts that interval.
+The Inspector starts with the configurable setting and one supplied or known input. **Underlying values** previews related chart inputs and their supplied, absent, excluded, unavailable, or pending state. A leaf's setting input is not repeated in the preview. These are inspected inputs; the final deployment value is not evaluated. **View underlying values** opens complete comparisons and chart-setting navigation, with separate **View full setting input** and **View full chart input** actions for long values. **Mapping explanation** keeps routing rules, exclusions, and the chart-path browser in a separate page. Missing inputs, parse errors, unavailable content, and runtime dependencies retain specific reasons in the summary and mapping details. The Inspector also shows the setting’s name, owner, kind and available description. Press `Enter` from Settings to focus it. Long descriptions and values have separate views. Additional evidence does not fill the primary screen just because the terminal is wide.
 
-## Keybindings
+For example, a legacy `.Variables.CA_BUNDLE_CERTS` reference appears as a **Zarf runtime reference**, with **Requires deployment context** and a Sources action. It is not renamed to Package `.Values`, and no Helm destination is invented. `.Constants`, `.Pkg`, and unsupported static template expressions say **Expression not evaluated**. An empty target on a template reference is not a chart-root mapping.
 
-### Focus and navigation
+Secondary views are explicit actions:
 
-| Key | Action |
-|:---|:---|
-| `Tab` / `Shift+Tab` | Switch between Components and Values. |
-| `h` / `←` | Focus the Components pane (expands the left column). |
-| `l` / `→` | Focus the Values pane (collapses the left column). |
-| `j` / `↓` | Move down 1 row in the focused pane. |
-| `k` / `↑` | Move up 1 row in the focused pane. |
-| `J` / `K` | Move 5 rows down or up in the focused pane. |
-| `n` / `N` (also `]` / `[`) | Jump to the next or previous component. |
-| `g` / `G` | Move to the first or last item in the focused pane. |
-| `PgDn` / `PgUp` | Move by the available viewport height. |
-| `Enter` | Select a component, open Details, open a location, or follow a cross-reference. |
-| `Esc` | Return to Values, close an overlay, or clear the active value filter. |
+| Action | Evidence |
+| --- | --- |
+| **Sources** (`o`) | Short filenames and known `file:line` coordinates, with their roles. Repeated filenames gain meaningful relative parent paths or package/chart owners. Cache digests and filesystem prefixes stay out of normal labels. Select a source to see its exact path and coordinate availability; an existing local source can then open in `$EDITOR`. Display shortening never changes editor targets. Raw chart `values.yaml` locations identify declarations, while template locations identify uses; they do not establish the winning source of a merged chart input. No `:0:0` location is fabricated. |
+| **Full value** (`v`) | Copyable YAML for the inspected value, with sensitive values masked. |
+| **Input history** (`t`) | Inspected source layers from low to high precedence, shadowed contributions, and the inspected result when all layers are known. |
+| **Schema** (`s`) | Raw schema annotations, with sensitive defaults and examples masked. Schema presence does not mean validation ran. |
+| **Values files using this variable** | File-level bundle variable references. A file reference does not prove which output leaf an expression generates. |
+| **Other inputs in source files** | Other observed bundle inputs read by the package's values files; these are not dependencies of the selected leaf. |
+| **Package references / Template uses** | Package source, ordering metadata, or navigable recorded template `file:line` usage. Runtime uses without a known Helm target stay visible as observations; they do not become inferred chart destinations. |
+| **Authoring example** (`b` or `Space`) | Optional Package Values or legacy UDS configuration example to review before use. |
 
-### Search and commands
+Only applicable actions appear. With the Inspector focused, `j`/`k` selects an action and `Enter` follows it. `Esc` returns to the preceding inspector page and restores its selection and scroll position, then returns focus to Settings. Moving to a different setting starts that setting's summary; changing focus or resizing alone preserves the current evidence view. Short terminals keep the primary identity and value concise; secondary evidence can be scrolled.
 
-| Key | Action |
-|:---|:---|
-| `/` | Filter values by path. |
-| `f` | Filter and select a component. |
-| `:` | Open the searchable command palette. |
-| `?` | Open context-sensitive keyboard help. |
+## Explore mappings
 
-Input modes preserve arrow keys for suggestions and selection. `Enter` applies the input; `Esc` cancels it.
+A Package Value's Inspector previews the chart paths it can configure, including child mappings of an object group. **View underlying values** opens stacked comparisons that retain both inputs even in narrow layouts. An empty object supplies no child fields. From **Mapping explanation**, browse all chart paths for a declared rule, including rules with empty or absent input. `Esc` restores the originating settings or inspector state.
 
-### Actions and toggles
+The advanced mapping view separates **Chart input** from **Setting input**; the Inspector shows the selected path's input when the table is too narrow for both. **Available** means a chart path is reachable through the declaration, not that an input was supplied or deployment succeeded. **Excluded** paths retain their exclusion reason. Press `a` to show chart paths outside a subtree destination. An explicit `targetPath: .` is a chart-root mapping; a missing target is not.
+
+Chart values opened directly and through mapping rows share the same inspector. Proven mappings show their owning package input paths. Multiple mappings remain separate; the inspector does not select a final Helm winner from incomplete evidence.
+
+`y` copies the selected value path. In a mapping table it copies the corresponding package input path; in Details, `p` copies the selected mapping's package input path. Copying a path never copies its value. Clipboard integration uses terminal OSC 52.
+
+Authoring examples use supplied input when known, otherwise a known chart default or a marked `<set-value>` placeholder. Schema defaults are not silently inserted. Excluded or unresolved mappings do not produce a misleading example. Examples represent configuration input and must be reviewed before use.
+
+## Keyboard reference
 
 | Key | Action |
-|:---|:---|
-| `Space` | Select a component when Components is focused, or toggle bundle authoring in Details. |
-| `Z` | Toggle the Zarf package variable summary. |
-| `U` | Toggle the UDS bundle override summary. |
-| `b` | Toggle bundle authoring snippets in Details. |
-| `o` | Open the first source location for the selected value in `$EDITOR`. |
-| `y` | Copy the selected Helm value path using terminal OSC 52. |
-| `q` / `Ctrl+C` | Quit. |
+| --- | --- |
+| `f` | Focus Scope at wide widths; open the scope picker at narrower widths |
+| Left / right in Scope | Collapse or move to parent / expand branch |
+| `/` | Search within the selected type and scope |
+| `1`–`7` / left-right in Settings | Select a setting type |
+| `0` / `8` | Overview / all inputs |
+| `c` / `u` | Toggle changed / unresolved filter |
+| `Tab` / `Shift+Tab` | Cycle workspace panes; open or collapse Scope as focus changes |
+| `j` / `k`, arrows | Move through rows or actions; scroll evidence |
+| `g` / `G` | First / last item |
+| `PgUp` / `PgDn` | Move by a viewport |
+| `n` / `N`, `]` / `[` | Next / previous component or group |
+| `Enter` | Apply a scope, focus the selected setting's Inspector, or follow its selected action |
+| `Esc` | Back, close an overlay, or clear a filter |
+| `o` | Browse source locations |
+| `v` / `t` / `s` | Full value / input history / schema, when applicable |
+| `S` | Whole package schema from Scope or a package setting |
+| `b` / `Space` | Authoring example in the inspector |
+| `a` | Show/hide other paths in a mapping table |
+| `y` / `p` | Copy value path / selected mapping input path |
+| `Z` / `U` | Toggle legacy package-variable / bundle-override summaries |
+| `:` / `?` | Command palette / keyboard help |
+| `q` | Quit |
 
-OSC 52 copying works through compatible local terminals and SSH sessions without requiring a desktop clipboard service. Terminal policy may require enabling OSC 52 support.
+## Inspection boundaries
 
-## UDS Bundle Override Display
+Bundle `.vars`, Zarf Package `.Values`, Helm `.Values`, and legacy variables are distinct inputs. `depends_on` specifies package ordering, not value transfer. Neutrino does not execute runtime actions or arbitrary template functions. Changed/unresolved filters describe inspected evidence: missing inputs, dynamic paths, unsupported expressions, unavailable files, and parse failures remain distinguishable.
 
-When inspecting a UDS Bundle, the TUI surfaces two additional item types within each component:
+History covers the files available to inspection. Created Zarf artifacts expose an assembled `values.yaml`; their original source-file history cannot be recovered. Unknown layers prevent a definitive inspected winner. Final Helm values also depend on chart files, templates, legacy substitution, overrides, and deployment flags.
 
-### Override Values
+The inspector uses Zarf **v0.87.0**. Legacy v1alpha1 variables/constants remain separate from beta Package Values. v1alpha1 chart values files precede templated files; v1beta1 has one ordered list that can interleave the two. UDS Next includes `defaults.uds.hcl` and the supplied `--config`; it does not simulate the deploy `--set` layer.
 
-Hard-coded values set directly in the bundle's `uds-bundle.yaml` via the `overrides.<component>.<chart>.values` stanza. These are **not** overridable via `uds-config.yaml`. Columns shown:
-
-| Column | Description |
-|:---|:---|
-| **UDS Override Path** | The Helm values path being overridden |
-| **Value** | The value explicitly set by the bundle |
-| **Original Default** | The original chart default, if found |
-
-### Override Variables
-
-User-configurable variables exposed by the bundle via the `overrides.<component>.<chart>.variables` stanza. These **can** be set or overridden by the end-user's `uds-config.yaml`. Columns shown:
-
-| Column | Description |
-|:---|:---|
-| **UDS Variable** | The variable name (e.g. `ISTIO_REQUESTS_MEMORY`) |
-| **Path** | The Helm values path this variable controls |
-| **Description** | Human-readable description, if provided |
-
-In the detail view, both override types show which template files reference the affected Helm path, making it easy to trace the full flow from bundle operator → chart template.
-
-## Editor Integration
-
-When you press `Enter` on a location in the detail view (or `y` in the list view), Neutrino opens the file in your default editor at the exact line and column. It looks for the `EDITOR` environment variable and falls back to common editors (`code`, `vim`, `nano`).
-
-!!! note
-    For VS Code, Neutrino invokes `code --goto <file>:<line>:<column>` to jump directly to the source.
+Credential-shaped values, explicitly sensitive legacy variables, and schema-marked sensitive values are masked. Masking uses the owning chart or package schema, including local references and composition. Remote, unresolved, or cyclic schema references are not fetched; affected values are conservatively redacted. Raw inspection data is not modified by display masking.

@@ -46,9 +46,19 @@ See [AST Walker](ast-walker.md) for the full technical details of the traversal 
 Neutrino loads the chart's `values.yaml` and merges any overrides provided by the upstream package (e.g. a Zarf package may supply custom values files). The merged values tree is used to:
 
 - **Extract default values** for every discovered path.
-- **Infer nested paths** from `values.yaml` keys that weren't directly referenced in templates (unless `--no-values` is set).
+- **Inventory every addressable path** from `values.yaml`, including unreferenced top-level branches and charts with no templates (unless `--no-values` is set). Declared paths remain visible when a supplied file replaces their parent object.
 
-### 4. Subchart Discovery
+The report's `defaultPresent` field distinguishes an explicit `null` from an absent value. Values represent inspected files, not deployment output. Lists remain whole values; keys containing literal dots are retained in their parent object but do not become ambiguous dot-notation paths.
+
+The known `_internal_defaults_do_not_set` wrapper uses the chart's public paths (for example, `global.proxy.resources`) while preserving the actual YAML source location. Inferred rows do not duplicate the private wrapper tree. Explicit template references are retained as written.
+
+### 4. Schema Inventory
+
+Neutrino retains `values.schema.json` and inventories explicit `properties`, including nested properties with no configured value. Property annotations preserve types, constraints, descriptions, and defaults. Required membership refers to the property's immediate parent; it does not claim that an optional parent exists.
+
+Schema defaults are **annotations only** and never become configured values. References, composition, conditions, patterns, and array item schemas remain in the original schema; this inventory does not resolve them or perform validation. An unreadable JSON schema produces a diagnostic while other chart evidence remains available. `--no-values` suppresses additional schema/default rows but still attaches available annotations to template-discovered paths and retains the original schemas.
+
+### 5. Subchart Discovery
 
 For charts with dependencies, Neutrino:
 
@@ -56,8 +66,9 @@ For charts with dependencies, Neutrino:
 2. Recursively loads each subchart from `charts/`.
 3. Walks each subchart's templates independently.
 4. Prefixes discovered value paths with the dependency alias (e.g. for a dependency aliased `redis`, the path `master.replicas` becomes `redis.master.replicas`).
+5. Includes dependency defaults and explicit schema properties using the same alias prefixes. Parent file overrides keep their normal map-merge or scalar/list/null replacement behavior. Disabling subchart inspection also disables dependency schema/default discovery.
 
-### 5. Zarf Variable Extraction
+### 6. Zarf Variable Extraction
 
 Alongside Helm value introspection, the parser scans all template content for Zarf injection markers:
 

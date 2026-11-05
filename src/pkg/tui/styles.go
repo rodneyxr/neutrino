@@ -10,6 +10,8 @@ var (
 	codeStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("#C8D2E1"))
 	kindStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("#BDA1FF")).Bold(true)
 	zarfVarStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFCA62"))
+	mappedValueStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CE36C"))
+	excludedValueStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8793"))
 	tableHeaderStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#7F8DA2")).Bold(true)
 	snippetStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0"))
 	fieldLabelStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#78869A")).Bold(true)
@@ -19,6 +21,15 @@ var (
 	selectedRowStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#F4F8FF")).Background(lipgloss.Color("#17303A")).Bold(true)
 	udsOverrideValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0"))
 	udsOverrideVarStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#BDA1FF"))
+	detailTitleStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#E7EDF7")).Bold(true)
+	detailSectionStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0")).Bold(true)
+	detailCodeStyle       = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#DDE6F3")).
+				Background(lipgloss.Color("#101C27")).
+				Padding(0, 1)
+	detailDefaultStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#DDE6F3")).
+				Padding(0, 1)
 
 	headerBarStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#DDE6F3")).
@@ -41,4 +52,14 @@ var (
 			BorderForeground(lipgloss.Color("#59D5E0")).
 			Background(lipgloss.Color("#0E151E")).
 			Padding(1, 2)
+)
+
+var (
+	settingsTabStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("#B5C2D3"))
+	settingsTabEmptyStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#78869A"))
+	settingsTabCountStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#8997AA"))
+	settingsTabBorderStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#344359"))
+	settingsTabActiveStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#F4F8FF")).Background(lipgloss.Color("#17303A")).Bold(true)
+	settingsTabActiveCountStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0")).Background(lipgloss.Color("#17303A")).Bold(true)
+	settingsTabActiveBorderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#59D5E0"))
 )

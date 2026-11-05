@@ -15,7 +15,7 @@ fallbacks := []string{"_internal_defaults_do_not_set"}
 Neutrino transparently recurses within `_internal_defaults_do_not_set.foo.bar` and returns the true default value as if the wrapper didn't exist.
 
 !!! note
-    This only affects default value resolution. The discovered value _path_ always reflects the actual template usage (e.g. `foo.bar`), not the internal wrapper path.
+    Default inventory uses these public paths too, including siblings and defaults that templates do not reference. It preserves the actual YAML source location without adding duplicate private-wrapper rows. Explicit template references remain as written. A direct explicit null or scalar ancestor blocks fallback to the wrapped defaults.
 
 ## Cross-Architecture OCI Manifests
 

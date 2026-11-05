@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/opencontainers/go-digest"
@@ -145,6 +146,74 @@ components:
 	assert.NotContains(t, view.Files, "images/index.json")
 }
 
+func TestPackageReaderOmitsUnpackagedOptionalChartComponent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var optionalRequested atomic.Bool
+	chartServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		optionalRequested.Store(true)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer chartServer.Close()
+	zarfYAML := []byte(`kind: ZarfPackageConfig
+metadata:
+  name: core-base
+  version: 1.0.0
+components:
+  - name: uds-crds
+    required: true
+    charts:
+      - name: crds
+        version: 1.0.0
+  - name: istio-passthrough-gateway
+    required: false
+    charts:
+      - name: gateway
+        version: 1.0.0
+        url: ` + chartServer.URL + `
+`)
+	component := tarArchive(t, map[string][]byte{"charts/crds-1.0.0.tgz": chartArchive(t, "crds", []byte("replicaCount: 1\n"))})
+	zarfDescriptor := packageDescriptor("zarf.yaml", zarfYAML)
+	componentDescriptor := packageDescriptor("components/uds-crds.tar", component)
+	remote := &fakePackageRemote{
+		root: packageRoot{Manifest: ocispec.Manifest{
+			Config: ocispec.Descriptor{MediaType: zarfConfigMediaType},
+			Layers: []ocispec.Descriptor{zarfDescriptor, componentDescriptor},
+		}},
+		blobs: map[digest.Digest][]byte{zarfDescriptor.Digest: zarfYAML, componentDescriptor.Digest: component},
+	}
+	reader := newPackageReader(remote, ocispec.Platform{OS: "multi", Architecture: "amd64"}, t.TempDir(), true)
+	view, err := reader.Read(context.Background())
+	require.NoError(t, err)
+	require.NotContains(t, view.Files, "components/istio-passthrough-gateway.tar")
+	require.Equal(t, []string{"zarf.yaml", "components/uds-crds.tar"}, remote.fetched)
+	viewDir := t.TempDir()
+	require.NoError(t, view.materialize(viewDir))
+	report, err := inspectLocalZarfPackage(context.Background(), viewDir, "", "amd64", IntrospectOptions{}, true)
+	require.NoError(t, err)
+	require.Equal(t, []string{"uds-crds/crds"}, report.ComponentOrder)
+	require.False(t, optionalRequested.Load(), "omitted component must not trigger a chart URL fetch")
+}
+
+func TestInspectZarfArchiveRejectsMissingRequiredChartComponent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	zarfYAML := []byte(`kind: ZarfPackageConfig
+metadata:
+  name: incomplete
+components:
+  - name: apps
+    required: true
+    charts:
+      - name: alpha
+        version: 1.0.0
+`)
+	source := filepath.Join(t.TempDir(), "zarf-package-incomplete.tar")
+	require.NoError(t, os.WriteFile(source, tarArchive(t, map[string][]byte{"zarf.yaml": zarfYAML}), 0600))
+	report, err := InspectZarfPackage(context.Background(), source, "", "amd64", IntrospectOptions{NoCache: true})
+	require.Error(t, err)
+	require.Nil(t, report)
+	require.ErrorContains(t, err, `components/apps.tar`)
+}
+
 func TestPackageReaderRejectsIncompleteOrUnverifiableSelectedDescriptors(t *testing.T) {
 	zarfYAML := []byte(`kind: ZarfPackageConfig
 metadata:
@@ -152,6 +221,7 @@ metadata:
   version: 1.0.0
 components:
   - name: apps
+    required: true
     charts:
       - name: alpha
         version: 1.0.0
@@ -661,7 +731,7 @@ packages:
 	bundleDescriptor := packageDescriptor(UDSBundleFile, bundleYAML)
 	bundleConfig := []byte(`{}`)
 	bundleConfigDescriptor := ocispec.Descriptor{
-		MediaType: UDSBundleMediaType,
+		MediaType: zarfLayerMediaType,
 		Digest:    digest.FromBytes(bundleConfig),
 		Size:      int64(len(bundleConfig)),
 	}
@@ -675,6 +745,7 @@ packages:
 	require.NoError(t, err)
 	activeManifestBytes := bundleManifestBytes
 	activeManifestDigest := digest.FromBytes(activeManifestBytes)
+	packageRepoOnly := false
 	blobs := map[string][]byte{
 		bundleDescriptor.Digest.String():          bundleYAML,
 		packageManifestDescriptor.Digest.String(): packageManifestBytes,
@@ -710,6 +781,14 @@ packages:
 			digestString := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 			if !strings.Contains(digestString, ":") {
 				digestString = "sha256:" + digestString
+			}
+			manifestMu.Lock()
+			restrictPackage := packageRepoOnly
+			manifestMu.Unlock()
+			if restrictPackage && strings.Contains(r.URL.Path, "/example/bundle/blobs/") &&
+				digestString == componentDescriptor.Digest.String() {
+				http.NotFound(w, r)
+				return
 			}
 			contents, ok := blobs[digestString]
 			if !ok {
@@ -761,6 +840,27 @@ packages:
 	requestedMu.Lock()
 	assert.Len(t, requested, requestCount)
 	requestedMu.Unlock()
+	remotePackageBundle := []byte(strings.Replace(string(bundleYAML), "  - name: apps\n",
+		"  - name: apps\n    repository: "+strings.TrimPrefix(registry.URL, "https://")+"/example/package\n", 1))
+	remotePackageDescriptor := packageDescriptor(UDSBundleFile, remotePackageBundle)
+	blobs[remotePackageDescriptor.Digest.String()] = remotePackageBundle
+	titles[remotePackageDescriptor.Digest.String()] = UDSBundleFile
+	remotePackageManifest := bundleManifest
+	remotePackageManifest.Layers[0] = remotePackageDescriptor
+	remotePackageManifestBytes, err := json.Marshal(remotePackageManifest)
+	require.NoError(t, err)
+	manifestMu.Lock()
+	activeManifestBytes = remotePackageManifestBytes
+	activeManifestDigest = digest.FromBytes(remotePackageManifestBytes)
+	packageRepoOnly = true
+	manifestMu.Unlock()
+
+	_, err = InspectUDSBundle(context.Background(), source, "", "amd64", IntrospectOptions{NoCache: true})
+	require.NoError(t, err, "embedded package layers must be fetched from the declared package repository")
+
+	manifestMu.Lock()
+	packageRepoOnly = false
+	manifestMu.Unlock()
 	missingPackageBundle := []byte(`kind: UDSBundle
 metadata:
   name: incomplete

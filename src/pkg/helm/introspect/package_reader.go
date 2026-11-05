@@ -1,21 +1,17 @@
 package introspect
 
 import (
-	"archive/tar"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 
-	"github.com/goccy/go-yaml"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/zarf-dev/zarf/src/api/v1alpha1"
+	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 )
 
 const (
@@ -94,7 +90,10 @@ func (r *packageReader) ReadFile(ctx context.Context, configMediaType string, ti
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve package root: %w", err)
 	}
-	if root.Manifest.Config.MediaType != configMediaType {
+	// Legacy UDS bundle roots also appear with Zarf's blob media type as config.
+	// Keep this exception scoped to bundle control planes, not embedded packages.
+	if root.Manifest.Config.MediaType != configMediaType &&
+		!(configMediaType == UDSBundleMediaType && root.Manifest.Config.MediaType == zarfLayerMediaType) {
 		return nil, fmt.Errorf("unsupported package root config media type %q", root.Manifest.Config.MediaType)
 	}
 	var selected ocispec.Descriptor
@@ -120,8 +119,11 @@ func (r *packageReader) ReadFile(ctx context.Context, configMediaType string, ti
 	}, nil
 }
 
-func (r *packageReader) ReadEmbedded(ctx context.Context, descriptor ocispec.Descriptor) (*packageView, error) {
-	contents, err := r.fetchVerified(ctx, descriptor)
+func (r *packageReader) ReadEmbedded(ctx context.Context, descriptor ocispec.Descriptor, packageFetch func(context.Context, ocispec.Descriptor) ([]byte, error)) (*packageView, error) {
+	if descriptor.MediaType != ocispec.MediaTypeImageManifest && descriptor.MediaType != zarfLayerMediaType {
+		return nil, fmt.Errorf("unsupported selected embedded package manifest media type %q", descriptor.MediaType)
+	}
+	contents, err := r.fetchVerifiedMedia(ctx, descriptor, descriptor.MediaType)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +133,7 @@ func (r *packageReader) ReadEmbedded(ctx context.Context, descriptor ocispec.Des
 	}
 	embedded := newPackageReader(resolvedPackageRemote{
 		root:  packageRoot{Descriptor: descriptor, Manifest: manifest},
-		fetch: r.remote.Fetch,
+		fetch: packageFetch,
 	}, r.platform, r.cacheDir, r.noCache)
 	return embedded.Read(ctx)
 }
@@ -166,33 +168,51 @@ func (r *packageReader) Read(ctx context.Context) (*packageView, error) {
 		return nil, err
 	}
 
-	var pkg v1alpha1.ZarfPackage
-	if err := yaml.Unmarshal(zarfBytes, &pkg); err != nil {
+	pkg, err := parseZarfDefinition(zarfBytes)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse selected descriptor %q: %w", "zarf.yaml", err)
 	}
 
 	selected := []ocispec.Descriptor{zarfDescriptor}
 	files := map[string][]byte{"zarf.yaml": zarfBytes}
-	for _, component := range pkg.Components {
-		if len(component.Charts) == 0 {
+	// Assembled Zarf packages store merged package defaults and schema
+	// at fixed root titles, not at the source paths retained in zarf.yaml.
+	for _, title := range []string{layout.ValuesYAML, layout.ValuesSchema} {
+		required := (title == layout.ValuesYAML && len(pkg.Values.Files) > 0) ||
+			(title == layout.ValuesSchema && pkg.Values.Schema != "")
+		descriptor, exists := byTitle[title]
+		if !exists {
+			if required {
+				return nil, fmt.Errorf("incomplete package layout: missing selected descriptor %q", title)
+			}
 			continue
-		}
-		if component.Name == "" || path.Base(component.Name) != component.Name || component.Name == "." {
-			return nil, fmt.Errorf("unsupported package layout: invalid selected component name %q", component.Name)
-		}
-		title := path.Join("components", component.Name+".tar")
-		if strings.HasPrefix(title, "images/") || title == "images" {
-			return nil, fmt.Errorf("unsupported package layout: selected component %q resolves under images", component.Name)
-		}
-		descriptor, ok := byTitle[title]
-		if !ok {
-			return nil, fmt.Errorf("incomplete package layout: missing selected descriptor %q for component %q", title, component.Name)
 		}
 		contents, err := r.fetchVerified(ctx, descriptor)
 		if err != nil {
 			return nil, err
 		}
-		if err := validateSelectedComponent(component, descriptor, contents); err != nil {
+		selected = append(selected, descriptor)
+		files[title] = contents
+	}
+	for _, component := range pkg.Components {
+		title := path.Join("components", component.Name+".tar")
+		descriptor, available := byTitle[title]
+		title, include, err := selectPackagedComponent(component, available, pkg.optionalComponents[component.Name])
+		if err != nil {
+			return nil, err
+		}
+		if !include {
+			continue
+		}
+		contents, err := r.fetchVerified(ctx, descriptor)
+		if err != nil {
+			return nil, err
+		}
+		entries, err := readComponentEntries(title, contents)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := packagedChartLayout(component, title, entries); err != nil {
 			return nil, err
 		}
 		selected = append(selected, descriptor)
@@ -208,71 +228,13 @@ func (r *packageReader) Read(ctx context.Context) (*packageView, error) {
 	}, nil
 }
 
-func validateSelectedComponent(component v1alpha1.ZarfComponent, descriptor ocispec.Descriptor, contents []byte) error {
-	entries := make(map[string]byte)
-	reader := tar.NewReader(bytes.NewReader(contents))
-	for {
-		header, err := reader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("unsupported selected descriptor %q component archive: %w", descriptor.Annotations[ocispec.AnnotationTitle], err)
-		}
-		name := strings.TrimSuffix(header.Name, "/")
-		cleanName := path.Clean(name)
-		if cleanName == "." {
-			continue
-		}
-		if cleanName != name || path.IsAbs(name) || strings.HasPrefix(cleanName, "../") {
-			return fmt.Errorf("unsupported selected descriptor %q component archive entry %q", descriptor.Annotations[ocispec.AnnotationTitle], header.Name)
-		}
-		entries[cleanName] = header.Typeflag
-	}
-
-	chartsBase := "charts"
-	valuesBase := "values"
-	if !hasArchivePrefix(entries, chartsBase+"/") {
-		chartsBase = path.Join(component.Name, chartsBase)
-		valuesBase = path.Join(component.Name, valuesBase)
-	}
-	for _, chart := range component.Charts {
-		chartArchive := path.Join(chartsBase, fmt.Sprintf("%s-%s.tgz", chart.Name, chart.Version))
-		alternateArchive := path.Join(chartsBase, chart.Name+".tgz")
-		chartYAML := path.Join(chartsBase, chart.Name, "Chart.yaml")
-		if !isRegularArchiveEntry(entries, chartArchive) &&
-			!isRegularArchiveEntry(entries, alternateArchive) &&
-			!isRegularArchiveEntry(entries, chartYAML) {
-			return fmt.Errorf("incomplete selected descriptor %q: declared chart %q was not found", descriptor.Annotations[ocispec.AnnotationTitle], chart.Name)
-		}
-		managedValuesCount := len(chart.ValuesFiles) + len(chart.TemplatedValuesFiles)
-		for i := range managedValuesCount {
-			valuesPath := path.Join(valuesBase, fmt.Sprintf("%s-%s-%d", chart.Name, chart.Version, i))
-			if !isRegularArchiveEntry(entries, valuesPath) {
-				return fmt.Errorf("incomplete selected descriptor %q: managed values file %d for chart %q was not found", descriptor.Annotations[ocispec.AnnotationTitle], i, chart.Name)
-			}
-		}
-	}
-	return nil
-}
-
-func hasArchivePrefix(entries map[string]byte, prefix string) bool {
-	for name := range entries {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func isRegularArchiveEntry(entries map[string]byte, name string) bool {
-	typeflag, exists := entries[name]
-	return exists && (typeflag == tar.TypeReg || typeflag == tar.TypeRegA)
-}
-
 func (r *packageReader) fetchVerified(ctx context.Context, descriptor ocispec.Descriptor) ([]byte, error) {
+	return r.fetchVerifiedMedia(ctx, descriptor, zarfLayerMediaType)
+}
+
+func (r *packageReader) fetchVerifiedMedia(ctx context.Context, descriptor ocispec.Descriptor, mediaType string) ([]byte, error) {
 	title := descriptor.Annotations[ocispec.AnnotationTitle]
-	if descriptor.MediaType != zarfLayerMediaType {
+	if descriptor.MediaType != mediaType {
 		return nil, fmt.Errorf("unsupported selected descriptor %q media type %q", title, descriptor.MediaType)
 	}
 	if descriptor.Size <= 0 {

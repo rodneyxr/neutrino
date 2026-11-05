@@ -2,7 +2,7 @@
 
 ## `neutrino inspect`
 
-The core command. Analyzes a package source and outputs discovered overridable values, Zarf variables, and chart metadata.
+The core command. Analyzes a package source and reports Helm values, legacy Zarf variables, structured Zarf Package Values, and Legacy or Next UDS bundle configuration.
 
 ### Syntax
 
@@ -19,10 +19,13 @@ neutrino inspect [PACKAGE_SOURCE] [flags]
 | Local helm chart directory | `./charts/podinfo` |
 | Local helm chart archive | `./podinfo-6.11.1.tgz` |
 | Zarf package archive | `./zarf-package-app-amd64-0.0.1.tar.zst` |
+| Local Zarf source directory | `./my-package` (contains `zarf.yaml`) |
 | OCI chart URL | `oci://ghcr.io/stefanprodan/charts/podinfo:6.11.1` |
 | HTTP(S) chart URL | `https://example.com/charts/podinfo-6.11.1.tgz` |
 | Remote Zarf package | `oci://ghcr.io/zarf-dev/packages/init:v0.74.0` |
 | UDS Bundle | `oci://ghcr.io/defenseunicorns/packages/uds/bundles/k3d-core-demo:1.0.0` |
+| UDS Next source | `./next-bundle` or `./next-bundle/bundle.uds.hcl` |
+| UDS Next artifact | `./uds-bundle-app-amd64-1.0.0.tar.zst` or an OCI reference |
 
 ### Flags
 
@@ -32,13 +35,15 @@ neutrino inspect [PACKAGE_SOURCE] [flags]
 | `--output`, `-o` | `string` | `table` | Output format: `table`, `json`, `yaml`. |
 | `--include-subcharts` | `bool` | `true` | Recursively analyze dependencies found in `charts/`. |
 | `--architecture`, `-a` | `string` | | Architecture for OCI images and Zarf packages (e.g. `amd64`, `arm64`). |
-| `--interactive`, `-i` | `bool` | `false` | Enter interactive TUI mode. |
+| `--interactive`, `-i` | `bool` | auto | TUI when input and output are terminals; `--interactive=false` prints a report. |
 | `--sort-mode` | `string` | `path` | Sort mode for values: `path` or `discovery`. |
-| `--wildcards` | `bool` | `false` | Include wildcard/dynamic values (e.g. `ingress.hosts.*.host`) in output. |
+| `--wildcards` | `bool` | interactive: `true`; report: `false` | Include wildcard/dynamic paths (e.g. `ingress.hosts.*.host`). Use `--wildcards=false` to hide them in the TUI. |
 | `--absolute` | `bool` | `false` | Output absolute filepaths for locations. |
-| `--no-values` | `bool` | `false` | Disable inference of nested paths from `values.yaml`. |
+| `--no-values` | `bool` | `false` | Limit chart rows to template references, without adding defaults or schema-only paths. |
 | `--no-cache` | `bool` | `false` | Force re-download of a package, ignoring local cache. |
 | `--log-level` | `string` | `info` | Log verbosity: `debug`, `info`, `warn`, `error`. |
+| `--values`, `-v` | repeatable `string` | | Package Values override file. Later files override earlier files; for bundles these apply to each package. |
+| `--config` | `string` | | Optional Next `config.uds.hcl` variables to enrich input traces, overlaid on packaged defaults. Static artifact inspection needs no config. |
 
 ### Examples
 
@@ -72,6 +77,30 @@ neutrino inspect oci://ghcr.io/zarf-dev/packages/init:v0.74.0
 ```bash
 neutrino inspect oci://ghcr.io/defenseunicorns/packages/uds/bundles/k3d-core-demo:1.0.0
 ```
+
+#### Inspect Package Values and Next bundles
+
+```bash
+neutrino inspect ./my-package --values ./environment.yaml
+neutrino inspect ./next-bundle --config ./next-bundle/config.uds.hcl -o json
+neutrino inspect ./uds-bundle-app-amd64-1.0.0.tar.zst -i
+```
+
+On an attached terminal, inspection opens the workspace automatically. Explicit `--output table`, `--output json`, `--output yaml`, or `--interactive=false` always produces a report. Pipes, redirected input/output, and `TERM=dumb` use reports. Explicit `-i` requires terminal input and output and cannot be combined with `--output`.
+
+At 120 columns and wider, Settings and Inspector share the screen; Scope opens while focused and collapses when focus leaves it. The inspector follows the selected setting; `Enter` focuses it without replacing the workspace. Narrower layouts progressively collapse panes while retaining navigation state. `f` opens the scope tree or its picker, and `/` edits the Settings query. Setting-type tabs separate bundle inputs, Zarf values, mappings and runtime references, Helm inputs, and legacy overrides. Zarf object groups show indented relative names; schema-only fields remain in the secondary package schema view (`S`). Long selected paths and values scroll independently. All artifacts use type tabs (`1`–`7`, or left/right in Settings); searches stay within the selected type and scope. `8` browses all types and `0` shows an overview. Use `c` for changed inputs and `u` for unresolved inputs. The inspector traces ordered source contributions and observed bundle-to-package dependencies without claiming a final deployment result. Sources are explicit inspector actions. See [the TUI guide](tui.md).
+
+Package Values are separate from Helm defaults and legacy `###ZARF_VAR_*###` variables. The report includes merged package inputs, their file order, the package JSON schema, chart `sourcePath` → `targetPath` mappings and exclusions, and discovered template/action references. `--values` files have higher precedence than packaged inputs. Schemas are exposed for inspection, not used to claim deployment validation.
+
+Inspect OCI artifacts directly to explore their configuration surface; no deployment configuration is required. Chart defaults and explicit schema properties appear even when templates do not reference them. Schema defaults are annotations, never supplied values. Schema constraints are retained for inspection; Neutrino does not validate them or enumerate paths implied by references, composition, or patterns.
+
+Next bundle reports include package IDs, sources, dependencies, namespaces, optional-component declarations, ordered values files, and bundle variables. Known bundle `.vars` templates are rendered from packaged `defaults.uds.hcl` plus an optional `--config`; missing template inputs remain explicitly unresolved. Package Values mappings are reported as provenance rather than applied to Helm chart defaults. Inspection includes declared charts; it does not reproduce deployment component selection.
+
+No deployment actions run. Cluster state, action-produced values, and Zarf Go templates remain runtime inputs. An unavailable manifest/file payload is identified as an unresolved template, not silently treated as unused. Inspection never claims that configured inputs are the final deployment-effective values.
+
+JSON/YAML add `packageValues` and `bundle` alongside the existing report fields, plus chart-level `packageValueMappings`. Legacy fields retain their meanings. In the TUI, each mapping declaration opens a chart-first table of discovered destination chart values, including candidates under empty or missing package input. Rows separate chart defaults from actually supplied package inputs and distinguish available mapping paths from explicit exclusions; the `a` toggle shows other discovered chart paths outside the selected destination. Supplied package paths absent from chart discovery remain labeled. Next bundle package IDs remain distinct from chart identity; legacy `uds-bundle.yaml` snippets are suppressed for Next bundles. Mapping reachability does not establish schema validity or final deployment values.
+
+Main chart values and mapping-table rows share one Details view, including chart defaults, template locations, and all mappings for the owning package with supplied inputs, exclusions, and ordered input files. `Enter` follows mapping links or opens template locations in `$EDITOR`; `Esc` restores the originating view. In Details, `y` copies the chart path and `p` copies the selected mapping's package input path.
 
 #### JSON output for CI
 
@@ -110,7 +139,7 @@ When values are accessed inside `range` loops, Neutrino uses `*` to denote dynam
 Produces the path: `ingress.hosts.*.host`
 
 !!! note
-    Wildcard paths are hidden by default. Use `--wildcards` to include them.
+    Wildcard paths are included by default in interactive exploration. Reports preserve the existing default: use `--wildcards` to include them.
 
 ### Zarf Variable Tables
 

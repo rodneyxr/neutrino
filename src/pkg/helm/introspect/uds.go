@@ -163,7 +163,16 @@ func inspectRemoteUDSBundle(ctx context.Context, source string, version string, 
 		if manifestDescriptor.Digest == "" {
 			return nil, fmt.Errorf("failed to form Package View for UDS package %q: embedded package manifest %q is missing", pkg.Name, targetDigest)
 		}
-		view, err := reader.ReadEmbedded(ctx, manifestDescriptor)
+		packageFetch := remote.Fetch
+		if pkg.Repository != "" {
+			packageSource := "oci://" + strings.TrimPrefix(pkg.Repository, "oci://") + "@" + targetDigest.String()
+			packageRemote, err := oci.NewOrasRemote(packageSource, platform)
+			if err != nil {
+				return nil, fmt.Errorf("failed to open repository for UDS package %q: %w", pkg.Name, err)
+			}
+			packageFetch = packageRemote.FetchLayer
+		}
+		view, err := reader.ReadEmbedded(ctx, manifestDescriptor, packageFetch)
 		if err != nil {
 			return nil, fmt.Errorf("failed to form Package View for UDS package %q: %w", pkg.Name, err)
 		}
@@ -187,6 +196,26 @@ func inspectRemoteUDSBundle(ctx context.Context, source string, version string, 
 
 // InspectUDSBundle analyzes a UDS bundle to find Helm values across all its Zarf packages.
 func InspectUDSBundle(ctx context.Context, path string, version string, arch string, opts IntrospectOptions) (*ZarfPackageIntrospection, error) {
+	if IsRemote(path) {
+		isNext, err := isNextRemote(ctx, path, arch)
+		if err != nil {
+			return nil, err
+		}
+		if isNext {
+			return InspectNextUDSBundle(ctx, path, version, arch, opts)
+		}
+	} else {
+		isNext, err := isNextLocal(path)
+		if err != nil {
+			return nil, err
+		}
+		if isNext {
+			return InspectNextUDSBundle(ctx, path, version, arch, opts)
+		}
+	}
+	if opts.BundleConfig != "" {
+		return nil, fmt.Errorf("--config requires a Next UDS bundle")
+	}
 	if IsRemote(path) {
 		return inspectRemoteUDSBundle(ctx, path, version, arch, opts)
 	}
@@ -261,6 +290,7 @@ func inspectMaterializedUDSBundle(ctx context.Context, path string, version stri
 	var allVariables []v1alpha1.InteractiveVariable
 	var allOverrideValues []UDSOverrideValueWithContext
 	var allOverrideVariables []UDSOverrideVariableWithContext
+	var allPackageValues []PackageValues
 
 	for _, pkg := range bundle.Packages {
 		pkgName := pkg.Name
@@ -402,22 +432,19 @@ func inspectMaterializedUDSBundle(ctx context.Context, path string, version stri
 			continue
 		}
 
-		pkgInspection, err := InspectZarfPackage(ctx, pkgSource, pkgVersion, arch, opts)
+		var pkgInspection *ZarfPackageIntrospection
+		var err error
+		if layoutPath != "" || strict {
+			pkgInspection, err = inspectLocalZarfPackage(ctx, pkgSource, pkgVersion, arch, opts, true)
+		} else {
+			pkgInspection, err = InspectZarfPackage(ctx, pkgSource, pkgVersion, arch, opts)
+		}
 		if err != nil {
 			if strict {
 				return nil, fmt.Errorf("failed to inspect UDS package %q from its Package View: %w", pkgName, err)
 			}
 			l.Warn(fmt.Sprintf("Failed to introspect package %s: %s", pkgName, err.Error()))
 			continue
-		}
-		if strict {
-			expectedChartCount, err := declaredChartCount(pkgSource)
-			if err != nil {
-				return nil, fmt.Errorf("failed to inspect UDS package %q from its Package View: %w", pkgName, err)
-			}
-			if len(pkgInspection.ComponentOrder) != expectedChartCount {
-				return nil, fmt.Errorf("failed to inspect UDS package %q from its Package View: inspected %d of %d declared charts", pkgName, len(pkgInspection.ComponentOrder), expectedChartCount)
-			}
 		}
 
 		// Prefix component keys with the package name to distinguish them
@@ -435,6 +462,10 @@ func inspectMaterializedUDSBundle(ctx context.Context, path string, version stri
 			// Prefix variable name to indicate origin? Or leave as is. Zarf vars are usually unique enough.
 			v.Name = fmt.Sprintf("%s.%s", pkgName, v.Name)
 			allVariables = append(allVariables, v)
+		}
+		for _, values := range pkgInspection.PackageValues {
+			values.PackageName = pkgName
+			allPackageValues = append(allPackageValues, values)
 		}
 
 		// Process UDS bundle overrides for this package
@@ -498,24 +529,10 @@ func inspectMaterializedUDSBundle(ctx context.Context, path string, version stri
 
 		ChartResults:         results,
 		Variables:            allVariables,
+		PackageValues:        allPackageValues,
 		UDSOverrideValues:    allOverrideValues,
 		UDSOverrideVariables: allOverrideVariables,
 	}, nil
-}
-func declaredChartCount(packageViewPath string) (int, error) {
-	zarfBytes, err := os.ReadFile(filepath.Join(packageViewPath, "zarf.yaml"))
-	if err != nil {
-		return 0, fmt.Errorf("failed to read zarf.yaml: %w", err)
-	}
-	var pkg v1alpha1.ZarfPackage
-	if err := yaml.Unmarshal(zarfBytes, &pkg); err != nil {
-		return 0, fmt.Errorf("failed to parse zarf.yaml: %w", err)
-	}
-	var count int
-	for _, component := range pkg.Components {
-		count += len(component.Charts)
-	}
-	return count, nil
 }
 
 // lookupOriginalDefault searches the introspection result's discovered values
